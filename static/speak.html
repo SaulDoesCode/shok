@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <main>
+        <section class="input">
+            <textarea name="speak" cols="30" rows="10"></textarea>
+            <input type="password">
+            <button class="speak-btn">Speak</button>
+        </section>
+        <section class="output">
+
+        </section>
+    </main>
+    <script type="module">
+        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
+        const {section, div, span, h1, header, article} = d.domfn
+        const {query, render} = d
+        await d.ready
+
+        const input = query('.input')
+        const output = query('.output')
+        const txt = query('textarea', input)
+        const pwd = query('input[type="password"]', input)
+
+        const speak = async () => {
+            const res = await fetch('/api/speak', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    txt: txt.value,
+                    pwd: pwd.value.trim()
+                })
+            })
+            output.innerHTML = ''
+            try {
+                const data = await res.json()
+                d.article({$: output},
+                    data.output,
+                    data.err
+                )
+            } catch (e) {
+                d.article({$: output},
+                    'Error',
+                    e
+                )
+            }
+        }
+
+        query('button.speak-btn', input).onclick = speak
+    </script>
+</body>
+</html>

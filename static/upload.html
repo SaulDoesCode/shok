@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload</title>
+    <style>
+        #dropZone {
+            width: 300px;
+            height: 200px;
+            border: 2px dashed #ccc;
+            text-align: center;
+            padding: 10px;
+          }
+          
+          #fileList {
+            margin-top: 20px;
+          }          
+    </style>
+</head>
+<body>
+    <h1>Upload file</h1>
+    <form action="/api/upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" />
+        <input type="submit" value="upload" />
+    </form>
+    <input type="file" id="fileInput">
+    <button id="uploadButton">Upload</button>
+    <p id="fileNameDisplay"></p>
+    <script>
+        // Get the file input element
+        var fileInput = document.getElementById('fileInput');
+        var uploadButton = document.getElementById('uploadButton');
+    
+        // Add an event listener to handle file selection
+        fileInput.addEventListener('change', e => {
+          // Access the selected file
+          const file = e.target.files[0];
+    
+          // Display the selected file name
+          const fileNameDisplay = document.getElementById('fileNameDisplay');
+          fileNameDisplay.textContent = file.name;
+        })
+    
+        // Add an event listener to handle file upload
+        uploadButton.addEventListener('click', async () => {
+          const file = fileInput.files[0]
+          if (file) {
+            // Perform the file upload here
+            const formData  = new FormData();
+            formData.append(file.name, file);
+
+            console.log('Uploading file:', file.name)
+            const res = await fetch('/api/upload?tk=' + 'a3G6ITT1cFkekX6xM5TQsgUUkT5LANUS', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'multipart/form-data'
+                },
+                body: formData
+            })
+            const data = await res.json()
+            console.log(data)
+          } else {
+            console.log('No file selected.')
+          }
+        })
+      </script>
+</body>
+</html>

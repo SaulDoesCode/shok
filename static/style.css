@@ -1,0 +1,122 @@
+body {
+    background-color: rgba(27, 25, 25, 0.757);
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 1mm;
+}
+
+body > header {
+    display: flex;
+    flex-flow: row wrap;
+    justify-content: space-evenly;
+    align-items: center;
+    align-content: center;
+    background-color: #fff;
+    box-shadow: 0 0 1mm rgba(0, 0, 0, 0.1);
+    filter: drop-shadow(0 2px 1mm rgba(94, 72, 72, 0.7));
+    border-radius: 2mm;
+    padding: 2.5mm;
+    margin: 1mm 1mm 2mm 1mm;
+}
+
+nav > header {
+    display: flex;
+    flex-flow: row wrap;
+    justify-content: space-between;
+    align-items: center;
+    align-content: center;
+    background-color: #fff;
+    box-shadow: 0 0 1mm rgba(0, 0, 0, 0.1);
+    filter: drop-shadow(0 2px 1mm rgba(94, 72, 72, 0.7));
+    border-radius: 2mm;
+    padding: 2.5mm;
+    margin: 1mm 1mm 2mm 1mm;
+}
+
+nav > header > a {
+    display: inline-flex;
+    align-items: center;
+    align-content: center;
+    justify-content: center;
+    transition: all 140ms ease-in-out;
+    border-radius: 100%;
+    padding: 1.2mm;
+    height: calc(26px + 1.2mm);
+    width: calc(26px + 1.2mm);
+    filter: drop-shadow(0 0 1mm rgba(168, 130, 130, 0.412));
+}
+
+nav > header > a:hover {
+    background: #fff;
+    filter: drop-shadow(0 0 1mm rgba(55, 33, 33, 0.2));
+    box-shadow: 0 0 2px #ce0d6e;
+}
+
+nav > header > h1 {
+    display: inline-block;
+    font-size: 1.6rem;
+    margin: 0;
+    color: #fefefe;
+    text-shadow: 0 0 1mm rgba(55, 33, 33, 0.2);
+    filter: drop-shadow(0 0 1mm rgba(55, 33, 33, 0.2));
+    width: min-content;
+    transition: all 140ms ease-in-out;
+}
+
+nav > header > h1:hover {
+    color: #171717;
+    text-shadow: 0 0 1mm rgba(55, 33, 33, 0.2), 0 0 2px #ce0d6e;
+    filter: drop-shadow(0 0 3mm rgba(131, 68, 68, 0.985));
+}
+
+main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-gap: 2mm;
+    padding: 0 1mm;
+    min-height: 333px;
+}
+
+main > aside.left {
+    background-color: #fff;
+    border-radius: 5px;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+    padding: 2mm;
+}
+
+main > aside.right {
+    background-color: #fff;
+    border-radius: 5px;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+    padding: 2mm;
+}
+
+main > section {
+    background-color: #fff;
+    border-radius: 2mm;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+    padding: 2mm;
+    overflow: hidden;
+    overflow-y: scroll;
+}
+
+.gr {
+    position: relative;
+    background: linear-gradient(to right, #ffffff 0%, #ffffff 20%, #ff88b2 40%, #ce0d2a 100%);
+    border-radius: 1mm;
+}
+
+.atom {
+    position: relative;
+    padding: 1px;
+}
+
+.atom:not(:last-of-type)::after {
+    display: inline-block;
+    content: ", ";
+}
+
+.atom:last-of-type::after {
+    display: inline-block;
+    content: " ";
+}

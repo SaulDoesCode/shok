@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth</title>
+    <link rel="stylesheet" href="https://unpkg.com/marx-css/css/marx.min.css">
+    <style>
+        body {
+            padding: 1rem;
+        }
+        section {
+            margin: 2rem auto;
+            border-radius: 4mm;
+            padding: 1rem;
+            box-shadow:0 0 1rem 0.5rem #00000020;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            background: #00000020;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #00000040;
+        }
+    </style>
+    <script type="module">
+        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
+        const {section, div, span, h1, button, header, article} = d.domfn
+        const {queryAsync, render} = d
+
+        const mi = await queryAsync('input[type="text"]')
+        const pwdi = await queryAsync('input[type="password"]')
+        const ab = await queryAsync('button.auth-btn')
+
+        const details = () => JSON.stringify({moniker: mi.value.trim(), pwd: pwdi.value.trim()})
+        const authenticate = async () => {
+            const res = await fetch('/api/auth', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: details()
+            })
+
+            const data = await res.json()
+
+            console.log(data)
+        }
+
+        ab.onpointerdown = e => {
+            authenticate()
+        }
+
+        pwdi.onkeydown = e => {
+            if (e.key === 'Enter') {
+                authenticate()
+            }
+        }
+
+        section.btns({$: 'body'},
+            button.tokens({
+                onpointerdown() {
+                    fetch('/api/make-tokens', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({count: 2, id: 1997, pm: 1})
+                    })
+                }
+            }, 'make tokens')
+        )
+    </script>
+</head>
+<body>
+    <section>
+        <input type="text">
+        <br>
+        <input type="password">
+        <br>
+        <button class="auth-btn">authenticate</button>
+    </section>
+</body>
+</html>
