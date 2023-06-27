@@ -73,6 +73,50 @@ fn check_admin_password(pwd: &[u8]) -> bool {
     &PWD.1.hash(pwd) == PWD.0.as_slice()
 }
 
+fn zstd_compress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 22)?;
+    encoder.write_all(data)?;
+    Ok(encoder.finish()?)
+}
+
+fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
+    let mut buf = Vec::new();
+    decoder.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+fn encrypt<T: Serialize>(payload: T) -> anyhow::Result<Vec<u8>> {
+    let mut serialized_payload = zstd_compress(&bincode::serialize(&payload)?)?;
+    let cocoon = cocoon::Cocoon::new(PWD.0.as_slice());
+    match cocoon.encrypt(&mut serialized_payload) {
+        Ok(detached_prefix) => {
+            let whole = bincode::serialize(&(serialized_payload.to_vec(), detached_prefix.to_vec()))?;
+            return Ok(whole);
+        },
+        Err(e) => Err(
+            anyhow::Error::msg(format!("failed to encrypt payload: {:?}", e))
+        )
+    }
+}
+
+fn decrypt<'a, T: serde::de::DeserializeOwned>(
+    whole: &'a [u8]
+) -> anyhow::Result<T> {
+    let (encrypted_payload, detached_prefix): (Vec<u8>, Vec<u8>) = bincode::deserialize(whole).unwrap();
+    let mut decrypted_payload = encrypted_payload;
+    let cocoon = cocoon::Cocoon::new(PWD.0.as_slice());
+    match cocoon.decrypt(decrypted_payload.as_mut_slice(), &detached_prefix) {
+        Ok(_) => {
+            let payload: T = bincode::deserialize(&zstd_decompress(&decrypted_payload)?)?;
+            return Ok(payload);
+        },
+        Err(e) => Err(
+            anyhow::Error::msg(format!("failed to decrypt payload: {:?}", e))
+        )
+    }
+}
+
 const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
 
@@ -881,19 +925,6 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
     }
 }
 
-fn zstd_compress(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 0)?;
-    encoder.write_all(data)?;
-    Ok(encoder.finish()?)
-}
-
-fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
-    let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ResourcePostRequest {
     old_hash: Option<Vec<u8>>,
@@ -956,16 +987,16 @@ impl Resource {
         Self::new(Self::hash(data), owner, data.len(), mime)
     }
 
-    pub fn with_data(mut self, data: &[u8]) -> Self {
-        self.data = Some(data.to_vec());
-        self
-    }
-
     fn hash(data: &[u8]) -> Vec<u8> {
         RESOURCE_HASHER.hash(data)
     }
 
-    pub fn save(&mut self, bump: bool) -> std::io::Result<()> {
+    pub fn change_owner(&mut self, new_owner: u64) -> anyhow::Result<()> {
+        self.owner = Some(new_owner);
+        self.save(true)
+    }
+
+    pub fn save(&mut self, bump: bool) -> anyhow::Result<()> {
         // if path doesn't exist create a directory for it
         if !Path::new("./assets-state").exists() {
             std::fs::create_dir("./assets-state")?;
@@ -981,9 +1012,9 @@ impl Resource {
         if bump {
             self.version += 1;
         }
-        let write_result = file.write_all(&zstd_compress(&serde_json::to_vec(self)?)?);
+        let write_result = file.write_all(&encrypt(&serde_json::to_vec(self)?)?);
         if write_result.is_ok() {
-            let data_file_write_result = data_file.write_all(&self.data()?);
+            let data_file_write_result = data_file.write_all(&self.data(true)?);
             if data_file_write_result.is_err() {
                 self.writes -= 1;
                 if bump {
@@ -1017,13 +1048,13 @@ impl Resource {
         Ok(())
     }
 
-    pub fn set_data(&mut self, data: &[u8]) -> std::io::Result<()> {
-        self.data = Some(zstd_compress(data)?);
+    pub fn set_data(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.data = Some(encrypt(data)?);
         self.size = data.len();
         self.save(true)
     }
 
-    pub fn data(&mut self) -> std::io::Result<Vec<u8>> {
+    pub fn data(&mut self, encrypted_form: bool) -> anyhow::Result<Vec<u8>> {
         if self.data.is_some() {
             return Ok(self.data.clone().unwrap());
         }
@@ -1032,34 +1063,38 @@ impl Resource {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         self.set_data(&bytes)?;
-        Ok(zstd_decompress(&bytes)?)
+        if encrypted_form {
+            Ok(bytes)
+        } else {
+            Ok(decrypt(&bytes)?)
+        }
     }
 
-    pub fn from_hash(hash: &[u8], with_data: bool) -> std::io::Result<Self> {
+    pub fn from_hash(hash: &[u8], with_data: bool) -> anyhow::Result<Self> {
         let path = format!("./assets-state/{}", B64.encode(hash));
         let mut file = std::fs::File::open(path)?;
         let mut bytes = vec![];
         file.read_to_end(&mut bytes)?;
         std::mem::forget(file);
-        let mut r: Resource = serde_json::from_slice(&zstd_decompress(&bytes)?)?;
+        let mut r: Resource = decrypt(&bytes)?;
         r.reads += 1;
         r.save(false)?;
         if with_data {
-            r.data()?;
+            r.data(true)?;
         }
         Ok(r)
     }
     
-    pub fn from_b64_straight(hash: &str, with_data: bool) -> std::io::Result<Self> {
+    pub fn from_b64_straight(hash: &str, with_data: bool) -> anyhow::Result<Self> {
         let path = format!("./assets-state/{}", hash);
         let mut file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        let mut r: Resource = serde_json::from_slice(&zstd_decompress(&bytes)?)?;
+        let mut r: Resource = decrypt(&bytes)?;
         r.reads += 1;
         r.save(false)?;
         if with_data {
-            r.data()?;
+            r.data(true)?;
         }
         Ok(r)
     }
@@ -1067,7 +1102,7 @@ impl Resource {
 
 
 #[handler]
-async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
