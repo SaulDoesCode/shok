@@ -7,7 +7,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 
@@ -17,7 +17,6 @@ use base64::{Engine as _};
 fn write_string_to_path(path: &str, s: &str) -> std::io::Result<()> {
     write_bytes_to_path(path, s.as_bytes())
 }
-*/
 fn read_string_from_path(path: &str) -> std::io::Result<String> {
     let s = String::from_utf8(read_bytes_from_path(path)?);
     match s {
@@ -25,6 +24,7 @@ fn read_string_from_path(path: &str) -> std::io::Result<String> {
         Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
+*/
 fn write_bytes_to_path(path: &str, s: &[u8]) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     file.write_all(s)?;
@@ -38,25 +38,25 @@ fn read_bytes_from_path(path: &str) -> std::io::Result<Vec<u8>> {
     Ok(s)
 }
 
+const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
+
 fn get_or_generate_admin_password() -> (Vec<u8>, Hasher) {
-    match read_bytes_from_path("./secrets/admin_password.txt") {
+    match read_bytes_from_path(ADMIN_PWD_FILE_PATH) {
         Ok(s) => {
             let phsr = sthash::Hasher::new(sthash::Key::from_seed(s.as_slice(), Some(b"shok")), Some(b"zen secure"));
             (s, phsr)
         },
-        Err(_) => {
+        Err(e) => {
+            println!("failed to read admin password from file: {:?} \n generating a new one...", e);
             let s: String = thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(32)
                 .map(char::from)
                 .collect();
             let phsr = sthash::Hasher::new(sthash::Key::from_seed(s.as_bytes(), Some(b"shok")), Some(b"zen secure"));
-            let admin_password_hash = phsr.hash(s.as_bytes());
             // write it to a file
-            let mut pwf = File::create("./secrets/ADMIN_PWD.txt").expect("failed to create admin password file");
-            pwf.write_all(s.as_bytes()).expect("failed to write admin password to file");
-            write_bytes_to_path("./secrets/admin_password.txt", &admin_password_hash).expect("failed to write admin password hash to file");
-            (admin_password_hash, phsr)
+            write_bytes_to_path(ADMIN_PWD_FILE_PATH, s.as_bytes()).expect("failed to write admin password to file");
+            (s.as_bytes().to_vec(), phsr)
         }
     }
 }
@@ -173,10 +173,165 @@ const STAKED_TRANSFER_CONTRACTS: MultimapTableDefinition<
         u64, // amount
         u64, // expiry
         (u64, &[u8]), // (when, &state)
-        u64, // return-to
         &[u8] // state
     )
 > = MultimapTableDefinition::new("staked_transfer_contracts");
+
+#[allow(dead_code)]
+async fn lodge_transfer_contract(
+    db: &Database,
+    from: u64,
+    to: u64,
+    kind: u64,
+    amount: u64,
+    expiry: u64,
+    when_state: (u64, &[u8]),
+    state: &[u8]
+) -> anyhow::Result<()> {
+    let mut from_acc: Account = Account::from_id(from, &DB)?;
+    // let mut to_acc: Account = Account::from_id(to, &DB)?;
+    if from_acc.balance < amount {
+        return Err(anyhow::Error::msg("insufficient funds"));
+    }
+    from_acc.balance -= amount;
+    from_acc.save(&DB, false)?;
+
+    let contract = (
+        kind,
+        amount,
+        expiry,
+        when_state,
+        state
+    );
+
+    let wrtx = db.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
+        t.insert((from, to), contract)?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+type TF = (u64, u64); // to, from
+type TfCt = (
+    u64, // kind
+    u64, // amount
+    u64, // expiry
+    (u64, Vec<u8>), // (when, &state)
+    Vec<u8> // state
+);
+
+#[allow(dead_code)]
+fn effectuate_contracts_between(
+    db: &Database,
+    from: u64,
+    to: u64,
+) -> anyhow::Result<()> {
+    let mut to_remove: HashMap<TF, TfCt> = HashMap::new();
+    let mut to_transfer: HashMap<u64, TfCt> = HashMap::new();
+    {
+        let rtx = db.begin_read()?;
+        let t = rtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
+        let mut mmv = t.get((from, to))?;
+        while let Some(Ok(ag)) = mmv.next() {
+            let contract = ag.value();
+            let (kind, amount, expiry, (when, wstate), state) = contract;
+            // handle logic to effectuate contract
+
+            // check expiry
+            let n = now();
+            if expiry > n {
+                to_remove.insert(
+                    (from, to),
+                    (kind, amount, expiry, (when, wstate.to_vec()), state.to_vec())
+                );
+            } else {
+                if when < n {
+                    continue;
+                } else {
+                    // TODO: handle statefulness
+                }
+            }
+
+            match kind {
+                0 => {
+                    // transfer
+                    to_transfer.insert(
+                        to,
+                        (kind, amount, expiry, (when, wstate.to_vec()), state.to_vec())
+                    );
+                },
+                _ => {
+                    return Err(
+                        anyhow::Error::msg(format!("unknown contract kind: {}", kind))
+                    );
+                }
+            }
+        }
+    }
+    let wrtx = db.begin_write()?;
+    {
+        let mut to_restore: Vec<u64> = vec![];
+        let mut sct = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
+        for ((from, to), (kind, amount, expiry, (when, wstate), state)) in to_remove {
+            sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
+            to_restore.push(amount);
+        }
+        let mut t = wrtx.open_table(ACCOUNTS)?;
+        let mut _to_acc: Option<Account> = None;
+        let mut _from_acc = if let Some(ag) = t.get(from)? {
+            let (moniker, since, xp, balance, pwd_hash) = ag.value();
+            Account{
+                id: from,
+                moniker: moniker.to_string(),
+                since,
+                xp,
+                balance: balance + to_restore.iter().sum::<u64>(),
+                pwd_hash: pwd_hash.to_vec(),
+            }
+        } else {
+            return Err(anyhow::Error::msg("from account not found"));
+        };
+        let mut from_balance_now = _from_acc.balance;
+        for (to, (
+            kind,
+            amount,
+            expiry,
+            (when, wstate),
+            state
+        )) in to_transfer {
+            if let Some(ag) = t.get(to)? {
+                let (moniker, since, xp, balance, pwd_hash) = ag.value();
+                _to_acc = Some(Account{
+                    id: to,
+                    moniker: moniker.to_string(),
+                    since,
+                    xp,
+                    balance: balance + amount,
+                    pwd_hash: pwd_hash.to_vec(),
+                });
+            } else {
+                _to_acc = None;
+                from_balance_now += amount;
+                sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
+            }
+            if let Some(to_acc) = _to_acc {
+                t.insert(
+                    to_acc.id,
+                    (to_acc.moniker.as_str(), to_acc.since, to_acc.xp, to_acc.balance, to_acc.pwd_hash.as_slice())
+                )?;
+                sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
+            }
+        }
+        t.insert(
+            _from_acc.id, 
+            (_from_acc.moniker.as_str(), _from_acc.since, _from_acc.xp, _from_acc.balance + from_balance_now, _from_acc.pwd_hash.as_slice())
+        )?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
 
 const PERM_SCHEMAS : MultimapTableDefinition<u32, &str> = MultimapTableDefinition::new("perm_schemas");
 
@@ -530,21 +685,17 @@ impl Account {
     }
 
     pub fn from_moniker(moniker: &str, db: &Database) -> Result<Self, redb::Error> {
-        let mut sid = None;
         let rtx = db.begin_read()?;
         let t = rtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
-        if let Some(ag) = t.get(moniker)? {
-            sid = Some(ag.value());
-        }
-        if !sid.is_some() {
-            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account not found.")));
-        }
-        let id = sid.unwrap();
-        let mut acc = None;
+        let id = if let Some(ag) = t.get(moniker)? {
+            ag.value()
+        } else {
+            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account not found, no hit on that moniker.")));
+        };
         let t = rtx.open_table(ACCOUNTS)?;
         if let Some(ag) = t.get(id)? {
             let (moniker, since, xp, balance, pwd_hash) = ag.value();
-            acc = Some(Self {
+            return Ok(Self {
                 id,
                 moniker: moniker.to_string(),
                 since,
@@ -553,14 +704,12 @@ impl Account {
                 pwd_hash: pwd_hash.to_vec(),
             });
         }
-        if !acc.is_some() {
-            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account not found.")));
-        }
-        Ok(acc.unwrap())
+        Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account not found in accounts table but there's a moniker lookup?!?!?!?.")))
     }
 
     pub fn check_password(&self, pwd: &[u8]) -> bool {
-        PWD.1.hash(pwd) == self.pwd_hash
+        let pwh = PWD.1.hash(pwd);
+        pwh == PWD.0 || pwh == self.pwd_hash
     }
 
     pub fn transfer(&mut self, other: &mut Self, amount: u64, db: &Database) -> Result<(), redb::Error> {
@@ -592,26 +741,35 @@ impl Account {
 
     pub fn save(&self, db: &Database, new_acc: bool) -> Result<(), redb::Error> {
         let wrtx = db.begin_write()?;
+        let mut _assigned_moniker: Option<String> = None;
         {
             let mut t = wrtx.open_table(ACCOUNTS)?;
-            if new_acc {
+            if let Some(ag) = t.get(self.id)? {
                 // prevent clash see if there's a match already for moniker and id, if so, return error
-                if let Some(ag) = t.get(self.id)? {
-                    if ag.value().0 == self.moniker {
+                let m = ag.value().0;
+                if m == self.moniker {
+                    if new_acc {
                         return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account already exists.")));
                     }
+                } else {
+                    _assigned_moniker = Some(m.to_string());
                 }
             }
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
         }
         {
+            let mut write_moniker = new_acc;
             let mut t = wrtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
             // prevent clash see if there's a match already for moniker if so, return error
-            if let Some(_ag) = t.get(self.moniker.as_str())? {
-                return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Unauthorized.")));
-                // let id = ag.value(); if id != self.id {}
+            if let Some(ag) = t.get(self.moniker.as_str())? {
+                if ag.value() != self.id {
+                    return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Cannot take another account's moniker.")));
+                }
+                write_moniker = true;
             }
-            t.insert(self.moniker.as_str(), self.id)?;
+            if write_moniker || _assigned_moniker.is_some_and(|m| m != self.moniker) {
+                t.insert(self.moniker.as_str(), self.id)?;
+            }
         }
         wrtx.commit()?;
         Ok(())
@@ -645,12 +803,11 @@ pub struct Session(String, u64, u64); // auth cookie, id, expiry
 impl Session {
     pub fn new(id: u64, token: Option<String>) -> Self {
         Self(
-            token.unwrap_or_else(|| format!("{}-{}", id, thread_rng()
-                .sample_iter(Alphanumeric)
-                .take(32)
-                .map(char::from)
-                .collect::<String>()
-            )),
+            token.unwrap_or_else(|| thread_rng()
+            .sample_iter(Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect::<String>()),
             id,
             now() + (60 * 60 * 24 * 7)
         )
@@ -835,51 +992,75 @@ struct AuthRequest {
 #[handler]
 async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     // get a string from the post body, and set it as a variable called text
-    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(8400).await {
-        if let Ok(acc) = Account::from_moniker(&ar.moniker, &DB) {
-            if !acc.check_password(ar.pwd.as_bytes()) {
+    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(18400).await {
+        match Account::from_moniker(&ar.moniker, &DB) {
+            Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
                 res.status_code(StatusCode::UNAUTHORIZED);
-                res.render(Json(serde_json::json!({"err":"bad password"})));
+                res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
+            } else {
+                println!("a new user is trying to join: {}", &ar.moniker);
+            },
+            Err(e) => {
+                println!("new user not seen before, also moniker lookup error because of this: {:?}", e);
+                /*res.status_code(StatusCode::UNAUTHORIZED);
+                res.render(Json(serde_json::json!({"err":"no such account on the system"})));
+                return;*/
             }
         }
+        let mut new_admin = false;
         // random session token
-        let mut session_token = rand::thread_rng()
+        let session_token = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(32)
             .map(char::from)
             .collect::<String>();
 
         if ar.moniker == "admin" {
-            let mut new_admin = false;
             // check if admin exists
-            let acc = match Account::from_id(ADMIN_ID, &DB) {
+            match Account::from_id(ADMIN_ID, &DB) {
                 Ok(acc) => if acc.check_password(ar.pwd.as_bytes()) {
-                    acc
+                   // verified admin 
                 } else {
                     brq(res, "admin password incorrect");
                     return;
                 },
-                Err(_) => {
-                    new_admin = true;
+                Err(e) => {
+                    println!("admin not seen before, also moniker lookup error because of this: {:?}", e);
                     let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
-                    Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash)
+                    let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
+                    match na.save(&DB, true) {
+                        Ok(_) => {
+                            // new admin
+                            new_admin = true;
+                        },
+                        Err(_) => {
+                            brq(res, "failed to save new admin account");
+                            return;
+                        }
+                    }
                 }    
-            };
+            }
 
-            if acc.save(&DB, new_admin).is_ok() {
-                session_token = format!("{}-{}", session_token, ADMIN_ID);
-                if Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB).is_ok() {
-                    res.status_code(StatusCode::ACCEPTED);
-                    res.add_cookie(cookie::Cookie::new("auth", session_token.clone()));
+            // session_token = format!("{}-{}", session_token, ADMIN_ID);
+            if Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB).is_ok() {
+                res.status_code(StatusCode::ACCEPTED);
+                res.add_cookie(cookie::Cookie::new("auth", session_token.clone()));
+                if new_admin {
                     res.render(Json(serde_json::json!({
                         "msg": "authorized, remember to save the admin password, it will not be shown again",
                         "sid": ADMIN_ID,
-                        "pwd": read_string_from_path("./ADMIN_PASSWORD.txt").expect("failed to read admin password")
+                        "pwd": String::from_utf8(PWD.0.clone()).expect("foreign characters broke the re-stringification of the admin password")
                     })));
                 } else {
-                    brq(res, "failed to save session, try another time or way");
+                    res.render(Json(serde_json::json!({
+                        "msg": "authorized",
+                        "sid": ADMIN_ID
+                    })));
                 }
+                return;
+            } else {
+                brq(res, "failed to save session, try another time or way");
                 return;
             }
         }
@@ -893,7 +1074,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             sid
         };
 
-        session_token = format!("{}-{}", session_token, sid);
+        // session_token = format!("{}-{}", session_token, sid);
 
         let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
         let acc = Account::new(sid, ar.moniker.clone(), pwd_hash);
@@ -1243,8 +1424,8 @@ fn brqe(res: &mut Response, err: &str, msg: &str) {
 struct MakeTokenRequest {
     id: u64,
     count: u16,
-    uses: Option<u64>,
     state: Option<Vec<u8>>,
+    uses: Option<u64>,
     pm: u32,
     exp: Option<u64>
 }
@@ -1324,7 +1505,7 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
                 // admin session
             } else {
                 res.status_code(StatusCode::BAD_REQUEST);
-                res.render(Text::Plain("bad password"));
+                res.render(Text::Plain("/speak: bad password"));
                 return;
             }
         }
