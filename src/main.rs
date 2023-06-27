@@ -7,7 +7,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 
@@ -120,6 +120,19 @@ struct Item{
     3: read/write/execute/transact
 
 */
+
+#[allow(dead_code)]
+const STAKED_TRANSFER_CONTRACTS: MultimapTableDefinition<
+    (u64, u64), // from, to
+    (
+        u64, // kind
+        u64, // amount
+        u64, // expiry
+        (u64, &[u8]), // (when, &state)
+        u64, // return-to
+        &[u8] // state
+    )
+> = MultimapTableDefinition::new("staked_transfer_contracts");
 
 const PERM_SCHEMAS : MultimapTableDefinition<u32, &str> = MultimapTableDefinition::new("perm_schemas");
 
@@ -367,7 +380,7 @@ async fn main() {
     tracing_subscriber::fmt().init();
     //let db = init_surrealdb_connection().await?;
     
-    let sp = std::path::PathBuf::new().join(STATIC_DIR);
+    let sp = PathBuf::new().join(STATIC_DIR);
     println!("Static files dir: exists - {:?}, {}", sp.exists(), sp.into_os_string().into_string().unwrap_or("bad path".to_string()));
     
     PermSchema::ensure_basic_defaults(&DB);
@@ -662,7 +675,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
     match req.param::<String>("file") {
         Some(file) => {
             // check if a version of file + ".html" exists first and if it does, serve that
-            let mut path = std::path::PathBuf::new().join(STATIC_DIR).join(file.clone());
+            let mut path = PathBuf::new().join(STATIC_DIR).join(file.clone());
             if path.extension().is_none() {
                 path.set_extension("html");
                 if path.exists() {
@@ -673,7 +686,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
             if path.exists() {
                 StaticFile::new(&format!("{}{}", STATIC_DIR, file)).handle(req, depot, res, ctrl).await;
             } else {
-                path = std::path::PathBuf::new().join("./uploaded/").join(file.clone());
+                path = PathBuf::new().join("./uploaded/").join(file.clone());
                 if path.exists() {
                     // query param token 
                     match req.query::<String>("tk") {
@@ -731,7 +744,7 @@ async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Res
             .take(16)
             .map(char::from)
             .collect::<String>())));
-        let info = if let Err(e) = std::fs::copy(&file.path(), std::path::Path::new(&dest)) {
+        let info = if let Err(e) = std::fs::copy(&file.path(), Path::new(&dest)) {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             format!("file not found in request: {}", e)
         } else {
@@ -868,6 +881,18 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
     }
 }
 
+fn zstd_compress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 0)?;
+    encoder.write_all(data)?;
+    Ok(encoder.finish()?)
+}
+
+fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
+    let mut buf = Vec::new();
+    decoder.read_to_end(&mut buf)?;
+    Ok(buf)
+}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ResourcePostRequest {
@@ -941,6 +966,13 @@ impl Resource {
     }
 
     pub fn save(&mut self, bump: bool) -> std::io::Result<()> {
+        // if path doesn't exist create a directory for it
+        if !Path::new("./assets-state").exists() {
+            std::fs::create_dir("./assets-state")?;
+        }
+        if !Path::new("./assets").exists() {
+            std::fs::create_dir("./assets")?;
+        }
         let path = format!("./assets-state/{}", B64.encode(&self.hash));
         let data_path = format!("./assets/{}", B64.encode(&self.hash));
         let mut file = File::create(path.as_str())?;
@@ -949,7 +981,7 @@ impl Resource {
         if bump {
             self.version += 1;
         }
-        let write_result = file.write_all(&serde_json::to_vec(self)?);
+        let write_result = file.write_all(&zstd_compress(&serde_json::to_vec(self)?)?);
         if write_result.is_ok() {
             let data_file_write_result = data_file.write_all(&self.data()?);
             if data_file_write_result.is_err() {
@@ -985,7 +1017,13 @@ impl Resource {
         Ok(())
     }
 
-    pub fn data(&self) -> std::io::Result<Vec<u8>> {
+    pub fn set_data(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.data = Some(zstd_compress(data)?);
+        self.size = data.len();
+        self.save(true)
+    }
+
+    pub fn data(&mut self) -> std::io::Result<Vec<u8>> {
         if self.data.is_some() {
             return Ok(self.data.clone().unwrap());
         }
@@ -993,20 +1031,21 @@ impl Resource {
         let mut file = File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        Ok(bytes)
+        self.set_data(&bytes)?;
+        Ok(zstd_decompress(&bytes)?)
     }
 
     pub fn from_hash(hash: &[u8], with_data: bool) -> std::io::Result<Self> {
         let path = format!("./assets-state/{}", B64.encode(hash));
         let mut file = std::fs::File::open(path)?;
-        let mut raw = vec![];
-        file.read_to_end(&mut raw)?;
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes)?;
         std::mem::forget(file);
-        let mut r: Resource = serde_json::from_slice(&raw)?;
+        let mut r: Resource = serde_json::from_slice(&zstd_decompress(&bytes)?)?;
         r.reads += 1;
         r.save(false)?;
         if with_data {
-            r.data = Some(r.data()?);
+            r.data()?;
         }
         Ok(r)
     }
@@ -1016,9 +1055,11 @@ impl Resource {
         let mut file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        let mut r: Resource = serde_json::from_slice(&bytes)?;
+        let mut r: Resource = serde_json::from_slice(&zstd_decompress(&bytes)?)?;
+        r.reads += 1;
+        r.save(false)?;
         if with_data {
-            r.data = Some(r.data()?);
+            r.data()?;
         }
         Ok(r)
     }
@@ -1098,7 +1139,10 @@ async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Response,
                 if let Some(v) = r.version {
                     resource.version = v;
                 }
-                resource.data = Some(r.data);
+                if let Err(e) = resource.set_data(&r.data) {
+                    brqe(res, &e.to_string(), "failed to set data");
+                    return;
+                }
                 match resource.save(true) {
                     Ok(()) => {
                         resource.hash = B64.encode(&resource.hash).as_bytes().to_vec();
@@ -1252,7 +1296,7 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
 
         println!("speak request: {:?}", sr);
         let ttts_path = "../tortoisetts/tortoise-tts";
-        if !std::path::Path::new(ttts_path).exists() {
+        if !Path::new(ttts_path).exists() {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render(Json(serde_json::json!({
                 "err": "tortoise tts not found"

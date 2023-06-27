@@ -19,6 +19,8 @@ redb = { version = "*", features = ["logging"]}
 rand = "*"
 sthash = { git = "https://github.com/jedisct1/rust-sthash" }
 lazy_static = "*"
+zstd = "*"
+
 
 [profile.dev]
 codegen-units = 16
