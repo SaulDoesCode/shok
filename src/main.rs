@@ -1606,7 +1606,7 @@ use tantivy::{
     schema::*,
     Index,
     // IndexReader, ReloadPolicy,
-    IndexWriter,
+    IndexWriter, DateTime, columnar::MonotonicallyMappableToU64,
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -1618,6 +1618,7 @@ struct PutWrit{
     public: bool,
     title: String,
     content: String,
+    state: Option<String>,
     tags: String // comma separated
 }
 
@@ -1628,18 +1629,24 @@ struct Writ{
     public: bool,
     title: String,
     content: String,
+    state: Option<String>,
     tags: String // comma separated
 }
 
 impl Writ {
     fn to_doc(&self, schema: &Schema) -> tantivy::Document {
         let mut doc = Document::new();
-        doc.add_u64(schema.get_field("ts").unwrap(), self.ts);
+        doc.add_date(schema.get_field("ts").unwrap(), DateTime::from_u64(self.ts));
         doc.add_u64(schema.get_field("owner").unwrap(), self.owner);
         doc.add_text(schema.get_field("title").unwrap(), &self.title);
         doc.add_text(schema.get_field("content").unwrap(), &self.content);
         doc.add_text(schema.get_field("tags").unwrap(), &self.tags);
         doc.add_bool(schema.get_field("public").unwrap(), self.public);
+        if let Some(state) = &self.state {
+            if let Ok(state) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(state) {
+                doc.add_json_object(schema.get_field("state").unwrap(), state);
+            }
+        }
         doc
     }
 
@@ -1649,7 +1656,10 @@ impl Writ {
         Ok(())
     }
 
-    fn search_for(query: &str, limit: usize, page: usize, s: &Search) -> tantivy::Result<Vec<(f32, tantivy::Document)>> {
+    fn search_for(query: &str, limit: usize, mut page: usize, s: &Search) -> tantivy::Result<Vec<(f32, tantivy::Document)>> {
+        if page == 0 {
+            page = 1;
+        }
         let reader = s.index.reader()?;
         let searcher = reader.searcher();
         let schema = s.schema.clone();
@@ -1657,8 +1667,12 @@ impl Writ {
             schema.get_field("title").unwrap(),
             schema.get_field("tags").unwrap(),
             // schema.get_field("ts").unwrap(),
+            // schema.get_field("owner").unwrap(),
+            // schema.get_field("public").unwrap(),
+            // schema.get_field("state").unwrap(),
             schema.get_field("content").unwrap()
         ]);
+        // query_parser.set_conjunction_by_default();
         let query = query_parser.parse_query(query)?;
         let top_docs = searcher.search(&query, &TopDocs::with_limit(limit * page))?;
         let mut results = Vec::new();
@@ -1668,6 +1682,9 @@ impl Writ {
             if skipped < limit * (page - 1) {
                 skipped += 1;
                 continue;
+            }
+            if results.len() >= limit {
+                break;
             }
             results.push((_score, retrieved_doc));
         }
@@ -1685,8 +1702,8 @@ struct Search{
 impl Search{
     fn build(index_size: usize) -> tantivy::Result<Self> {
         let mut schema_builder = Schema::builder();
-        schema_builder.add_u64_field("ts", INDEXED | STORED);
-        schema_builder.add_u64_field("owner", INDEXED | STORED);
+        schema_builder.add_date_field("ts", INDEXED | FAST | STORED);
+        schema_builder.add_u64_field("owner", FAST | INDEXED | STORED);
         let text_options = TextOptions::default()
             .set_stored()
             .set_indexing_options(TextFieldIndexing::default()
@@ -1695,6 +1712,7 @@ impl Search{
         schema_builder.add_text_field("content", text_options.clone());
         schema_builder.add_text_field("title", text_options.clone());
         schema_builder.add_text_field("tags", text_options);
+        schema_builder.add_json_field("state", STORED | TEXT);
         schema_builder.add_bool_field("public", INDEXED | STORED);
         let schema = schema_builder.build();
 
@@ -1720,31 +1738,41 @@ impl Search{
             Ok(results) => {
                 let mut writs = vec![];
                 for (_s, d) in results {
-                    let mut ts = 0;
+                    let mut ts: u64 = 0;
                     let mut title = String::new();
                     let mut content = String::new();
                     let mut tags: String = String::new();
                     let mut public = false;
                     let mut owner: u64 = 1997;
+                    let mut state = None;
                     for (f, fe) in self.schema.fields() {
+                        let val = match d.get_first(f) {
+                            Some(v) => v,
+                            None => continue,
+                        };
                         match fe.name() {
-                            "ts" => {
-                                ts = d.get_first(f).unwrap().as_u64().unwrap();
+                            "ts" => if let Some(val) = val.as_date() {
+                                ts = val.to_u64();
                             },
                             "title" => {
-                                title = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                                title = val.as_text().unwrap().to_string();
                             },
                             "content" => {
-                                content = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                                content = val.as_text().unwrap().to_string();
                             },
                             "tags" => {
-                                tags = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                                tags = val.as_text().unwrap().to_string();
                             },
-                            "public" => {
-                                public = d.get_first(f).unwrap().as_bool().unwrap();
+                            "public" => if let Some(pb) = val.as_bool() {
+                                public = pb;
                             },
-                            "owner" => {
-                                owner = d.get_first(f).unwrap().as_u64().unwrap();
+                            "owner" => if let Some(o) = val.as_u64() {
+                                owner = o
+                            },
+                            "state" => if let Some(jsn) = val.as_json() {
+                                if let Ok(raw) = serde_json::to_string(jsn) {
+                                    state = Some(raw);
+                                }
                             },
                             _ => {
                                 return Err(tantivy::TantivyError::InvalidArgument(format!("unknown field {}", fe.name())));
@@ -1752,7 +1780,7 @@ impl Search{
                         }
                     }
                     if public || include_public_for_owner.is_some_and(|o| o == owner || o == 1997) {
-                        writs.push(Writ{ts, public, owner, title, content, tags});
+                        writs.push(Writ{ts, public, owner, title, content, state, tags});
                     }
                 }
                 Ok(writs)
@@ -1822,6 +1850,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     owner: _owner.unwrap(),
                     title: pw.title,
                     content: pw.content,
+                    state: pw.state,
                     tags: pw.tags,
                 };
                 // add the writ to the index
