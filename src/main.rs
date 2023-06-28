@@ -119,14 +119,120 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
 
 const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
-
+// token, account_id, expiry
 const SESSIONS: TableDefinition<&str, (u64, u64)> = TableDefinition::new("sessions");
+
+const SESSION_EXPIRIES: TableDefinition<u64, &str> = TableDefinition::new("session_expiries");
+
+fn expire_sessions() -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
+        t.drain_filter(..now(), |_, v| {
+            let st = wrtx.open_table(SESSIONS);
+            st.is_ok() && st.unwrap().remove(v).is_ok()
+        })?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+#[allow(dead_code)]
+fn expire_session(token: &str) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(SESSIONS)?;
+        t.remove(token)?;
+    }
+    Ok(())
+}
+#[allow(dead_code)]
+fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
+        t.insert(expiry, token)?;
+    }
+    Ok(())
+}
+
+pub fn expiry_checker() -> std::thread::JoinHandle<()> {
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(59));
+            match expire_sessions() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to expire sessions: {:?}", e);
+                }
+            }
+            match expire_tokens() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to expire tokens: {:?}", e);
+                }
+            }
+            match expire_resources() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to expire resources: {:?}", e);
+                }
+            }
+        }
+    })
+}
+
 // Accounts             name, since, xp, balance, pwd_hash
 const ACCOUNTS: TableDefinition<u64, (&str, u64, u64, u64, &[u8])> = TableDefinition::new("accounts");
 const ACCOUNT_MONIKER_LOOKUP: TableDefinition<&str, u64> = TableDefinition::new("account_moniker_lookup");
 // Tokens                            perm_schema, account_id, expiry, uses, state
 const TOKENS: TableDefinition<&[u8], (u32, u64, u64, u64, Option<&[u8]>)> = TableDefinition::new("tokens");
 
+const TOKEN_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("token_expiries");
+const RESOURCE_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("resource_expiries");
+
+fn expire_resources() -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
+        t.drain_filter(..now(), |_, v| {
+            Resource::delete(v).is_ok()
+        })?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn register_resource_expiry(resource: &[u8], expiry: u64) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
+        t.insert(expiry, resource)?;
+    }
+    Ok(())
+}
+
+fn expire_tokens() -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(TOKEN_EXPIERIES)?;
+        t.drain_filter(..now(), |_, v| {
+            let st = wrtx.open_table(TOKENS);
+            st.is_ok() && st.unwrap().remove(v).is_ok()
+        })?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(TOKEN_EXPIERIES)?;
+        t.insert(expiry, token)?;
+    }
+    Ok(())
+}
 // const OWNERSHIP_INDEX: MultimapTableDefinition<&str, &[u8]> = MultimapTableDefinition::new("OI");
 /*
 #[derive(Serialize, Deserialize)]
@@ -435,10 +541,12 @@ async fn make_tokens(pm: u32, id: u64, mut count: u16, exp: u64, uses: u64, data
     let wtx = db.begin_write()?;
     {
         let mut t = wtx.open_table(TOKENS)?;
+        let mut te_t = wtx.open_table(TOKEN_EXPIERIES)?;
         while count > 0 {
             tk = thread_rng().sample_iter(&Alphanumeric).take(32).map(char::from).collect();
             let token_hash = TOKEN_HASHER.hash(tk.as_bytes());
             t.insert(token_hash.as_slice(), (pm, id, exp, uses, data))?;
+            te_t.insert(exp, token_hash.as_slice())?;
             tkns.push(tk.clone());
             count -= 1;
         }
@@ -584,6 +692,8 @@ async fn main() {
     println!("Static files dir: exists - {:?}, {}", sp.exists(), sp.into_os_string().into_string().unwrap_or("bad path".to_string()));
     
     PermSchema::ensure_basic_defaults(&DB);
+
+    let _expiry_checker = expiry_checker();
 
     let addr = ("0.0.0.0", 8000);
     let config = load_config();
@@ -963,7 +1073,6 @@ async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Res
     };
 }
 
-
 #[handler]
 async fn health(res: &mut Response){
     res.render(Json(serde_json::json!({
@@ -1214,6 +1323,16 @@ impl Resource {
                 self.version -= 1;
             }
             write_result?;
+        }
+        if self.until.is_some_and(|until| until > now()) {
+            if let Err(e) = register_resource_expiry(&self.hash, self.until.clone().unwrap()) {
+                println!("failed to register resource expiry: {}", e);
+            }
+        } else {
+            Self::delete(&self.hash)?;
+            return Err(
+                anyhow::anyhow!("resource expired")
+            );
         }
         Ok(())
     }
