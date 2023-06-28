@@ -5,21 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Notes</title>
     <style>
+        :root {
+            --highlight-color: #e90b3ff1;
+        }
         body {
+            font-family: Georgia, 'Times New Roman', Times, serif;
             padding: 1rem;
         }
-        section {
+        section:not(article > section) {
             margin: 2rem auto;
             border-radius: 4mm;
             padding: 1rem;
             box-shadow:0 0 1rem 0.5rem #00000020;
+        }
+        article.note section {
+            margin: 0;
+            border-radius: 0;
+            padding: 0;
+            box-shadow: none;
         }
 
         button {
             padding: 0.5rem 1rem;
             border-radius: 4mm;
             cursor: pointer;
-            background: #e90b3ff1;
+            background: var(--highlight-color);
             color: #fff;
             text-shadow: 0 1px 3px #00000020;
             transition: all 120ms ease-in;
@@ -94,6 +104,33 @@
             border-radius: 4mm;
             border: 1px solid #00000020;
         }
+        div.tags {
+            display: flex;
+            flex-direction: row;
+            gap: .8rem;
+        }
+        div.tags .tag {
+            padding: 0.2rem .4rem;
+            border-radius: 2mm;
+            font-size: .8rem;
+            border: 1px solid #00000020;
+            font-family: 'Lucida Sans', 'Lucida Sans Regular', 'Lucida Grande', 'Lucida Sans Unicode', Geneva, Verdana, sans-serif;
+            color: #fff;
+            background-color: var(--highlight-color);
+        }
+        div.tags .tag:hover {
+            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
+        }
+        article.note > footer {
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+        }
+        article.note > footer > div {
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+        }
     </style>
 </head>
 <body>
@@ -120,7 +157,7 @@
     </main>
     <script type="module" async>
         import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
-        const {section, div, span, h1, button, header, article} = d.domfn
+        const {section, div, span, h1, p, button, header, article, footer} = d.domfn
         const {queryAsync, render} = d
 
         let current_page = 1
@@ -134,7 +171,6 @@
                 body: JSON.stringify({query, page, limit})
             })
             const data = await res.json()
-            console.log(data)
             return data
         }
 
@@ -174,8 +210,6 @@
                 title: te.value.trim(),
                 content: ta.value.trim(),
                 public: pb.checked,
-                ts: +Date.now(),
-                owner: 1997,
                 tags: tgs.value.trim()
             }
             await postNote(note)
@@ -195,18 +229,39 @@
         const fn = await queryAsync('.found-notes')
 
         const populate = async _ => {
-            const data = await search(si.value.trim() || 'note')
-            console.log(data)
-            fn.innerHTML = ''
-            fn.append(
-                ...data.writs.map(note => article.note(
-                    div(note.content),
-                    div(note.tags),
-                    div(note.ts),
-                    div(note.owner),
-                    div(note.public)
+            try {
+                const data = await search(si.value.trim() || 'note')
+                if (data.err) {
+                    fn.innerHTML = ''
+                    article.err({$: fn},
+                        div(p(data.err), p(data.msg))
+                    )
+                    return
+                }
+                console.log(data)
+                fn.innerHTML = ''
+                fn.append(
+                    ...data.writs.map(note => article.note(
+                        header(
+                            h1(note.title),
+                            p(
+                                span.timestamp(new Date(note.ts)),
+                                span.owner(note.owner)
+                            )
+                        ),
+                        section(note.content),
+                        footer(
+                            div.tags(note.tags.split(',').map(tag => span.tag(tag))),
+                            note.public ? div(span('public')) : ''
+                        )
+                    ))
+                )
+            } catch(e) {
+                fn.innerHTML = ''
+                fn.append(article.err(
+                    div(e, e.message)
                 ))
-            )
+            }
         }
 
         sb.onpointerdown = async e => {
