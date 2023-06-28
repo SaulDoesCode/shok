@@ -7,7 +7,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, collections::HashMap};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, collections::HashMap, vec};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 
@@ -572,6 +572,7 @@ lazy_static! {
         let key = PWD.0.as_slice();
         sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"resources")), Some(b"insurance"))
     };
+    static ref SEARCH: Search = Search::build_150mb().expect("Failed to build search.");
 }
 
 #[tokio::main]
@@ -616,6 +617,10 @@ async fn main() {
                 .push(
                     Router::with_path("/perms")
                         .post(modify_perm_schema)
+                )
+                .push(
+                    Router::with_path("/search")
+                    .handle(search_api)
                 )
                 .push(
                     Router::with_path("/make-tokens")
@@ -1297,12 +1302,13 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                 _pm = Some(perm_schema);
                 _owner = Some(owner);
             } else {
-                brq(res, "not authorized to make tokens");
+                brq(res, "not authorized to use the resource_api");
                 return;
             }
+        } else {
+            brq(res, "not authorized to use the resource_api");
+            return;
         }
-        brq(res, "not authorized to make tokens");
-        return;
     }
 
     match *req.method() {
@@ -1590,5 +1596,245 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
         }
     } else {
         brq(res, "failed to run command, bad CMDRequest");
+    }
+}
+
+use tantivy::{
+    doc,
+    collector::TopDocs,
+    query::QueryParser,
+    schema::*,
+    Index,
+    // IndexReader, ReloadPolicy,
+    IndexWriter,
+};
+use std::sync::Arc;
+use parking_lot::RwLock;
+
+const SEARCH_INDEX_PATH: &str = "./search-index";
+
+#[derive(Deserialize, Serialize)]
+struct PutWrit{
+    public: bool,
+    title: String,
+    content: String,
+    tags: String // comma separated
+}
+
+#[derive(Deserialize, Serialize)]
+struct Writ{
+    ts: u64,
+    owner: u64,
+    public: bool,
+    title: String,
+    content: String,
+    tags: String // comma separated
+}
+
+impl Writ {
+    fn to_doc(&self, schema: &Schema) -> tantivy::Document {
+        let mut doc = Document::new();
+        doc.add_u64(schema.get_field("ts").unwrap(), self.ts);
+        doc.add_u64(schema.get_field("owner").unwrap(), self.owner);
+        doc.add_text(schema.get_field("title").unwrap(), &self.title);
+        doc.add_text(schema.get_field("content").unwrap(), &self.content);
+        doc.add_text(schema.get_field("tags").unwrap(), &self.tags);
+        doc.add_bool(schema.get_field("public").unwrap(), self.public);
+        doc
+    }
+
+    fn add_to_index(&self, index_writer: &mut IndexWriter, schema: &Schema) -> tantivy::Result<()> {
+        index_writer.add_document(self.to_doc(schema))?;
+        index_writer.commit()?;
+        Ok(())
+    }
+
+    fn search_for(query: &str, limit: usize, page: usize, s: &Search) -> tantivy::Result<Vec<(f32, tantivy::Document)>> {
+        let reader = s.index.reader()?;
+        let searcher = reader.searcher();
+        let schema = s.schema.clone();
+        let query_parser = QueryParser::for_index(&s.index, vec![
+            schema.get_field("title").unwrap(),
+            schema.get_field("tags").unwrap(),
+            // schema.get_field("ts").unwrap(),
+            schema.get_field("content").unwrap()
+        ]);
+        let query = query_parser.parse_query(query)?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit * page))?;
+        let mut results = Vec::new();
+        let mut skipped = 0;
+        for (_score, doc_address) in top_docs {
+            let retrieved_doc = searcher.doc(doc_address)?;
+            if skipped < limit * (page - 1) {
+                skipped += 1;
+                continue;
+            }
+            results.push((_score, retrieved_doc));
+        }
+        Ok(results)
+    }
+}
+
+
+struct Search{
+    index: Index,
+    schema: Schema,
+    index_writer: Arc<RwLock<IndexWriter>>,
+}
+
+impl Search{
+    fn build(index_size: usize) -> tantivy::Result<Self> {
+        let mut schema_builder = Schema::builder();
+        schema_builder.add_u64_field("ts", INDEXED | STORED);
+        schema_builder.add_u64_field("owner", INDEXED | STORED);
+        let text_options = TextOptions::default()
+            .set_stored()
+            .set_indexing_options(TextFieldIndexing::default()
+            .set_tokenizer("default")
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions));
+        schema_builder.add_text_field("content", text_options.clone());
+        schema_builder.add_text_field("title", text_options.clone());
+        schema_builder.add_text_field("tags", text_options);
+        schema_builder.add_bool_field("public", INDEXED | STORED);
+        let schema = schema_builder.build();
+
+        let index = Index::create_in_dir(SEARCH_INDEX_PATH, schema.clone()).or_else(|error| match error {
+            tantivy::error::TantivyError::IndexAlreadyExists => Ok(Index::open_in_dir(SEARCH_INDEX_PATH)?),
+            _ => Err(error),
+        })?;
+        let index_writer = index.writer(index_size)?;
+        Ok(Self{
+            index,
+            schema,
+            index_writer: Arc::new(RwLock::new(index_writer)),
+        })
+    }
+
+    fn add_doc(&self, writ: &Writ) -> tantivy::Result<()> {
+        let mut index_writer = self.index_writer.write();
+        writ.add_to_index(&mut index_writer, &self.schema)
+    }
+
+    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>) -> tantivy::Result<Vec<Writ>> {
+        match Writ::search_for(query, limit, page, self) {
+            Ok(results) => {
+                let mut writs = vec![];
+                for (_s, d) in results {
+                    let mut ts = 0;
+                    let mut title = String::new();
+                    let mut content = String::new();
+                    let mut tags: String = String::new();
+                    let mut public = false;
+                    let mut owner: u64 = 1997;
+                    for (f, fe) in self.schema.fields() {
+                        match fe.name() {
+                            "ts" => {
+                                ts = d.get_first(f).unwrap().as_u64().unwrap();
+                            },
+                            "title" => {
+                                title = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                            },
+                            "content" => {
+                                content = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                            },
+                            "tags" => {
+                                tags = d.get_first(f).unwrap().as_text().unwrap().to_string();
+                            },
+                            "public" => {
+                                public = d.get_first(f).unwrap().as_bool().unwrap();
+                            },
+                            "owner" => {
+                                owner = d.get_first(f).unwrap().as_u64().unwrap();
+                            },
+                            _ => {
+                                return Err(tantivy::TantivyError::InvalidArgument(format!("unknown field {}", fe.name())));
+                            }
+                        }
+                    }
+                    if public || include_public_for_owner.is_some_and(|o| o == owner || o == 1997) {
+                        writs.push(Writ{ts, public, owner, title, content, tags});
+                    }
+                }
+                Ok(writs)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    fn build_150mb() -> tantivy::Result<Self> {
+        Self::build(150_000_000)
+    }
+}
+
+
+#[derive(Deserialize, Serialize)]
+struct SearchRequest{
+    query: String,
+    limit: usize,
+    page: usize,
+}
+
+#[handler]
+pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // authenticate
+    let mut _is_admin = false;
+    let mut _owner: Option<u64> = None;
+    if session_check(req, Some(ADMIN_ID)).await {
+        // admin session
+        _is_admin = true;
+        _owner = Some(ADMIN_ID);
+    } else {
+        if let Some(tk) = req.query::<String>("tk") {
+            if let Ok((_pm, o, _, _, _)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
+                // token session
+                _owner = Some(o);
+            } else {
+                brq(res, "not authorized to use the search api");
+                return;
+            }
+        } else {
+            brq(res, "not authorized to use the search api");
+            return;
+        }
+    }
+
+    if req.method() == Method::POST {
+        match req.parse_json::<SearchRequest>().await {
+            Ok(search_request) => {
+                // search for the query
+                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner) {
+                    Ok(writs) => {
+                        res.render(Json(serde_json::json!({
+                            "writs": writs,
+                        })));
+                    },
+                    Err(e) => brqe(res, &e.to_string(), "failed to search"),
+                }
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to search, bad body"),
+        }
+    } else if req.method() == Method::PUT {
+        match req.parse_json::<PutWrit>().await {
+            Ok(pw) => {
+                let writ = Writ{
+                    ts: now(),
+                    public: pw.public,
+                    owner: _owner.unwrap(),
+                    title: pw.title,
+                    content: pw.content,
+                    tags: pw.tags,
+                };
+                // add the writ to the index
+                match SEARCH.add_doc(&writ) {
+                    Ok(()) => res.render(Json(serde_json::json!({
+                        "success": true,
+                    }))),
+                    Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
+                }
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to add to index, bad body"),
+        }
+    } else {
+        return brqe(res, "method not allowed", "method not allowed");
     }
 }

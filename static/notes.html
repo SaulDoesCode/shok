@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notes</title>
+    <style>
+        body {
+            padding: 1rem;
+        }
+        section {
+            margin: 2rem auto;
+            border-radius: 4mm;
+            padding: 1rem;
+            box-shadow:0 0 1rem 0.5rem #00000020;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            cursor: pointer;
+            background: #e90b3ff1;
+            color: #fff;
+            text-shadow: 0 1px 3px #00000020;
+            transition: all 120ms ease-in;
+        }
+
+        button:hover {
+            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
+        }
+        .note-writer {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .note-writer input[type="text"] {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-writer textarea {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-writer button {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-viewer {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .note-viewer nav {
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+        }
+        .note-viewer nav input[type="text"] {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-viewer nav button {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-viewer .found-notes {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .note-viewer .found-notes article {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            padding: 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+        .note-viewer .found-notes article div {
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+        }
+        article.note {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            padding: 1rem;
+            border-radius: 4mm;
+            border: 1px solid #00000020;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <section class="note-writer">
+            <input type="text" name="title">
+            <textarea cols="30" rows="10"></textarea>
+            <input type="text" name="tags">
+            <div>
+                public
+                <input type="checkbox" name="public">
+            </div>
+            <button>post</button>
+        </section>
+        <section class="note-viewer">
+            <nav>
+                <input type="text">
+                <button>search</button>
+            </nav>
+            <div class="found-notes">
+
+            </div>
+        </section>
+    </main>
+    <script type="module" async>
+        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
+        const {section, div, span, h1, button, header, article} = d.domfn
+        const {queryAsync, render} = d
+
+        let current_page = 1
+
+        const search = async (query, page = current_page, limit = 60) => {
+            const res = await fetch('/api/search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({query, page, limit})
+            })
+            const data = await res.json()
+            console.log(data)
+            return data
+        }
+
+        const postNote = async note => {
+            const res = await fetch('/api/search', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(note)
+            })
+            const data = await res.json()
+            console.log(data)
+            return data
+        }
+
+        // ui
+        const te = await queryAsync('.note-writer input[name="title"]')
+        const ta = await queryAsync('.note-writer textarea')
+        const pb = await queryAsync('.note-writer input[type="checkbox"]')
+        const tgs = await queryAsync('.note-writer input[name="tags"]')
+        const postbtn = await queryAsync('.note-writer button')
+
+        te.onkeydown = async e => {
+            if (e.key === 'Enter') {
+                if (e.shiftKey) return
+                if (e.ctrlKey) {
+                    await writeNote()
+                    return e.preventDefault()
+                }
+                ta.focus()
+            }
+        }
+
+        const writeNote = async () => {
+            const note = {
+                title: te.value.trim(),
+                content: ta.value.trim(),
+                public: pb.checked,
+                ts: +Date.now(),
+                owner: 1997,
+                tags: tgs.value.trim()
+            }
+            await postNote(note)
+            await populate()
+            te.value = ''
+            ta.value = ''
+            pb.checked = false
+            tgs.value = ''
+        }
+
+        postbtn.onpointerdown = async e => {
+            await writeNote()
+        }
+    
+        const si = await queryAsync('.note-viewer > nav > input[type="text"]')
+        const sb = await queryAsync('.note-viewer > nav > button')
+        const fn = await queryAsync('.found-notes')
+
+        const populate = async _ => {
+            const data = await search(si.value.trim() || 'note')
+            console.log(data)
+            fn.innerHTML = ''
+            fn.append(
+                ...data.writs.map(note => article.note(
+                    div(note.content),
+                    div(note.tags),
+                    div(note.ts),
+                    div(note.owner),
+                    div(note.public)
+                ))
+            )
+        }
+
+        sb.onpointerdown = async e => {
+            await populate()
+        }
+        si.onkeydown = async e => {
+            if (e.key === 'Enter') await populate()
+        }
+
+        te.value = 'Note template!'
+        ta.value = `
+This is a note!
+It's a test note.
+Searchable too ;D
+        `.trim()
+        pb.checked = true
+        tgs.value = 'success, meta'
+    </script>
+</body>
+</html>
