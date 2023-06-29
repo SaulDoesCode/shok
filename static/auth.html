@@ -4,10 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auth</title>
-    <link rel="stylesheet" href="https://unpkg.com/marx-css/css/marx.min.css">
+    <link rel="stylesheet" href="./marx.css">
     <style>
         body {
             padding: 1rem;
+        }
+        body > * {
+            margin: 1rem auto;
+            max-width: 780px;
         }
         section {
             margin: 2rem auto;
@@ -19,7 +23,15 @@
         button {
             padding: 0.5rem 1rem;
             border-radius: 4mm;
+            margin: 1mm;
             cursor: pointer;
+        }
+
+        input {
+            padding: 0.5rem 1rem;
+            border-radius: 4mm;
+            margin: 1mm;
+            border: 1px solid #00000020;
         }
 
         button:hover {
@@ -27,8 +39,8 @@
         }
     </style>
     <script type="module" async>
-        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
-        const {section, div, span, h1, button, header, article} = d.domfn
+        import d from './domlib.js'
+        const {section, div, input, span, h1, button, header, article} = d.domfn
         const {queryAsync, render} = d
 
         const mi = await queryAsync('input[type="text"]')
@@ -60,18 +72,68 @@
             }
         }
 
+        const tknOutput = div.tkn_output()
+        const pmValue = span.pm('1')
+        const pmSlider = input.pm_slider({
+            type: 'range', 
+            min: 0, max: 3, value: 1, step: 1,
+            oninput(e) { pmValue.textContent = + e.target.value }
+        })
+        const countValue = span.count('2')
+        const countSlider = input.count_slider({
+            type: 'range', 
+            min: 1, max: 20, value: 2, step: 1,
+            oninput(e) { countValue.textContent = e.target.value }
+        })
+        const idField = input.id_field({type: 'number', min: 0, max: 2**32, value: 1997})
+        // date field
+        const expiryField = input.exp({
+            type: 'date',
+            // now plus a week
+            value: new Date(+new Date() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+        })
+
         section.btns({$: 'body'},
+            div.inputs(
+                {style: 'display: flex; flex-direction: column;'},
+                div({style: 'display: flex; flex-direction: row;'},
+                    span({style: 'margin-right: 1rem;'}, 'count: '),
+                    countValue,
+                    countSlider
+                ),
+                div({style: 'display: flex; flex-direction: row;'},
+                    span({style: 'margin-right: 1rem;'}, 'pm: '),
+                    pmValue,
+                    pmSlider
+                ),
+                div({style: 'display: flex; flex-direction: row;'},
+                    span({style: 'margin-right: 1rem;'}, 'id: '),
+                    idField
+                ),
+                div({style: 'display: flex; flex-direction: row;'},
+                    span({style: 'margin-right: 1rem;'}, 'exp: '),
+                    expiryField
+                ),
+            ),
             button.tokens({
-                onpointerdown() {
-                    fetch('/api/make-tokens', {
+                async onpointerdown() {
+                    const res = await fetch('/api/make-tokens', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({count: 2, id: 1997, pm: 1})
+                        body: JSON.stringify({
+                            count: Number(countSlider.value),
+                            id: Number(idField.value),
+                            pm: Number(pmSlider.value),
+                            exp: +new Date(expiryField.value)
+                        })
                     })
+                    const data = await res.json()
+                    tknOutput.textContent = JSON.stringify(data)
                 }
-            }, 'make tokens')
+            }, 'make tokens'),
+            tknOutput
         )
     </script>
 </head>
@@ -82,6 +144,12 @@
         <input type="password">
         <br>
         <button class="auth-btn">authenticate</button>
+    </section>
+    <section class="upload">
+        <form action="/api/upload" method="post" enctype="multipart/form-data">
+            <input type="file" name="file" />
+            <input type="submit" value="upload" />
+        </form>
     </section>
 </body>
 </html>
