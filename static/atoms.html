@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>kurshok</title>
+    <style>
+        body {
+            background-color: rgba(27, 25, 25, 0.757);
+            font-family: Arial, Helvetica, sans-serif;
+            margin: 0;
+            padding: 1mm;
+        }
+        
+        body > header {
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: space-evenly;
+            align-items: center;
+            align-content: center;
+            background-color: #fff;
+            box-shadow: 0 0 1mm rgba(0, 0, 0, 0.1);
+            filter: drop-shadow(0 2px 1mm rgba(94, 72, 72, 0.7));
+            border-radius: 2mm;
+            padding: 2.5mm;
+            margin: 1mm 1mm 2mm 1mm;
+        }
+        
+        nav > header {
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: space-between;
+            align-items: center;
+            align-content: center;
+            background-color: #fff;
+            box-shadow: 0 0 1mm rgba(0, 0, 0, 0.1);
+            filter: drop-shadow(0 2px 1mm rgba(94, 72, 72, 0.7));
+            border-radius: 2mm;
+            padding: 2.5mm;
+            margin: 1mm 1mm 2mm 1mm;
+        }
+        
+        nav > header > a {
+            display: inline-flex;
+            align-items: center;
+            align-content: center;
+            justify-content: center;
+            transition: all 140ms ease-in-out;
+            border-radius: 100%;
+            padding: 1.2mm;
+            height: calc(26px + 1.2mm);
+            width: calc(26px + 1.2mm);
+            filter: drop-shadow(0 0 1mm rgba(168, 130, 130, 0.412));
+        }
+        
+        nav > header > a:hover {
+            background: #fff;
+            filter: drop-shadow(0 0 1mm rgba(55, 33, 33, 0.2));
+            box-shadow: 0 0 2px #ce0d6e;
+        }
+        
+        nav > header > h1 {
+            display: inline-block;
+            font-size: 1.6rem;
+            margin: 0;
+            color: #fefefe;
+            text-shadow: 0 0 1mm rgba(55, 33, 33, 0.2);
+            filter: drop-shadow(0 0 1mm rgba(55, 33, 33, 0.2));
+            width: min-content;
+            transition: all 140ms ease-in-out;
+        }
+        
+        nav > header > h1:hover {
+            color: #171717;
+            text-shadow: 0 0 1mm rgba(55, 33, 33, 0.2), 0 0 2px #ce0d6e;
+            filter: drop-shadow(0 0 3mm rgba(131, 68, 68, 0.985));
+        }
+        
+        main {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            grid-gap: 2mm;
+            padding: 0 1mm;
+            min-height: 333px;
+        }
+        
+        main > aside.left {
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+            padding: 2mm;
+        }
+        
+        main > aside.right {
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+            padding: 2mm;
+        }
+        
+        main > section {
+            background-color: #fff;
+            border-radius: 2mm;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+            padding: 2mm;
+            overflow: hidden;
+            overflow-y: scroll;
+        }
+        
+        .gr {
+            position: relative;
+            background: linear-gradient(to right, #ffffff 0%, #ffffff 20%, #ff88b2 40%, #ce0d2a 100%);
+            border-radius: 1mm;
+        }
+        
+        .atom {
+            position: relative;
+            padding: 1px;
+        }
+        
+        .atom:not(:last-of-type)::after {
+            display: inline-block;
+            content: ", ";
+        }
+        
+        .atom:last-of-type::after {
+            display: inline-block;
+            content: " ";
+        }
+    </style>
+</head>
+<body>
+    <header class="atom-stats">
+        <span class="positive-total">0</span>
+        <span class="atoms">atoms: 0, 0, 0</span>
+        <span class="negative-total">0</span>
+    </header>
+    <main>
+        <aside class="left">
+
+        </aside>
+        <section class="view">
+            
+        </section>
+        <aside class="right">
+
+        </aside>
+    </main>
+    <script type="module" async>
+        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
+        const {section, div, span, h1, header, article} = d.domfn
+        const {query, render} = d
+        await d.ready
+
+        const left = query('.left')
+        const right = query('.right')
+        const view = query('.view')
+
+        const stats = query('.atom-stats')
+        const updateStats = () => {
+            query('span.atoms', stats).textContent = `atoms: ${left.children.length}, ${view.children.length}, ${right.children.length}`
+            query('span.negative-total', stats).textContent = `${[...right.children].reduce((a, c) => a + c.n, 0)}`
+            query('span.positive-total', stats).textContent = `${[...left.children].reduce((a, c) => a + c.n, 0)}`
+        }
+        const r = (min = -256, max = 256, sign = Math.random() < 0.5) => sign
+          ? Math.floor(Math.random() * (Math.floor(max) - Math.ceil(min) + 1)) + Math.ceil(min)
+          : -Math.floor(Math.random() * (Math.floor(max) - Math.ceil(min) + 1)) + Math.ceil(min)
+
+        view.onpointerdown = e => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (e.target instanceof Element && e.target.classList.contains('atom')) {
+                
+            } else {
+                // random integer between -1024 and 1024
+                
+                if (e.button == 0) atom(0)
+                else if (e.button == 2) {
+                    const a = query('.view > .atom')
+                    a && a.remove()
+                }
+            }
+            updateStats()
+        }
+        left.onpointerdown = e => {
+            e.preventDefault()
+            updateStats()
+            if (e.target instanceof Element && e.target.classList.contains('atom')) {
+                const a = e.target
+            } else {
+                if (e.button == 2) {
+                    const a = e.srcElement.children[e.srcElement.children.length - 1]
+                    if (!a) return
+                    a.n = -(a.n)
+                }
+                else if (e.button == 0) atom(r(0, 256, true))
+            }
+        }
+        right.onpointerdown = e => {
+            e.preventDefault()
+            updateStats()
+            if (e.target instanceof Element && e.target.classList.contains('atom')) {
+                const a = e.target
+            } else {
+                if (e.button == 2) {
+                    const a = e.srcElement.children[e.srcElement.children.length - 1]
+                    if (!a) return
+                    a.n = Number(`${a.n}`.replace('-', ''))
+                }
+                else if (e.button == 0) atom(r(-256, -1, false))
+            }
+        }
+
+        [left, view, right].map(el => el.oncontextmenu = e => e.preventDefault())
+
+        function atom(n) {
+            const a = span.atom({
+                $: n == 0 ? view : n > 0 ? left : right,
+                isAtom: true,
+                on: {
+                    pointerdown(e) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        // if left click
+                        if (e.button == 0) a.n = a.n + 1
+                        // if right click
+                        if (e.button == 2) a.n = a.n - 1
+                    }
+                }
+            }, n)
+            updateStats()
+            Object.defineProperty(a, 'n', {
+                get() { return n },
+                set(N) {
+                    console.log(`atom ${n} changed to ${N}`)
+                    if (N == 0 && n != 0) {
+                        a.remove()
+                        render(a, view)
+                    } else if (N < 0 && n >= 0)  {
+                        a.remove()
+                        render(a, right)
+                    } else if (N > 0 && n <= 0) {
+                        a.remove()
+                        render(a, left)
+                    }
+                    a.textContent = n = N
+                    updateStats()
+                }
+            })
+        }
+    </script>
+    <nav>
+        <header class="gr">
+            <a href="https://github.com/SaulDoesCode">
+                <img height="26" width="26" src="https://unpkg.com/simple-icons@v9/icons/github.svg" alt="github link">
+            </a>
+            <a href="http://twitter.com/saulvdw">
+				<img height="26" width="26" alt="twitter" src="https://unpkg.com/simple-icons@v9/icons/twitter.svg" />
+			</a>
+			<a href="https://www.instagram.com/adrenochromedreams/">
+				<img height="26" width="26" alt="instagram" src="https://unpkg.com/simple-icons@v9/icons/instagram.svg" />
+			</a>
+			<a href="https://tiktok.com/@adrenochromedreams/">
+				<img height="26" width="26" alt="tiktok" src="https://unpkg.com/simple-icons@v9/icons/tiktok.svg" />
+			</a>
+			<a href="https://steamcommunity.com/id/KoffieYeah/">
+				<img height="26" width="26" alt="steam" src="https://unpkg.com/simple-icons@v9/icons/steam.svg" />
+			</a>
+			<a href="https://codepen.io/SaulDoesCode/" title="codepen.io">
+				<img height="26" width="26" alt="codepen" src="https://unpkg.com/simple-icons@v9/icons/codepen.svg" />
+			</a>
+			<a href="https://www.goodreads.com/author/show/19677114.Saul_van_der_Walt" title="goodreads">
+				<img height="26" width="26" alt="goodreads" src="https://unpkg.com/simple-icons@v9/icons/goodreads.svg" />
+			</a>
+            <h1>kurshok</h1>
+        </header>
+    </nav>
+</body>
+</html>
