@@ -10,7 +10,7 @@ anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
 bincode = "*"
 cocoon = "*"
-salvo = { version= "*", features = ["rustls", "compression", "cors", "caching-headers", "serve-static", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
+salvo = { version= "*", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
 serde = { version = "1.0.164", features = ["derive"] }
 serde_json = "*"
 # surrealdb = { version = "1.0.0-beta.9+20230402", features = ["scripting", "http"]}

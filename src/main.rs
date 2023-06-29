@@ -2,6 +2,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+use anyhow::anyhow;
 use lazy_static::lazy_static;
 use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_limiter::*, logging::Logger};
 use serde::{Serialize, Deserialize};
@@ -12,6 +13,8 @@ use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 
 use base64::{Engine as _};
+
+type Strings = Vec<String>;
 
 /*
 fn write_string_to_path(path: &str, s: &str) -> std::io::Result<()> {
@@ -243,8 +246,8 @@ struct Item{
     owner: u64,
     unique: bool,
     dupable: bool,
-    categories: Vec<String>,
-    tags: Vec<String>,
+    categories: Strings,
+    tags: Strings,
     kind: Option<String>,
     meta_data: Option<Vec<u8>>,
     mime_type: Option<String>,
@@ -257,11 +260,6 @@ struct Item{
     state: Option<Vec<u8>>
 }
  */
-
-
-
-
-
 /*
     Permision Schemas should be determinative of the state deserialization type of token's Option<&[u8]> state field
     0: read
@@ -334,11 +332,12 @@ fn effectuate_contracts_between(
     from: u64,
     to: u64,
 ) -> anyhow::Result<()> {
-    let mut to_remove: HashMap<TF, TfCt> = HashMap::new();
-    let mut to_transfer: HashMap<u64, TfCt> = HashMap::new();
+    let wrtx = db.begin_write()?;
     {
-        let rtx = db.begin_read()?;
-        let t = rtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
+        let mut to_remove: HashMap<TF, TfCt> = HashMap::new();
+        let mut to_transfer: HashMap<u64, TfCt> = HashMap::new();
+        // let rtx = db.begin_read()?;
+        let t = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
         let mut mmv = t.get((from, to))?;
         while let Some(Ok(ag)) = mmv.next() {
             let contract = ag.value();
@@ -375,9 +374,7 @@ fn effectuate_contracts_between(
                 }
             }
         }
-    }
-    let wrtx = db.begin_write()?;
-    {
+    //} {
         let mut to_restore: Vec<u64> = vec![];
         let mut sct = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
         for ((from, to), (kind, amount, expiry, (when, wstate), state)) in to_remove {
@@ -439,10 +436,89 @@ fn effectuate_contracts_between(
     Ok(())
 }
 
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TransferRequest{
+    to: u64,
+    amount: u64,
+    exp: u64,
+    ws: (u64, Option<Vec<u8>>),
+    state: Option<Vec<u8>>,
+}
+
+impl TransferRequest{
+    async fn lodge(&self, from: u64) -> anyhow::Result<()> {
+        lodge_transfer_contract(
+            &DB,
+            from,
+            self.to,
+            0,
+            self.amount,
+            self.exp,
+            (self.ws.0, &self.ws.1.clone().unwrap_or_else(|| vec![])),
+            &self.state.clone().unwrap_or(vec![])
+        ).await
+    }
+}
+
+#[handler]
+async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    let mut _pm: Option<u32> = None;
+    let mut _owner: Option<u64> = None;
+    let mut _is_admin = false;
+    if session_check(req, Some(ADMIN_ID)).await {
+        // admin session
+        _is_admin = true;
+    } else {
+        if let Some(tk) = req.query::<String>("tk") {
+            if let Ok((perm_schema, owner, _, _, _)) = validate_token_under_permision_schema(&tk, &[3], &DB).await {
+                // token session
+                _pm = Some(perm_schema);
+                _owner = Some(owner);
+            } else {
+                brq(res, "not authorized to use the transference_api");
+                return;
+            }
+        } else {
+            brq(res, "not authorized to use the transference_api");
+            return;
+        }
+    }
+
+    if _owner.is_none() {
+        brq(res, "not authorized to use the transference_api");
+        return;
+    }
+
+    match *req.method() {
+        Method::GET => if let Some(to) = req.param("to") {
+            if let Err(e) = effectuate_contracts_between(&DB, _owner.unwrap(), to) {
+                brq(res, &format!("failed to effectuate contracts, might be that there aren't any: {}", e));
+            }
+            return brq(res, "ran the contracts, side effects should be applied.");
+        },
+        Method::POST => if let Ok(tr) = req.parse_json::<TransferRequest>().await {
+            match tr.lodge(_owner.unwrap()).await {
+                Ok(_) => {
+                    brq(res, "transfer contract lodged successfully");
+                },
+                Err(e) => {
+                    brq(res, &format!("failed to lodge transfer contract: {}", e));
+                }
+            }
+        } else {
+            brq(res, "invalid transfer request");
+        },
+        _ => {
+            brq(res, "invalid method");
+        }
+    }
+}
+
 const PERM_SCHEMAS : MultimapTableDefinition<u32, &str> = MultimapTableDefinition::new("perm_schemas");
 
 #[derive(Serialize, Deserialize)]
-struct PermSchema(u32, Vec<String>);
+struct PermSchema(u32, Strings);
 
 impl PermSchema {
     fn ensure_basic_defaults(db: &Database) {
@@ -457,7 +533,7 @@ impl PermSchema {
         wrtx.commit().expect("failed to insert basic default perm schemas");
     }
 
-    fn modify(add: Option<Vec<String>>, rm: Option<Vec<String>>, id: Option<u32>, db: &Database) -> Result<Self, redb::Error> {
+    fn modify(add: Option<Strings>, rm: Option<Strings>, id: Option<u32>, db: &Database) -> Result<Self, redb::Error> {
         let wrtx = db.begin_write()?;
         let id = match id {
             Some(i) => i,
@@ -535,7 +611,7 @@ impl PermSchema {
 }
 
 
-async fn make_tokens(pm: u32, id: u64, mut count: u16, exp: u64, uses: u64, data: Option<&[u8]>, db: &Database) -> Result<Vec<String>, redb::Error> {
+async fn make_tokens(pm: u32, id: u64, mut count: u16, exp: u64, uses: u64, data: Option<&[u8]>, db: &Database) -> Result<Strings, redb::Error> {
     let mut tkns = vec![];
     let mut tk: String;
     let wtx = db.begin_write()?;
@@ -705,6 +781,11 @@ async fn main() {
         BasicQuota::per_second(4),
     );
 
+    let static_files_cache = salvo::cache::Cache::new(
+        salvo::cache::MemoryStore::builder().time_to_live(std::time::Duration::from_secs(120)).build(),
+        salvo::cache::RequestIssuer::default(),
+    );
+
     let router = Router::with_hoop(Logger::new()).hoop(CachingHeaders::new()).hoop(limiter)
         .push(
             Router::with_path("/healthcheck")
@@ -747,18 +828,25 @@ async fn main() {
                     .handle(resource_api)
                 )
                 .push(
+                    Router::with_path("/tf")
+                    .post(transference_api)
+                    .path("/<to>").get(transference_api)
+                )
+                .push(
                     Router::with_path("/<action>/<tk>")
                     .handle(action_token_handler)
                 )
         )
         .push(Router::with_path("/paka/<**rest>").handle(Proxy::new(["http://localhost:9797/"])))
         .push(
-            Router::with_hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+            Router::with_hoop(static_files_cache)
+                .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                 .path("/<file>")
                 .get(static_file_route_rewriter)
         )
         .push(
-            Router::with_hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+            Router::new()  //with_hoop(static_files_cache)
+                .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                 .path("<**path>")
                 .get(
                     StaticDir::new(STATIC_DIR)
@@ -986,11 +1074,93 @@ fn load_config() -> RustlsConfig {
     )
 }
 
+fn read_all_file_names_in_dir(dir: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn fuzzy_match(input: &str, target: &str) -> usize {
+    let mut score = 0;
+    let mut last_index = 0;
+    for c in input.chars() {
+        if let Some(index) = target[last_index..].find(c) {
+            score += index;
+            last_index = index;
+        } else {
+            return 0;
+        }
+    }
+    score
+}
+
+fn fuzzy_search(input: String, paths: &[PathBuf]/*, filter: Fn(&str, &str) -> Option<String>*/) -> Option<PathBuf> {
+    let mut best_score = 0;
+    let mut best_match = None;
+    println!("fuzzy_search(input: {}, paths: {:?})", input, paths);
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let score = fuzzy_match(&input, path.file_name().unwrap().to_str().unwrap());
+        if score > best_score {
+            best_score = score;
+            best_match = Some(path.clone());
+        }
+    }
+    best_match
+}
+
+pub fn dedupe_and_merge<T: PartialEq + Clone>(host: &mut Vec<T>, other: &[T]) {
+    host.dedup();
+    for element in other {
+        if !host.contains(element) {
+            host.push(element.clone());
+        }
+    }
+}
+
+fn pick_best_fuzzy_candidate(input: &str, exts: &[&str], dir: &str) -> Option<PathBuf> {
+    if let Ok(paths) = read_all_file_names_in_dir(dir) {
+        println!("pick_best_fuzzy_candidate(input: {}, exts: {:?}, dir: {}); paths {:?}", input, exts, dir, paths.as_slice());
+        if let Some(path) = fuzzy_search(input.to_string(), paths.as_slice()) {
+            println!("\n hit - path: {}", path.to_string_lossy());
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            } else {
+                for ext in exts {
+                    let ep = format!("{}.{}", path.as_os_str().to_str().unwrap(), ext);
+                    let ext_path = std::path::Path::new(ep.as_str());
+                    if ext_path.exists() {
+                        return Some(ext_path.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// fuzzy search a file and deliver the nearest match
+async fn fuzzy_static_deliver(input: &str, req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
+    if let Some(hit) = pick_best_fuzzy_candidate(input, &["html", "css", "js", "png", "jpg", "gif", "svg", "ico"], STATIC_DIR) {
+        // redirect to hit
+        StaticFile::new(hit).handle(req, depot, res, ctrl).await;
+    }
+}
+
 #[handler]
 async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     match req.param::<String>("file") {
         Some(file) => {
             // check if a version of file + ".html" exists first and if it does, serve that
+            
             let mut path = PathBuf::new().join(STATIC_DIR).join(file.clone());
             if path.extension().is_none() {
                 path.set_extension("html");
@@ -1023,13 +1193,13 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
 
                     StaticFile::new(path).handle(req, depot, res, ctrl).await;
                     return;
+                } else {
+                    fuzzy_static_deliver(&file, req, depot, res, ctrl).await;
                 }
             }
         },
-        None => {
-            if !ctrl.call_next(req, depot, res).await {
-                res.render(StatusError::bad_request().brief("missing file param, or invalid url"));
-            }
+        None => if !ctrl.call_next(req, depot, res).await {
+            res.render(StatusError::bad_request().brief("missing file param, or invalid url"));
         }
     }
 }
@@ -1038,18 +1208,13 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
 async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // query param token 
     match req.param::<String>("tk") {
-        Some(tk) => {
-            // check if token is valid
-            if !validate_token_under_permision_schema(&tk, &[1], &DB).await.is_ok() {
-                brq(res, "invalid token");
-                return;
-            }
+        // check if token is valid
+        Some(tk) => match validate_token_under_permision_schema(&tk, &[1], &DB).await {
+            Ok(_) => {},
+            Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
-        None => {
-            if !session_check(req, Some(ADMIN_ID)).await {
-                brq(res, "unauthorized");
-                return;
-            }
+        None => if !session_check(req, Some(ADMIN_ID)).await {
+            return brq(res, "unauthorized");
         }
     }
 
@@ -1156,7 +1321,6 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 }    
             }
 
-            // session_token = format!("{}-{}", session_token, ADMIN_ID);
             if Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB).is_ok() {
                 res.status_code(StatusCode::ACCEPTED);
                 res.add_cookie(cookie::Cookie::new("auth", session_token.clone()));
@@ -1187,8 +1351,6 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             }
             sid
         };
-
-        // session_token = format!("{}-{}", session_token, sid);
 
         let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
         let acc = Account::new(sid, ar.moniker.clone(), pwd_hash);
@@ -1330,9 +1492,7 @@ impl Resource {
             }
         } else {
             Self::delete(&self.hash)?;
-            return Err(
-                anyhow::anyhow!("resource expired")
-            );
+            return Err(anyhow!("resource expired"));
         }
         Ok(())
     }
@@ -1587,8 +1747,8 @@ async fn make_token_request(req: &mut Request, _depot: &mut Depot, res: &mut Res
 struct PermSchemaCreationRequest{
     pwd: Option<String>,
     id: Option<u32>,
-    add: Option<Vec<String>>,
-    rm: Option<Vec<String>>
+    add: Option<Strings>,
+    rm: Option<Strings>
 }
 
 #[handler]
@@ -1678,7 +1838,7 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
 #[derive(Debug, Serialize, Deserialize)]
 struct CMDRequest{
     cmd: String,
-    args: Vec<String>,
+    args: Strings,
 }
 
 impl CMDRequest {
@@ -1810,8 +1970,6 @@ impl Writ {
         Ok(results)
     }
 }
-
-
 struct Search{
     index: Index,
     schema: Schema,

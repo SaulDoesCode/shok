@@ -1992,12 +1992,25 @@ version = "0.44.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c39d8b982850b656146908b46e99a19366aabdb51d4b4fb31ed3a17175acca27"
 dependencies = [
+ "salvo-cache",
  "salvo-cors",
  "salvo-proxy",
  "salvo-rate-limiter",
  "salvo-serve-static",
  "salvo_core",
  "salvo_extra",
+]
+
+[[package]]
+name = "salvo-cache"
+version = "0.44.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97263b8aaf842a64db7d0c8de2cfd2828336b2656ba4732d30377e7b0cc76479"
+dependencies = [
+ "bytes",
+ "moka",
+ "salvo_core",
+ "tracing",
 ]
 
 [[package]]
