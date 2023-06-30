@@ -47,7 +47,7 @@
         const pwdi = await queryAsync('input[type="password"]')
         const ab = await queryAsync('button.auth-btn')
 
-        const details = () => JSON.stringify({moniker: mi.value.trim(), pwd: pwdi.value.trim()})
+        const details = () => JSON.stringify([mi.value.trim(), pwdi.value.trim()])
         const authenticate = async () => {
             const res = await fetch('/api/auth', {
                 method: 'POST',
@@ -135,6 +135,45 @@
             }, 'make tokens'),
             tknOutput
         )
+
+        const tk = ''
+
+        const convertStringIntoBytes = str => {
+            const bytes = []
+            for (let i = 0; i < str.length; ++i) {
+                bytes.push(str.charCodeAt(i))
+            }
+            return bytes
+        }
+
+        window.svs = {
+            async set(m, value) {
+                const res = await fetch('/api/svs/' + m + tk, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(convertStringIntoBytes(value))
+                })
+
+                return await res.json()
+            },
+            async get(m) {
+                const res = await fetch('/api/svs/' + m + tk)
+                const data = await res.json()
+                if (data.value.length) {
+                    return data.value.map(x => String.fromCharCode(x)).join('')
+                } else {
+                    return data
+                }
+            },
+            async rm(m) {
+                const res = await fetch('/api/svs/' + m + tk, {
+                    method: 'DELETE'
+                })
+                return await res.json()
+            }
+        }
     </script>
 </head>
 <body>

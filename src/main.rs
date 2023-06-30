@@ -3,19 +3,169 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use anyhow::anyhow;
+use base64::{Engine as _};
 use lazy_static::lazy_static;
 use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_limiter::*, logging::Logger};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, collections::HashMap, vec};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::{PhantomData}, collections::HashMap, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::{Duration}};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
+use tantivy::{
+    doc,
+    collector::TopDocs,
+    query::QueryParser,
+    schema::*,
+    Index,
+    // IndexReader, ReloadPolicy,
+    IndexWriter, DateTime, columnar::MonotonicallyMappableToU64,
+};
+use parking_lot::RwLock;
 
-use base64::{Engine as _};
+type Astr = Arc<str>;
+//type Astrs = Vec<Astr>;
+type IsInsert = bool;
+type MutEvent = (Astr, IsInsert); // name, value, is_insert
 
+type U8s = Vec<u8>;
 type Strings = Vec<String>;
 
+type TF = (u64, u64); // to, from
+type TfCt = (
+    u64, // kind
+    u64, // amount
+    u64, // expiry
+    (u64, U8s), // (when, &state)
+    U8s // state
+);
+
+/*
+#[allow(dead_code)]
+const SV_MONIKER_TANGLE_LOOKUP: MultimapTableDefinition<&str, u64> = MultimapTableDefinition::new("name_lookup");
+#[allow(dead_code)]
+const SV_MONIKER_TANGLE_LOOKUP_REVERSE: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("name_lookup_reverse");
+
+struct AliasTree{
+    root: Astr,
+    id: u64,
+    degree: usize,
+    nested: bool,
+    children: HashMap<Astr, AliasTree>
+}
+
+impl AliasTree{
+    fn new(root: Astr, id: Option<u64>, degree: usize, nested: bool) -> anyhow::Result<AliasTree> {
+        let at = AliasTree{
+            root,
+            id: match id {
+                Some(id) => id,
+                None => {
+                    let mut rng = rand::thread_rng();
+                    let mut id = rng.gen();
+                    let rtx = DB.begin_read()?;
+                    let t = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
+                    let mut mmv = t.get(id)?;
+                    while let Some(Ok(_)) = mmv.next() {
+                        id = rng.gen();
+                        mmv = t.get(id)?;
+                    }
+                    id
+                }
+            },
+            degree,
+            nested,
+            children: HashMap::new()
+        };
+        at.save()?;
+        Ok(at)
+    }
+
+    fn aliases(&self) -> Vec<Astr>{
+        let mut aliases = vec![];
+        for (_, child) in self.children.iter() {
+            aliases.append(&mut child.aliases());
+        }
+        aliases
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
+            t.insert(self.root.as_ref(), self.id)?;
+            let mut t = wrtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
+            t.insert(self.id, self.root.as_ref())?;
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
+    fn get_id(moniker: &str) -> anyhow::Result<u64> {
+        let rtx = DB.begin_read()?;
+        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
+        let mut mmv = ft.get(moniker)?;
+        while let Some(Ok(ag)) = mmv.next() {
+            return Ok(ag.value());
+        }
+        Err(anyhow!("No id found for moniker: {}", moniker))
+    }
+
+    fn get_moniker(id: u64) -> anyhow::Result<Astr> {
+        let rtx = DB.begin_read()?;
+        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
+        let mut mmv = ft.get(id)?;
+        while let Some(Ok(ag)) = mmv.next() {
+            return Ok(Arc::from(ag.value()));
+        }
+        Err(anyhow!("No moniker found for id: {}", id))
+    }
+
+    fn lookup_aliases(moniker: &str, id: Option<u64>, degrees: usize) -> anyhow::Result<Self> {
+        let rtx = DB.begin_read()?;
+        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
+        let mut mmv = ft.get(moniker)?;
+        let mut aliases = vec![];
+        while let Some(Ok(ag)) = mmv.next() {
+            aliases.push(ag.value());
+        }
+        let rt = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
+        let mut alias_monikers: Vec<Astr> = vec![];
+        for a in aliases.iter() {
+            let mut mmv = rt.get(*a)?;
+            while let Some(Ok(ag)) = mmv.next() {
+                alias_monikers.push(Arc::from(ag.value()));
+            }
+        }
+        if alias_monikers.len() == 0 {
+            Err(anyhow::anyhow!("moniker not found"))
+        } else {
+            if degrees != 0 {
+                let mut alias_results = vec![];
+                for a in alias_monikers {
+                    alias_results.push(Self::lookup_aliases(
+                a.as_ref(), 
+                     match Self::get_id(a.as_ref()) { 
+                            Ok(id) => Some(id),
+                            Err(_) => None 
+                        },
+                        degrees - 1
+                    )?);
+                }
+            }
+            Self::new(
+                Arc::from(moniker),
+                match id {
+                    Some(id) => Some(id),
+                    None => Some(aliases[0])
+                },
+                degrees,
+                degrees != 0
+            )
+        }
+    }
+}
+*/
 /*
 fn write_string_to_path(path: &str, s: &str) -> std::io::Result<()> {
     write_bytes_to_path(path, s.as_bytes())
@@ -34,7 +184,7 @@ fn write_bytes_to_path(path: &str, s: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn read_bytes_from_path(path: &str) -> std::io::Result<Vec<u8>> {
+fn read_bytes_from_path(path: &str) -> std::io::Result<U8s> {
     let mut file = File::open(path)?;
     let mut s = vec![];
     file.read_to_end(&mut s)?;
@@ -43,7 +193,7 @@ fn read_bytes_from_path(path: &str) -> std::io::Result<Vec<u8>> {
 
 const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
 
-fn get_or_generate_admin_password() -> (Vec<u8>, Hasher) {
+fn get_or_generate_admin_password() -> (U8s, Hasher) {
     match read_bytes_from_path(ADMIN_PWD_FILE_PATH) {
         Ok(s) => {
             let phsr = sthash::Hasher::new(sthash::Key::from_seed(s.as_slice(), Some(b"shok")), Some(b"zen secure"));
@@ -69,29 +219,29 @@ lazy_static!{
         let abc = base64::alphabet::Alphabet::new("+_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").expect("aplhabet was too much for base64, sorry");
         base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
     };
-    static ref PWD: (Vec<u8>, Hasher) = get_or_generate_admin_password();
+    static ref PWD: (U8s, Hasher) = get_or_generate_admin_password();
 }
 
 fn check_admin_password(pwd: &[u8]) -> bool {
     &PWD.1.hash(pwd) == PWD.0.as_slice()
 }
 
-fn zstd_compress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+fn zstd_compress(data: &[u8]) -> std::io::Result<U8s> {
     let mut encoder = zstd::stream::Encoder::new(Vec::new(), 22)?;
     encoder.write_all(data)?;
     Ok(encoder.finish()?)
 }
 
-fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+fn zstd_decompress(data: &[u8]) -> std::io::Result<U8s> {
     let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
     let mut buf = Vec::new();
     decoder.read_to_end(&mut buf)?;
     Ok(buf)
 }
 
-fn encrypt<T: Serialize>(payload: T) -> anyhow::Result<Vec<u8>> {
+fn encrypt<T: Serialize>(payload: T, pwd: &[u8]) -> anyhow::Result<U8s> {
     let mut serialized_payload = zstd_compress(&bincode::serialize(&payload)?)?;
-    let cocoon = cocoon::Cocoon::new(PWD.0.as_slice());
+    let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.encrypt(&mut serialized_payload) {
         Ok(detached_prefix) => {
             let whole = bincode::serialize(&(serialized_payload.to_vec(), detached_prefix.to_vec()))?;
@@ -104,11 +254,12 @@ fn encrypt<T: Serialize>(payload: T) -> anyhow::Result<Vec<u8>> {
 }
 
 fn decrypt<'a, T: serde::de::DeserializeOwned>(
-    whole: &'a [u8]
+    whole: &'a [u8],
+    pwd: &[u8]
 ) -> anyhow::Result<T> {
-    let (encrypted_payload, detached_prefix): (Vec<u8>, Vec<u8>) = bincode::deserialize(whole).unwrap();
+    let (encrypted_payload, detached_prefix): (U8s, U8s) = bincode::deserialize(whole).unwrap();
     let mut decrypted_payload = encrypted_payload;
-    let cocoon = cocoon::Cocoon::new(PWD.0.as_slice());
+    let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.decrypt(decrypted_payload.as_mut_slice(), &detached_prefix) {
         Ok(_) => {
             let payload: T = bincode::deserialize(&zstd_decompress(&decrypted_payload)?)?;
@@ -131,7 +282,7 @@ fn expire_sessions() -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
-        t.drain_filter(..now(), |_, v| {
+        t.drain_filter(now().., |_, v| {
             let st = wrtx.open_table(SESSIONS);
             st.is_ok() && st.unwrap().remove(v).is_ok()
         })?;
@@ -161,7 +312,7 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
     std::thread::spawn(|| {
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(59));
+            std::thread::sleep(Duration::from_secs(40));
             match expire_sessions() {
                 Ok(()) => {},
                 Err(e) => {
@@ -178,6 +329,13 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to expire resources: {:?}", e);
+                }
+            }
+            update_static_dir_paths();
+            match run_scoped_variable_exps() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to run scoped variable exps: {:?}", e);
                 }
             }
         }
@@ -234,6 +392,7 @@ fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
         let mut t = wrtx.open_table(TOKEN_EXPIERIES)?;
         t.insert(expiry, token)?;
     }
+    wrtx.commit()?;
     Ok(())
 }
 // const OWNERSHIP_INDEX: MultimapTableDefinition<&str, &[u8]> = MultimapTableDefinition::new("OI");
@@ -249,15 +408,15 @@ struct Item{
     categories: Strings,
     tags: Strings,
     kind: Option<String>,
-    meta_data: Option<Vec<u8>>,
+    meta_data: Option<U8s>,
     mime_type: Option<String>,
     owners: HashMap<u64, u64>, // account_id, shares
     sellable: bool,
     price: u64,
-    coupons: HashMap<String, (u64, bool, Option<Vec<u8>>)>, // code, (discount, once, more_data)
+    coupons: HashMap<String, (u64, bool, Option<U8s>)>, // code, (discount, once, more_data)
     expiry: u64,
     description: Option<String>,
-    state: Option<Vec<u8>>
+    state: Option<U8s>
 }
  */
 /*
@@ -269,7 +428,325 @@ struct Item{
 
 */
 
-#[allow(dead_code)]
+const SCOPED_VARIABLES: TableDefinition<(u64, &str), &[u8]> = TableDefinition::new("SCOPED_VARIABLES");
+const SCOPED_VARIABLE_OWNERSHIP_INDEX: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("SCOPED_VARIABLE_OWNERSHIP_INDEX");
+const SCOPED_VARIABLE_EXPIRIES: TableDefinition<u64, (u64, &str)> = TableDefinition::new("SCOPED_VARIABLE_EXPIRIES");
+
+// tag system for variables with reverse lookup
+const SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP: MultimapTableDefinition<(u64, &str), u64> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP");
+const SCOPED_VARIABLE_TAGS: MultimapTableDefinition<(u64, &str), u64> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAGS");
+// const SCOPED_VARIABLE_TAG_INDEX: MultimapTableDefinition<u64, (u64, &str)> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAG_INDEX");
+
+const SCOPED_PW_HASH_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("SCOPED_PW_HASH_INDEX");
+
+struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
+    owner: u64,
+    pwd: U8s,
+    s: Sender<MutEvent>, // name, value, is_insert
+    pd: PhantomData<T>
+}
+
+// todo: encryption, serialization, generics for value type [done :D, 30 June, but not tested yet]
+
+#[handler]
+async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    let mut _pm: Option<u32> = None;
+    let mut _owner: Option<u64> = None;
+    let mut _is_admin = false;
+    let mut _pwd: Option<U8s> = None;
+    if session_check(req, Some(ADMIN_ID)).await {
+        // admin session
+        _is_admin = true;
+        _pwd = Some(PWD.0.clone());
+        _owner = Some(ADMIN_ID);
+    } else {
+        if let Some(tk) = req.query::<String>("tk") {
+            if let Ok((perm_schema, owner, _, uses, _)) = validate_token_under_permision_schema(&tk, &[1], &DB).await {
+                // token session
+                _pm = Some(perm_schema);
+                _owner = Some(owner);
+                if uses == u64::MAX {
+                    _pwd = Some(tk.as_bytes().to_vec());
+                }
+            } else {
+                brq(res, "not authorized to use the scoped_variable_api, bad token and not an admin");
+                return;
+            }
+        } else {
+            brq(res, "not authorized to use the scoped_variable_api");
+            return;
+        }
+    }
+
+    if _owner.is_none() {
+        brq(res, "not authorized to use the scoped_variable_api, no owner");
+        return;
+    }
+
+    if _pwd.is_none() {
+        brq(res, "not authorized to use the scoped_variable_api, no password");
+        return;
+    }
+
+    let moniker = match req.param::<String>("moniker") {
+        Some(m) => m,
+        None => {
+            brq(res, "invalid scoped_variable_api request, no moniker provided");
+            return;
+        }
+    };
+
+    match *req.method() {
+        Method::GET => {
+            if let Ok((svs, _)) = ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+                match svs.get(&moniker) {
+                    Ok(v) => {
+                        if v.is_none() {
+                            brq(res, "variable not found");
+                            return;
+                        }
+                        jsn(res, json!({
+                            "ok": true,
+                            "value": v.unwrap()
+                        }));
+                    },
+                    Err(e) => {
+                        brq(res, &format!("error getting variable: {}", e));
+                    }
+                }
+            } else {
+                brq(res, "invalid password");
+            }
+        },
+        Method::POST => {
+            let body = match req.parse_json_with_max_size::<Vec<u8>>(12000).await {
+                Ok(b) => b,
+                Err(e) => {
+                    brq(res, &format!("error parsing json body as bytes: {}", e));
+                    return;
+                }
+            };
+
+            match ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+                Ok((svs, _)) => {
+                    if let Err(e) = svs.set(&moniker, body) {
+                        brq(res, &format!("error setting variable: {}", e));
+                        return;
+                    } else {
+                        jsn(res, json!({
+                            "ok": true
+                        }));
+                    }
+                },
+                Err(e) => {
+                    brq(res, &format!("error opening scoped variable store: {}", e));
+                    return;
+                }
+            }
+        },
+        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+            if let Err(e) = svs.rm(&moniker) {
+                brq(res, &format!("error deleting variable: {}", e));
+                return;
+            } else {
+                jsn(res, json!({
+                    "ok": true
+                }));
+            }
+        } else {
+            brq(res, "invalid password");
+            return;
+        },
+        _ => {
+            res.status_code(StatusCode::METHOD_NOT_ALLOWED);
+        }
+    }
+}
+
+
+impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
+    fn open(owner: u64, pwd: &[u8]) -> anyhow::Result<(Self, Receiver<MutEvent>)> {
+        let ph = PWD.1.hash(pwd);
+        let (s, r) = channel::<MutEvent>();
+        let wrtx = DB.begin_write()?;
+        match wrtx.open_table(SCOPED_PW_HASH_INDEX) {
+            Ok(t) => {
+                if let Some(ag) = t.get(ph.as_slice())? {
+                    if ag.value() != owner {
+                        anyhow::bail!("invalid password");
+                    }
+                    return Ok((Self{owner, pwd: pwd.to_vec(), s, pd: PhantomData::default()}, r));
+                }
+            },
+            Err(e) => {
+                println!("error opening scoped pw hash index: {}", e);                
+                let mut t = wrtx.open_table(SCOPED_PW_HASH_INDEX)?;
+                t.insert(ph.as_slice(), owner)?;
+            }
+        }
+        wrtx.commit()?;
+        Ok((Self{owner, pwd: pwd.to_vec(), s, pd: PhantomData::default()}, r))
+    }
+    fn encrypt(&self, value: T) -> anyhow::Result<U8s> {
+        encrypt::<T>(value, &self.pwd)
+    }
+    fn decrypt(&self, value: &[u8]) -> anyhow::Result<T> {
+        decrypt::<T>(value, &self.pwd)
+    }
+    #[allow(dead_code)]
+    fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
+            t.insert(exp, (self.owner, name))?;
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+    fn set(&self, name: &str, value: T) -> anyhow::Result<Option<T>> {
+        let mut _od = None;
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
+            let old_data = t.insert((self.owner, name), self.encrypt(value.clone())?.as_slice())?;
+            if let Some(ag) = old_data {
+                _od = Some(decrypt::<T>(ag.value(), &self.pwd)?);   
+            }
+            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            ot.insert(self.owner, name)?;
+        }
+        wrtx.commit()?;
+        self.s.send((Arc::from(name), true))?;
+        Ok(_od)
+    }
+    #[allow(dead_code)]
+    fn set_many(&self, values: &[(String, T)]) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            for (name, value) in values {
+                t.insert((self.owner, name.as_str()), self.encrypt(value.clone())?.as_slice())?;
+                ot.insert(self.owner, name.as_str())?;
+            }
+        }
+        wrtx.commit()?;
+        for (name, _value) in values {
+            let arc_name = Arc::from(name.as_str());
+            self.s.send((arc_name, true))?;
+        }
+        Ok(())
+    }
+    fn get(&self, name: &str) -> anyhow::Result<Option<T>> {
+        let mut data = None;
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_table(SCOPED_VARIABLES)?;
+        if let Some(ag) = t.get((self.owner, name))? {
+            data = Some(self.decrypt(ag.value())?);
+        }
+        match data {
+            Some(d) => Ok(Some(d)),
+            None => Err(
+                anyhow::anyhow!("global variable {} not found", name)
+            )
+        }
+    }
+    #[allow(dead_code)]
+    fn get_many(&self, names: &[&str]) -> anyhow::Result<Vec<Option<T>>> {
+        let mut data = Vec::with_capacity(names.len());
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_table(SCOPED_VARIABLES)?;
+        for name in names {
+            if let Some(ag) = t.get((self.owner, *name))? {
+                data.push(Some(self.decrypt(ag.value())?));
+            } else {
+                data.push(None);
+            }
+        }
+        Ok(data)
+    }
+    fn rm(&self, name: &str) -> anyhow::Result<Option<T>> {
+        let mut data = None;
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let old_data = t.remove((self.owner, name))?;
+            ot.remove(self.owner, name)?;
+            if let Some(ag) = old_data {
+                let v = decrypt::<T>(ag.value(), &self.pwd)?;
+                self.s.send((Arc::from(name), false))?;
+                data = Some(v);
+            }
+            let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
+            let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
+            // get tags
+            let mut tags = Vec::new();
+            {
+                let mut mmv = st.get((self.owner, name))?;
+                while let Some(Ok(ag)) = mmv.next() {
+                    tags.push(ag.value());
+                }
+            }
+            // remove tags
+            for tag in tags {
+                st.remove((self.owner, name), tag)?;
+                stl.remove((tag, name), self.owner)?;
+            }
+        }
+        wrtx.commit()?;
+        Ok(data)
+    }
+    #[allow(dead_code)]
+    fn rm_many(&self, names: &[&str]) -> anyhow::Result<Vec<Option<T>>> {
+        let mut data = Vec::with_capacity(names.len());
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            for name in names {
+                if let Some(ag) = t.remove((self.owner, *name))? {
+                    let v = decrypt::<T>(ag.value(), &self.pwd)?;
+                    self.s.send((Arc::from(*name), false))?;
+                    data.push(Some(v));
+                } else {
+                    data.push(None);
+                }
+                ot.remove(self.owner, name)?;
+                let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
+                let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
+                // get tags
+                let mut tags = Vec::new();
+                {
+                    let mut mmv = st.get((self.owner, *name))?;
+                    while let Some(Ok(ag)) = mmv.next() {
+                        tags.push(ag.value());
+                    }
+                }
+                // remove tags
+                for tag in tags {
+                    st.remove((self.owner, *name), tag)?;
+                    stl.remove((tag, *name), self.owner)?;
+                }
+            }
+        }
+        wrtx.commit()?;
+        Ok(data)
+    }
+}
+
+fn run_scoped_variable_exps() -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut exp_t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
+        exp_t.drain_filter(now().., |_, (_owner, _moniker)| {
+            true
+        })?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
 const STAKED_TRANSFER_CONTRACTS: MultimapTableDefinition<
     (u64, u64), // from, to
     (
@@ -317,14 +794,7 @@ async fn lodge_transfer_contract(
     Ok(())
 }
 
-type TF = (u64, u64); // to, from
-type TfCt = (
-    u64, // kind
-    u64, // amount
-    u64, // expiry
-    (u64, Vec<u8>), // (when, &state)
-    Vec<u8> // state
-);
+
 
 #[allow(dead_code)]
 fn effectuate_contracts_between(
@@ -442,8 +912,8 @@ struct TransferRequest{
     to: u64,
     amount: u64,
     exp: u64,
-    ws: (u64, Option<Vec<u8>>),
-    state: Option<Vec<u8>>,
+    ws: (u64, Option<U8s>),
+    state: Option<U8s>,
 }
 
 impl TransferRequest{
@@ -497,7 +967,7 @@ async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
             }
             return brq(res, "ran the contracts, side effects should be applied.");
         },
-        Method::POST => if let Ok(tr) = req.parse_json::<TransferRequest>().await {
+        Method::POST => if let Ok(tr) = req.parse_json_with_max_size::<TransferRequest>(16890).await {
             match tr.lodge(_owner.unwrap()).await {
                 Ok(_) => {
                     brq(res, "transfer contract lodged successfully");
@@ -644,7 +1114,7 @@ async fn remove_tokens(tkns: &[&str], db: &Database) -> Result<(), redb::Error> 
     Ok(())
 }
 
-fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<Vec<u8>>), redb::Error> {
+fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<U8s>), redb::Error> {
     let rtx = db.begin_read()?;
     let t = rtx.open_table(TOKENS)?;
     if let Some(ag) = t.get(tkh)? {
@@ -660,7 +1130,7 @@ fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<V
     Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Token not found.")))
 }
 
-async fn validate_token_under_permision_schema(tk: &str, pms: &[u32], db: &Database) -> Result<(u32, u64, u64, u64, Option<Vec<u8>>), redb::Error> {
+async fn validate_token_under_permision_schema(tk: &str, pms: &[u32], db: &Database) -> Result<(u32, u64, u64, u64, Option<U8s>), redb::Error> {
     let token_hash = TOKEN_HASHER.hash(tk.as_bytes());
     match read_token(&token_hash, &DB) {
         Ok(d) => {
@@ -712,7 +1182,7 @@ async fn validate_token_under_permision_schema(tk: &str, pms: &[u32], db: &Datab
 async fn action_token_handler(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     if let Some(action) = req.param::<&str>("action") {
         if let Some(tk) = req.param::<&str>("tk") {
-            if let Ok((pm, id, exp, _, state)) = validate_token_under_permision_schema(tk, &[], &DB).await { // (u32, u64, u64, u64, Option<Vec<u8>>)
+            if let Ok((pm, id, exp, _, state)) = validate_token_under_permision_schema(tk, &[], &DB).await { // (u32, u64, u64, u64, Option<U8s>)
                 match action {
                     "/create-resource" => if req.method() == Method::POST && [1].contains(&pm) && state.is_some() {
                         let mut r = Resource::from_blob(&state.unwrap(), Some(id), "application/octet-stream".to_string());
@@ -759,6 +1229,40 @@ lazy_static! {
     static ref SEARCH: Search = Search::build_150mb().expect("Failed to build search.");
 }
 
+#[allow(dead_code)]
+struct ScopedScopelessHasher(Vec<sthash::Hasher>);
+
+#[allow(dead_code)]
+impl ScopedScopelessHasher {
+    fn new(key: &[u8], scopes: Vec<U8s>, extra_scopedness: Option<U8s>) -> Self {
+        let mut hashers: Vec<sthash::Hasher> = vec![];
+        for s in scopes {
+            let h = sthash::Hasher::new(sthash::Key::from_seed(key, Some(&s)), match extra_scopedness {
+                Some(ref v) => Some(v.as_slice()),
+                None => None
+            });
+            hashers.push(h);
+        }
+        Self(hashers)
+    }
+
+    fn hash_with_scope(&self, data: &[u8], scope: usize) -> U8s {
+        self.0[scope].hash(data)
+    }
+
+    fn check(&self, data: &[u8], hash: &[u8]) -> Option<usize> {
+        let mut which = 0_usize;
+        for h in &self.0 {
+            if h.hash(data) == hash {
+                return Some(which);
+            }
+            which += 1;
+        }
+        None
+    }
+}
+
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
@@ -782,7 +1286,7 @@ async fn main() {
     );
 
     let static_files_cache = salvo::cache::Cache::new(
-        salvo::cache::MemoryStore::builder().time_to_live(std::time::Duration::from_secs(120)).build(),
+        salvo::cache::MemoryStore::builder().time_to_live(Duration::from_secs(120)).build(),
         salvo::cache::RequestIssuer::default(),
     );
 
@@ -833,6 +1337,10 @@ async fn main() {
                     .path("/<to>").get(transference_api)
                 )
                 .push(
+                    Router::with_path("/svs/<moniker>")
+                    .handle(scoped_variable_store_api)
+                )
+                .push(
                     Router::with_path("/<action>/<tk>")
                     .handle(action_token_handler)
                 )
@@ -872,11 +1380,11 @@ pub struct Account {
     since: u64,
     xp: u64,
     balance: u64,
-    pwd_hash: Vec<u8>,
+    pwd_hash: U8s,
 }
 
 impl Account {
-    pub fn new(id: u64, moniker: String, pwd_hash: Vec<u8>) -> Self {
+    pub fn new(id: u64, moniker: String, pwd_hash: U8s) -> Self {
         Self {
             id,
             moniker,
@@ -1060,7 +1568,7 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn read_to_byte_vec(path: &str) -> Vec<u8> {
+fn read_as_bytes(path: &str) -> U8s {
     let mut file = std::fs::File::open(path.clone()).expect(&format!("Failed to open file at {:?}.", path));
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).expect("Failed to read file.");
@@ -1069,8 +1577,8 @@ fn read_to_byte_vec(path: &str) -> Vec<u8> {
 
 fn load_config() -> RustlsConfig {
     RustlsConfig::new(Keycert::new()
-        .cert(read_to_byte_vec("./secrets/cert.pem"))
-        .key(read_to_byte_vec("./secrets/priv.pem"))
+        .cert(read_as_bytes("./secrets/cert.pem"))
+        .key(read_as_bytes("./secrets/priv.pem"))
     )
 }
 
@@ -1103,7 +1611,7 @@ fn fuzzy_match(input: &str, target: &str) -> usize {
 fn fuzzy_search(input: String, paths: &[PathBuf]/*, filter: Fn(&str, &str) -> Option<String>*/) -> Option<PathBuf> {
     let mut best_score = 0;
     let mut best_match = None;
-    println!("fuzzy_search(input: {}, paths: {:?})", input, paths);
+    // println!("fuzzy_search(input: {}, paths: {:?})", input, paths);
     for path in paths {
         if !path.is_file() {
             continue;
@@ -1126,32 +1634,56 @@ pub fn dedupe_and_merge<T: PartialEq + Clone>(host: &mut Vec<T>, other: &[T]) {
     }
 }
 
+lazy_static!{
+    static ref SINCE_LAST_STATIC_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static ref STATIC_DIR_PATHS: parking_lot::RwLock<Vec<PathBuf>> = parking_lot::RwLock::new(read_all_file_names_in_dir(STATIC_DIR).expect("could not walk the static dir for some reason"));
+}
+
+fn update_static_dir_paths() {
+    if SINCE_LAST_STATIC_CHECK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 6 {
+        SINCE_LAST_STATIC_CHECK.store(0, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+    let mut paths = STATIC_DIR_PATHS.write();
+    *paths = read_all_file_names_in_dir(STATIC_DIR).expect("could not re-walk and update the static dir for some reason");
+}
+
 fn pick_best_fuzzy_candidate(input: &str, exts: &[&str], dir: &str) -> Option<PathBuf> {
-    if let Ok(paths) = read_all_file_names_in_dir(dir) {
-        println!("pick_best_fuzzy_candidate(input: {}, exts: {:?}, dir: {}); paths {:?}", input, exts, dir, paths.as_slice());
-        if let Some(path) = fuzzy_search(input.to_string(), paths.as_slice()) {
-            println!("\n hit - path: {}", path.to_string_lossy());
-            if std::path::Path::new(&path).exists() {
-                return Some(path);
-            } else {
-                for ext in exts {
-                    let ep = format!("{}.{}", path.as_os_str().to_str().unwrap(), ext);
-                    let ext_path = std::path::Path::new(ep.as_str());
-                    if ext_path.exists() {
-                        return Some(ext_path.to_path_buf());
-                    }
+    let paths = if let Ok(paths) = read_all_file_names_in_dir(dir) { 
+        paths 
+    } else if dir == STATIC_DIR {
+        STATIC_DIR_PATHS.read().clone()
+    } else { 
+        return None;
+    };
+    // println!("pick_best_fuzzy_candidate(input: {}, exts: {:?}, dir: {}); paths {:?}", input, exts, dir, paths.as_slice());
+    if let Some(path) = fuzzy_search(input.to_string(), paths.as_slice()) {
+        // println!("\n hit - path: {}", path.to_string_lossy());
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        } else {
+            for ext in exts {
+                let ep = format!("{}.{}", path.as_os_str().to_str().unwrap(), ext);
+                let ext_path = std::path::Path::new(ep.as_str());
+                if ext_path.exists() {
+                    return Some(ext_path.to_path_buf());
                 }
-            }
+            }   
         }
     }
     None
 }
 
+const FUZZY_EXTENSIONS: &[&str] = &["html", "css", "js", "png", "jpg", "gif", "svg", "ico"];
+
 // fuzzy search a file and deliver the nearest match
 async fn fuzzy_static_deliver(input: &str, req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
-    if let Some(hit) = pick_best_fuzzy_candidate(input, &["html", "css", "js", "png", "jpg", "gif", "svg", "ico"], STATIC_DIR) {
+    if let Some(hit) = pick_best_fuzzy_candidate(input, FUZZY_EXTENSIONS, STATIC_DIR) {
         // redirect to hit
         StaticFile::new(hit).handle(req, depot, res, ctrl).await;
+    } else if !ctrl.call_next(req, depot, res).await {
+        res.status_code(StatusCode::NOT_FOUND);
+        res.render(Text::Plain("Nope.. nada.. nothing.. 404"));
     }
 }
 
@@ -1263,22 +1795,19 @@ async fn session_check(req: &mut Request, id: Option<u64>) -> bool {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-struct AuthRequest {
-    moniker: String,
-    pwd: String
-}
+struct AuthRequest(String, String);
 
 #[handler]
 async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     // get a string from the post body, and set it as a variable called text
-    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(18400).await {
-        match Account::from_moniker(&ar.moniker, &DB) {
-            Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
+    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(5400).await {
+        match Account::from_moniker(&ar.0, &DB) {
+            Ok(acc) => if !acc.check_password(ar.1.as_bytes()) {
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
             } else {
-                println!("a new user is trying to join: {}", &ar.moniker);
+                println!("a new user is trying to join: {}", &ar.0);
             },
             Err(e) => {
                 println!("new user not seen before, also moniker lookup error because of this: {:?}", e);
@@ -1295,10 +1824,10 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             .map(char::from)
             .collect::<String>();
 
-        if ar.moniker == "admin" {
+        if ar.0 == "admin" {
             // check if admin exists
             match Account::from_id(ADMIN_ID, &DB) {
-                Ok(acc) => if acc.check_password(ar.pwd.as_bytes()) {
+                Ok(acc) => if acc.check_password(ar.1.as_bytes()) {
                    // verified admin 
                 } else {
                     brq(res, "admin password incorrect");
@@ -1306,8 +1835,8 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 },
                 Err(e) => {
                     println!("admin not seen before, also moniker lookup error because of this: {:?}", e);
-                    let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
-                    let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
+                    let pwd_hash = PWD.1.hash(ar.1.as_bytes());
+                    let na = Account::new(ADMIN_ID, ar.0.clone(), pwd_hash);
                     match na.save(&DB, true) {
                         Ok(_) => {
                             // new admin
@@ -1352,8 +1881,8 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             sid
         };
 
-        let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
-        let acc = Account::new(sid, ar.moniker.clone(), pwd_hash);
+        let pwd_hash = PWD.1.hash(ar.1.as_bytes());
+        let acc = Account::new(sid, ar.0.clone(), pwd_hash);
 
         match acc.save(&DB, true) {
             Ok(()) => {
@@ -1384,17 +1913,17 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ResourcePostRequest {
-    old_hash: Option<Vec<u8>>,
+    old_hash: Option<U8s>,
     public: Option<bool>,
     until: Option<u64>,
     mime: String,
     version: Option<u64>,
-    data: Vec<u8>
+    data: U8s
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Resource {
-    hash: Vec<u8>,
+    hash: U8s,
     owner: Option<u64>,
     since: u64,
     public: bool,
@@ -1403,13 +1932,13 @@ struct Resource {
     mime: String,
     reads: u64,
     writes: u64,
-    data: Option<Vec<u8>>,
+    data: Option<U8s>,
     version: u64
 }
 
 #[allow(dead_code)]
 impl Resource {
-    fn new(hash: Vec<u8>, owner: Option<u64>, size: usize, mime: String) -> Self {
+    fn new(hash: U8s, owner: Option<u64>, size: usize, mime: String) -> Self {
         Self {
             hash,
             owner,
@@ -1444,7 +1973,7 @@ impl Resource {
         Self::new(Self::hash(data), owner, data.len(), mime)
     }
 
-    fn hash(data: &[u8]) -> Vec<u8> {
+    fn hash(data: &[u8]) -> U8s {
         RESOURCE_HASHER.hash(data)
     }
 
@@ -1469,7 +1998,7 @@ impl Resource {
         if bump {
             self.version += 1;
         }
-        let write_result = file.write_all(&encrypt(&serde_json::to_vec(self)?)?);
+        let write_result = file.write_all(&encrypt(&serde_json::to_vec(self)?, PWD.0.as_slice())?);
         if write_result.is_ok() {
             let data_file_write_result = data_file.write_all(&self.data(true)?);
             if data_file_write_result.is_err() {
@@ -1514,12 +2043,12 @@ impl Resource {
     }
 
     pub fn set_data(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.data = Some(encrypt(data)?);
+        self.data = Some(encrypt(data, PWD.0.as_slice())?);
         self.size = data.len();
         self.save(true)
     }
 
-    pub fn data(&mut self, encrypted_form: bool) -> anyhow::Result<Vec<u8>> {
+    pub fn data(&mut self, encrypted_form: bool) -> anyhow::Result<U8s> {
         if self.data.is_some() {
             return Ok(self.data.clone().unwrap());
         }
@@ -1531,7 +2060,7 @@ impl Resource {
         if encrypted_form {
             Ok(bytes)
         } else {
-            Ok(decrypt(&bytes)?)
+            Ok(decrypt(&bytes, PWD.0.as_slice())?)
         }
     }
 
@@ -1541,7 +2070,7 @@ impl Resource {
         let mut bytes = vec![];
         file.read_to_end(&mut bytes)?;
         std::mem::forget(file);
-        let mut r: Resource = decrypt(&bytes)?;
+        let mut r: Resource = decrypt(&bytes, PWD.0.as_slice())?;
         r.reads += 1;
         r.save(false)?;
         if with_data {
@@ -1555,7 +2084,7 @@ impl Resource {
         let mut file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        let mut r: Resource = decrypt(&bytes)?;
+        let mut r: Resource = decrypt(&bytes, PWD.0.as_slice())?;
         r.reads += 1;
         r.save(false)?;
         if with_data {
@@ -1709,7 +2238,7 @@ fn brqe(res: &mut Response, err: &str, msg: &str) {
 struct MakeTokenRequest {
     id: u64,
     count: u16,
-    state: Option<Vec<u8>>,
+    state: Option<U8s>,
     uses: Option<u64>,
     pm: u32,
     exp: Option<u64>
@@ -1877,18 +2406,6 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
         brq(res, "failed to run command, bad CMDRequest");
     }
 }
-
-use tantivy::{
-    doc,
-    collector::TopDocs,
-    query::QueryParser,
-    schema::*,
-    Index,
-    // IndexReader, ReloadPolicy,
-    IndexWriter, DateTime, columnar::MonotonicallyMappableToU64,
-};
-use std::sync::Arc;
-use parking_lot::RwLock;
 
 const SEARCH_INDEX_PATH: &str = "./search-index";
 
