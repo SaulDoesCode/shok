@@ -20,7 +20,7 @@ parking_lot = "*"
 tracing = "*"
 tracing-subscriber = "*"
 # tempfile = "*"
-redb = { version = "*", features = ["logging"]}
+redb = { version = "1.0.2"}
 rand = "*"
 sthash = { git = "https://github.com/jedisct1/rust-sthash" }
 lazy_static = "*"
