@@ -153,15 +153,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "604178f6c5c21f02dc555784810edfb88d34ac2c73b2eae109655649ee73ce3d"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1787,9 +1778,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "1.0.2"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1770bc0931171df3ced2adc9fd72d59cb47a4dc693d184c73cd382067f6ff44e"
+checksum = "5b48b6e8001eaa7ac3793fbfc7444ade76fc51efa3629dee8c66629425d39595"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -2379,7 +2370,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.21.2",
- "bincode",
  "cocoon",
  "lazy_static",
  "mimalloc",

@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
-bincode = "*"
 cocoon = "*"
 salvo = { version= "*", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
 serde = { version = "1.0.164", features = ["derive"] }
@@ -20,7 +19,7 @@ parking_lot = "*"
 tracing = "*"
 tracing-subscriber = "*"
 # tempfile = "*"
-redb = { version = "1.0.2"}
+redb = { version = "1.0.4"}
 rand = "*"
 sthash = { git = "https://github.com/jedisct1/rust-sthash" }
 lazy_static = "*"

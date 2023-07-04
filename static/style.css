@@ -70,28 +70,35 @@ nav > header > h1:hover {
 }
 
 main {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    grid-gap: 2mm;
-    padding: 0 1mm;
+    position: relative;
+    display: block;
+    margin: 3mm;
     min-height: 333px;
+    overflow: hidden;
+    background: #fff;
 }
 
-main > aside.left {
-    background-color: #fff;
-    border-radius: 5px;
-    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
-    padding: 2mm;
+main a { 
+    box-sizing: border-box;
+    display: inline-flex;
+    justify-content: center;
+    align-content: center;
+    align-items: center;
+    text-decoration: none;
+    color: #000;
+    padding: 1mm;
+    margin: 1mm;
+    border-radius: 1mm;
+    transition: all 140ms ease-in-out;
+    border: 1px solid #000;
 }
 
-main > aside.right {
-    background-color: #fff;
-    border-radius: 5px;
-    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
-    padding: 2mm;
-}
-
-main > section {
+main > pan-box {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: calc(100% - 3mm);
+    height: calc(100% - 3mm);
     background-color: #fff;
     border-radius: 2mm;
     box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);

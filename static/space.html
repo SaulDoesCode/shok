@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>space</title>
+    <style>
+        html {
+            font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
+            background: #ffdddd;
+        }
+        body {
+            display: flex;
+            flex-flow: column nowrap;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            overscroll-behavior: none;
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            margin-top: 1cm;
+            padding: 0;
+            background: #ffdddd;
+        }
+        header > h2 {
+            margin: 1mm 1mm 1mm 1mm;
+            width: fit-content;
+        }
+        main {
+            box-sizing: border-box;
+            position: sticky;
+            display: block;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: space-evenly;
+            align-items: center;
+            width: calc(4 * 7.3cm);
+            max-height: 70vh;
+            padding: 3mm;
+            margin: 1mm auto 3mm auto;
+            overflow: scroll;
+            overflow-x: visible;
+            background: #fff;
+            text-align: center;
+            z-index: 0;
+        }
+        .item {
+            position: relative;
+            display: inline-flex;
+            box-sizing: border-box;
+            width: 7.14296cm;
+            height: 4cm;
+            font-size: 1.044rem;
+            background: #fff;
+            border-radius: 2mm;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-items: center;
+            margin: 1.888mm;
+            user-select: none;
+        }
+        .item.active {
+            background: #000;
+            color: #fff;
+            border: 1px solid #e90b3ff1;
+            box-shadow: 0 0 .98rem 0.3rem #00000020, 0 0 .8rem 0.3rem hsla(346, 91%, 48%, .4);
+            user-select: text;
+        }
+        textarea.item {
+            resize: none;
+            overflow-wrap: break-word;
+            overflow: hidden;
+            padding: .4mm;
+            text-align: center;
+            align-self: center;
+            line-height: .87;
+        }
+
+        .controls {
+            position: relative;
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: space-evenly;
+            align-content: center;
+            align-items: center;
+            gap: 1mm;
+            margin: 1mm;
+            user-select: none;
+        }
+
+        .controls > span {
+            box-sizing: content-box;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            flex-flow: row wrap;
+            margin: .6mm;
+            width: 1.5rem;
+            height: 1.5rem;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
+            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            z-index: 2;
+        }
+
+        .controls > span:first-of-type {
+            z-index: 1;
+        }
+
+        .controls > span:nth-of-type(2) {
+            position: absolute;
+            left: calc(50% - 14px);
+            top: 97%;
+            z-index: 3;
+        }
+
+        .controls > span:last-of-type {
+            position: absolute;
+            left: calc(50% - 14px);
+            bottom: 97%;
+            z-index: 0;
+        }
+
+        .soft-edge {
+            border-radius: 4mm;
+            box-shadow: 0 0 1rem .99rem hsl(0, 0%, 100%);
+        }
+
+        body > header:last-of-type {
+            overscroll-behavior: none; 
+            margin-top: 1.2cm;
+            position: relative;
+            display: grid;
+            align-content: baseline;
+            justify-content: space-between;
+            align-items: center;
+            flex-flow: row wrap;
+            grid-template-columns: 3cm 1fr 1fr;
+            gap: 1mm;
+            z-index: 1;
+            user-select: none;
+            text-align: center;
+        }
+
+        header > b:first-of-type {
+            font-size: 1.5rem;
+            font-weight: 900;            
+            filter: drop-shadow(0 1px .333rem hsl(0, 0%, 100%));
+        }
+
+        .scroll-ball {
+            box-sizing: border-box;
+            overscroll-behavior: none; 
+            position: relative;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 2.4cm;
+            height: 2.4cm;
+            border-radius: 49%;
+            background: #fff;
+            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
+            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            z-index: 1;
+        }
+        .kur {
+            color: #e90b3ff1;
+        }
+
+        nav {
+            position: fixed;
+            top: 0;
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            border-radius: 2mm;
+            height: 1.2cm;
+            background: #fff;
+            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
+            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
+            z-index: 1;
+        }
+
+        input[name="search"] {
+            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: transparent;
+            outline: none;
+            font-size: 1.2rem;
+            font-weight: 600;
+            text-align: left;
+            color: #000;
+            user-select: none;
+        }
+
+        /*
+            modify the selection color to be transparent
+        */
+        .scroll-ball::selection, .control::selection {
+            background: transparent;
+        }
+        /* media query for mobile */
+        @media (max-width: 1111px) {
+            main {
+                width: fit-content;
+                height: 100%;
+                margin: 0;
+            }
+            .item {
+                max-width: 47%;
+                margin: 1mm;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <section class="search">
+            <input type="text" name="search" placeholder="search" />
+        </section>
+    </nav>
+    <main class="soft-edge">
+        
+    </main>
+    <header>
+        <b><span class="kur">kur</span>shok</b>
+        
+        <section class="controls">
+            <span>←</span>
+            <span>↓</span>
+            <span>→</span>
+            <span>↑</span>
+        </section>
+
+        <section class="scroll-ball">↕</section>
+    </header>
+    <script type="module" async>
+        import d from './domlib.js'
+        import http from './http.js'
+
+        const {query, render, domfn} = d
+        const {section, div, span, p, header, article, textarea} = domfn
+        await d.ready
+        const main = query('main')
+        const controls = query('.controls')
+        const search = query('input[name="search"]')
+        const items = []
+        let active = 0
+        let lastActive
+        const setActive = (a, scroll) => {
+            if (typeof a == 'number') {
+                active = a
+                if (scroll === undefined) scroll = true
+            } else if (typeof a == 'boolean') scroll = a
+            // if negative roll over, if longer than items.length go to the start and add the difference if there is one
+            if (active < 0) active = items.length + (active % items.length)
+            else if (active >= items.length) active = active % items.length
+            if (lastActive) lastActive.classList.remove('active')
+            items[active].classList.add('active')
+            scroll && items[active].scrollIntoViewIfNeeded()
+            lastActive = items[active]
+        }
+        // get the amound of items in a row given the size and margins
+        const getItemsInRow = () => {
+            const {width, marginLeft, marginRight} = getComputedStyle(items[0])
+            const itemWidth = parseFloat(width)
+            const itemMarginLeft = parseFloat(marginLeft)
+            const itemMarginRight = parseFloat(marginRight)
+            const rowWidth = main.clientWidth
+            const itemsInRow = Math.floor(rowWidth / (itemWidth + itemMarginLeft + itemMarginRight))
+            return itemsInRow
+        }
+        const makeItem = (text, i) => {
+            const item = document.createElement('textarea')
+            item.classList.add('item')
+            item.name = i
+            item.value = text
+            items.push(item)
+            return item
+        }
+
+        document.scrollingElement.onpointermove = (e) => {
+            // if shift is down pan and scroll on the body
+            if (e.shiftKey) {
+                // get the size of the scrollingElement
+                const {width, height} = document.scrollingElement.getBoundingClientRect()
+                //console.log(e)
+                active += e.movementX
+                
+                setActive()
+                main.scrollTop += (e.movementY * height) / 8
+            }
+        }
+        const handleArrowButtons = e => {
+            if (e.target.tagName === 'SPAN') {
+                e.preventDefault()
+                const dir = e.target.textContent
+                switch(dir) {
+                    case '←':
+                        setActive(active - 1)
+                        break
+                    case '→':
+                        setActive(active + 1)
+                        break
+                    case '↑':
+                        setActive(active - rowWidth)
+                        break
+                    case '↓':
+                        setActive(active + rowWidth)
+                        break
+                }
+            }
+        }
+        controls.onpointerover = handleArrowButtons
+        controls.onpointerdown = handleArrowButtons
+
+        // on middle mouse in main, perform scrolling, set the scrollTop property
+        main.onwheel = e => {
+            main.scrollTop += e.deltaY
+        }
+
+        const scrollball = query('.scroll-ball')
+        // when the mouse or pointer moves inside of the scroll ball scroll x and y on the main element
+        scrollball.onpointermove = e => {
+            e.preventDefault()
+            // get the size of the scrollingElement
+            const {width, height} = document.scrollingElement.getBoundingClientRect()
+            //console.log(e)
+            main.scrollLeft += (e.movementX * width) / 7
+            main.scrollTop += (e.movementY * height) / 7
+        }
+
+
+        let rowWidth = 4
+        // if the screen resizes recalculate the rowwidth
+        window.onresize = () => {
+            rowWidth = getItemsInRow()
+        }
+
+        document.onkeydown = async e => {
+            if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
+            if (e.key.includes('Arrow')) {
+                e.preventDefault()
+                switch(e.key.replace('Arrow', '')) {
+                    case 'Left':
+                        setActive(active - 1)
+                        break
+                    case 'Right':
+                        setActive(active + 1)
+                        break
+                    case 'Up':
+                        setActive(active - rowWidth)
+                        break
+                    case 'Down':
+                        setActive(active + rowWidth)
+                        break
+                }
+            } else if (e.key === 'Enter') {
+                await searchForWrits(search.value)
+            }
+        }
+        main.onpointermove = (e) => {
+            if (e.target.classList && e.target.classList.contains('item') && !e.shiftKey) {
+                if (lastActive) lastActive.classList.remove('active')
+                e.target.classList.add('active')
+                ;(lastActive = e.target).scrollIntoViewIfNeeded()
+                active = items.indexOf(e.target)
+            }
+        }
+
+        main.ondblclick = e => {
+            if (e.target.classList && e.target.classList.contains('item')) {
+                if (e.target.style.width === '6cm') {
+                    Object.assign(e.target.style, {
+                        width: '',
+                        height: ''
+                    })
+                } else {
+                    Object.assign(e.target.style, {
+                        width: '6cm',
+                        height: '6cm'
+                    })
+                }
+                e.target.focus()
+            }
+        }
+
+        main.onpointerdown = e => {
+            if (e.target.classList && e.target.classList.contains('item')) {
+                e.preventDefault()
+                if (lastActive) lastActive.classList.remove('active')
+                e.target.classList.add('active')
+                lastActive = e.target
+                active = items.indexOf(e.target)
+            }
+        }
+
+        main.oncontextmenu = e => {
+            if (e.target.classList && e.target.classList.contains('item')) {
+                e.preventDefault()
+                e.target.focus()
+            }
+        }
+
+        const searchForWrits = async (q = search.value, p = 0) => {
+            q = `kind:note ${q}`
+            const res = await http.get('/api/search?q=' + q + `&p=${p}`)
+            console.log(res)
+        }
+
+        window.makeWrit = async w => {
+            const res = await http.put('/api/search/', w)
+            console.log(res)
+        }
+
+        const populateBodywithCards = async () => {
+            const body = document.body
+            let i = 256
+            while (--i > -1) makeItem(`${i}`.repeat(93), i)
+            items[0].classList.add('active')
+            lastActive = items[0]
+            main.append(...items)
+            rowWidth = getItemsInRow()
+        }
+
+        populateBodywithCards()
+    </script>
+</body>
+</html>

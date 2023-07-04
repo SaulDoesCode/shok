@@ -6,6 +6,10 @@
     <title>Auth</title>
     <link rel="stylesheet" href="./marx.css">
     <style>
+        :root {
+            --highlight-color: #ff1476f1;
+            --selected-color: #e90b3ff1;
+        }
         body {
             padding: 1rem;
         }
@@ -15,22 +19,33 @@
         }
         section {
             margin: 2rem auto;
-            border-radius: 4mm;
+            border-radius: .333rem;
             padding: 1rem;
             box-shadow:0 0 1rem 0.5rem #00000020;
         }
 
-        button {
+        button, input[type="submit"] {
             padding: 0.5rem 1rem;
-            border-radius: 4mm;
-            margin: 1mm;
+            border-radius: .333rem;
+            margin: .333rem;
             cursor: pointer;
+            background: var(--highlight-color);
+            color: #fff;
+            text-shadow: 0 1px 3px #00000020;
+            transition: all 120ms ease-in;
+            box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213);
+        }
+
+        button:hover, input[type="submit"]:hover {
+            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
+            background-color: var(--selected-color);
+            border: .02rem solid var(--highlight-color);
         }
 
         input {
             padding: 0.5rem 1rem;
-            border-radius: 4mm;
-            margin: 1mm;
+            border-radius: .333rem;
+            margin: .111rem;
             border: 1px solid #00000020;
         }
 
@@ -40,6 +55,7 @@
     </style>
     <script type="module" async>
         import d from './domlib.js'
+        import http from './http.js'
         const {section, div, input, span, h1, button, header, article} = d.domfn
         const {queryAsync, render} = d
 
@@ -47,18 +63,8 @@
         const pwdi = await queryAsync('input[type="password"]')
         const ab = await queryAsync('button.auth-btn')
 
-        const details = () => JSON.stringify([mi.value.trim(), pwdi.value.trim()])
         const authenticate = async () => {
-            const res = await fetch('/api/auth', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: details()
-            })
-
-            const data = await res.json()
-
+            const data = await http.post('/auth', {moniker: mi.value.trim(), pwd: pwdi.value.trim()})
             console.log(data)
         }
 
@@ -136,43 +142,12 @@
             tknOutput
         )
 
-        const tk = ''
-
         const convertStringIntoBytes = str => {
             const bytes = []
             for (let i = 0; i < str.length; ++i) {
                 bytes.push(str.charCodeAt(i))
             }
             return bytes
-        }
-
-        window.svs = {
-            async set(m, value) {
-                const res = await fetch('/api/svs/' + m + tk, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(convertStringIntoBytes(value))
-                })
-
-                return await res.json()
-            },
-            async get(m) {
-                const res = await fetch('/api/svs/' + m + tk)
-                const data = await res.json()
-                if (data.value.length) {
-                    return data.value.map(x => String.fromCharCode(x)).join('')
-                } else {
-                    return data
-                }
-            },
-            async rm(m) {
-                const res = await fetch('/api/svs/' + m + tk, {
-                    method: 'DELETE'
-                })
-                return await res.json()
-            }
         }
     </script>
 </head>

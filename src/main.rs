@@ -226,8 +226,9 @@ fn check_admin_password(pwd: &[u8]) -> bool {
     &PWD.1.hash(pwd) == PWD.0.as_slice()
 }
 
+/*
 fn zstd_compress(data: &[u8]) -> std::io::Result<U8s> {
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 22)?;
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 21)?;
     encoder.write_all(data)?;
     Ok(encoder.finish()?)
 }
@@ -237,15 +238,31 @@ fn zstd_decompress(data: &[u8]) -> std::io::Result<U8s> {
     let mut buf = Vec::new();
     decoder.read_to_end(&mut buf)?;
     Ok(buf)
+}*/
+
+fn zstd_compress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<()> {
+    let mut encoder = zstd::stream::Encoder::new(output, 21)?;
+    encoder.write_all(data)?;
+    encoder.finish()?;
+    Ok(())
 }
 
+fn zstd_decompress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<usize> {
+    let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
+    let decompressed_size = decoder.read_to_end(output)?;
+    Ok(decompressed_size)
+}
+
+
 fn encrypt<T: Serialize>(payload: T, pwd: &[u8]) -> anyhow::Result<U8s> {
-    let mut serialized_payload = zstd_compress(&bincode::serialize(&payload)?)?;
+    let mut serialized = serde_json::to_vec(&payload)?;
+    let mut serialized_payload = vec![];
+    zstd_compress(&mut serialized, &mut serialized_payload)?;
     let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.encrypt(&mut serialized_payload) {
-        Ok(detached_prefix) => {
-            let whole = bincode::serialize(&(serialized_payload.to_vec(), detached_prefix.to_vec()))?;
-            return Ok(whole);
+        Ok(detached) => {
+            serialized_payload.extend_from_slice(&detached);
+            return Ok(serialized_payload);
         },
         Err(e) => Err(
             anyhow::Error::msg(format!("failed to encrypt payload: {:?}", e))
@@ -257,13 +274,18 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
     whole: &'a [u8],
     pwd: &[u8]
 ) -> anyhow::Result<T> {
-    let (encrypted_payload, detached_prefix): (U8s, U8s) = bincode::deserialize(whole).unwrap();
-    let mut decrypted_payload = encrypted_payload;
+    // split whole into encrypted payload and detached prefix, the last 60 bytes are the detached prefix
+    let (encrypted_payload, detached) = whole.split_at(whole.len() - 60);
+    let mut decrypted_payload = encrypted_payload.to_vec();
+    std::mem::forget(encrypted_payload);
     let cocoon = cocoon::Cocoon::new(pwd);
-    match cocoon.decrypt(decrypted_payload.as_mut_slice(), &detached_prefix) {
-        Ok(_) => {
-            let payload: T = bincode::deserialize(&zstd_decompress(&decrypted_payload)?)?;
-            return Ok(payload);
+    match cocoon.decrypt(decrypted_payload.as_mut_slice(), detached) {
+        Ok(()) => {
+            let mut dp = vec![];
+            zstd_decompress(&mut decrypted_payload, &mut dp)?;
+            // println!("decrypted payload: {:?}", String::from_utf8_lossy(&dp));
+            let payload: T = serde_json::from_slice(&dp)?;
+            Ok(payload)
         },
         Err(e) => Err(
             anyhow::Error::msg(format!("failed to decrypt payload: {:?}", e))
@@ -443,7 +465,7 @@ struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
     pwd: U8s,
     s: Sender<MutEvent>, // name, value, is_insert
-    pd: PhantomData<T>
+    pd: PhantomData<T>,
 }
 
 // todo: encryption, serialization, generics for value type [done :D, 30 June, but not tested yet]
@@ -498,7 +520,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
     match *req.method() {
         Method::GET => {
-            if let Ok((svs, _)) = ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
                 match svs.get(&moniker) {
                     Ok(v) => {
                         if v.is_none() {
@@ -519,7 +541,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
             }
         },
         Method::POST => {
-            let body = match req.parse_json_with_max_size::<Vec<u8>>(12000).await {
+            let body = match req.parse_json_with_max_size::<serde_json::Value>(12000).await {
                 Ok(b) => b,
                 Err(e) => {
                     brq(res, &format!("error parsing json body as bytes: {}", e));
@@ -527,9 +549,10 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             };
 
-            match ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
                 Ok((svs, _)) => {
                     if let Err(e) = svs.set(&moniker, body) {
+                        // println!("error setting variable: {:?}", e);
                         brq(res, &format!("error setting variable: {}", e));
                         return;
                     } else {
@@ -544,7 +567,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             }
         },
-        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<U8s>::open(_owner.unwrap(), &_pwd.unwrap()) {
+        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
             if let Err(e) = svs.rm(&moniker) {
                 brq(res, &format!("error deleting variable: {}", e));
                 return;
@@ -608,7 +631,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let old_data = t.insert((self.owner, name), self.encrypt(value.clone())?.as_slice())?;
+            let old_data = t.insert((self.owner, name), self.encrypt(value)?.as_slice())?;
             if let Some(ag) = old_data {
                 _od = Some(decrypt::<T>(ag.value(), &self.pwd)?);   
             }
@@ -620,19 +643,19 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(_od)
     }
     #[allow(dead_code)]
-    fn set_many(&self, values: &[(String, T)]) -> anyhow::Result<()> {
+    fn set_many(&self, values: &[(Arc<str>, T)]) -> anyhow::Result<()> {
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             for (name, value) in values {
-                t.insert((self.owner, name.as_str()), self.encrypt(value.clone())?.as_slice())?;
-                ot.insert(self.owner, name.as_str())?;
+                t.insert((self.owner, name.as_ref()), self.encrypt(value.clone())?.as_slice())?;
+                ot.insert(self.owner, name.as_ref())?;
             }
         }
         wrtx.commit()?;
         for (name, _value) in values {
-            let arc_name = Arc::from(name.as_str());
+            let arc_name = Arc::from(name.as_ref());
             self.s.send((arc_name, true))?;
         }
         Ok(())
@@ -647,7 +670,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         match data {
             Some(d) => Ok(Some(d)),
             None => Err(
-                anyhow::anyhow!("global variable {} not found", name)
+                anyhow::anyhow!("scoped variable {} not found", name)
             )
         }
     }
@@ -1130,7 +1153,17 @@ fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<U
     Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Token not found.")))
 }
 
-async fn validate_token_under_permision_schema(tk: &str, pms: &[u32], db: &Database) -> Result<(u32, u64, u64, u64, Option<U8s>), redb::Error> {
+async fn validate_token_under_permision_schema(
+    tk: &str,
+    pms: &[u32],
+    db: &Database
+) -> Result<(
+    u32, // permission
+    u64, // id
+    u64, // exp
+    u64, // uses 
+    Option<U8s> // state
+), redb::Error> {
     let token_hash = TOKEN_HASHER.hash(tk.as_bytes());
     match read_token(&token_hash, &DB) {
         Ok(d) => {
@@ -1278,11 +1311,18 @@ async fn main() {
     let addr = ("0.0.0.0", 8000);
     let config = load_config();
 
-    let limiter = RateLimiter::new(
+    let api_limiter = RateLimiter::new(
         FixedGuard::new(),
         MemoryStore::new(),
         RemoteIpIssuer,
-        BasicQuota::per_second(4),
+        BasicQuota::per_second(160),
+    );
+
+    let auth_limiter = RateLimiter::new(
+        FixedGuard::new(),
+        MemoryStore::new(),
+        RemoteIpIssuer,
+        BasicQuota::per_second(10),
     );
 
     let static_files_cache = salvo::cache::Cache::new(
@@ -1290,17 +1330,17 @@ async fn main() {
         salvo::cache::RequestIssuer::default(),
     );
 
-    let router = Router::with_hoop(Logger::new()).hoop(CachingHeaders::new()).hoop(limiter)
+    let router = Router::with_hoop(Logger::new())
         .push(
             Router::with_path("/healthcheck")
                 .get(health)
         )
         .push(
-            Router::with_path("/api")
-                .push(
-                    Router::with_path("/auth")
-                    .post(auth_handler)
-                )
+            Router::with_path("/auth").hoop(auth_limiter)
+            .post(auth_handler)
+        )
+        .push(
+            Router::with_path("/api").hoop(api_limiter)
                 .push(
                     Router::with_path("/cmd")
                         .post(cmd_request)
@@ -1326,6 +1366,10 @@ async fn main() {
                     .post(upsert_static_file)
                 )
                 .push(
+                    Router::with_path("/uploads")
+                    .get(list_uploads)
+                )
+                .push(
                     Router::with_path("/resource")
                     .post(resource_api)
                     .path("/<hash>")
@@ -1349,16 +1393,18 @@ async fn main() {
         .push(
             Router::with_hoop(static_files_cache)
                 .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                .hoop(CachingHeaders::new())
                 .path("/<file>")
                 .get(static_file_route_rewriter)
         )
         .push(
             Router::new()  //with_hoop(static_files_cache)
                 .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                .hoop(CachingHeaders::new())
                 .path("<**path>")
                 .get(
                     StaticDir::new(STATIC_DIR)
-                        .defaults("index.html")
+                        .defaults("space.html")
                         .listing(true)
                 )
         );
@@ -1529,6 +1575,9 @@ impl Session {
         {
             let mut t = wrtx.open_table(SESSIONS)?;
             t.insert(self.0.as_str(), (self.1, self.2))?;
+            let mut et = wrtx.open_table(SESSION_EXPIRIES)?;
+            et.insert(self.2, self.0.as_str())?;
+            
         }
         wrtx.commit()?;
         Ok(())
@@ -1737,6 +1786,38 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
 }
 
 #[handler]
+async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    let mut tkn = String::new();
+    match req.param::<String>("tk") {
+        // check if token is valid
+        Some(tk) => match validate_token_under_permision_schema(&tk, &[1], &DB).await {
+            Ok((_, _, _, _, _)) => tkn = format!("?tk={tk}"),
+            Err(e) => return brqe(res, &e.to_string(), "invalid token")
+        },
+        None => if !session_check(req, Some(ADMIN_ID)).await {
+            return brq(res, "unauthorized");
+        }
+    };
+
+    let mut paths = match read_all_file_names_in_dir("./uploaded/") {
+        Ok(paths) => paths,
+        Err(e) => return brqe(res, &e.to_string(), "could not read uploaded dir")
+    };
+    
+    paths.sort();
+    let mut html = String::new();
+    html.push_str("<html><head><title>Uploaded Files</title></head><body><h1>Uploaded Files</h1><ul>");
+    for path in paths {
+        if let Some(file_name) = path.file_name() {
+            let file_name = file_name.to_string_lossy();
+            html.push_str(&format!("<li><a href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
+        }
+    }
+    html.push_str("</ul></body></html>");
+    res.render(Text::Html(html));
+}
+
+#[handler]
 async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // query param token 
     match req.param::<String>("tk") {
@@ -1795,19 +1876,37 @@ async fn session_check(req: &mut Request, id: Option<u64>) -> bool {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-struct AuthRequest(String, String);
+struct AuthRequest{
+    moniker: String,
+    pwd: String
+}
+
+const DICT: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -";
 
 #[handler]
 async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
-    // get a string from the post body, and set it as a variable called text
-    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(5400).await {
-        match Account::from_moniker(&ar.0, &DB) {
-            Ok(acc) => if !acc.check_password(ar.1.as_bytes()) {
+    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(14086).await {
+        if ar.moniker.len() < 3 || ar.pwd.len() < 3 {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(serde_json::json!({"err":"moniker and password must be at least 3 characters long"})));
+            return;
+        } else {
+            // check that the moniker is composed of the dictionary characters only
+            for c in ar.moniker.chars() {
+                if !DICT.contains(c) {
+                    res.status_code(StatusCode::BAD_REQUEST);
+                    res.render(Json(serde_json::json!({"err":"moniker must be composed of \"a-zA-Z0-9 -\" only"})));
+                    return;
+                }
+            }
+        }
+        match Account::from_moniker(&ar.moniker, &DB) {
+            Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
             } else {
-                println!("a new user is trying to join: {}", &ar.0);
+                println!("a new user is trying to join: {}", &ar.moniker);
             },
             Err(e) => {
                 println!("new user not seen before, also moniker lookup error because of this: {:?}", e);
@@ -1824,10 +1923,10 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             .map(char::from)
             .collect::<String>();
 
-        if ar.0 == "admin" {
+        if ar.moniker == "admin" {
             // check if admin exists
             match Account::from_id(ADMIN_ID, &DB) {
-                Ok(acc) => if acc.check_password(ar.1.as_bytes()) {
+                Ok(acc) => if acc.check_password(ar.pwd.as_bytes()) {
                    // verified admin 
                 } else {
                     brq(res, "admin password incorrect");
@@ -1835,8 +1934,8 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 },
                 Err(e) => {
                     println!("admin not seen before, also moniker lookup error because of this: {:?}", e);
-                    let pwd_hash = PWD.1.hash(ar.1.as_bytes());
-                    let na = Account::new(ADMIN_ID, ar.0.clone(), pwd_hash);
+                    let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
+                    let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
                     match na.save(&DB, true) {
                         Ok(_) => {
                             // new admin
@@ -1852,7 +1951,14 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 
             if Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB).is_ok() {
                 res.status_code(StatusCode::ACCEPTED);
-                res.add_cookie(cookie::Cookie::new("auth", session_token.clone()));
+                let mut c = cookie::Cookie::new("auth", session_token.clone());
+                let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
+                c.set_expires(exp);
+                c.set_domain(
+                    req.uri().host().unwrap_or("localhost").to_string()
+                );
+                c.set_path("/");
+                res.add_cookie(c);
                 if new_admin {
                     res.render(Json(serde_json::json!({
                         "msg": "authorized, remember to save the admin password, it will not be shown again",
@@ -1881,14 +1987,22 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             sid
         };
 
-        let pwd_hash = PWD.1.hash(ar.1.as_bytes());
-        let acc = Account::new(sid, ar.0.clone(), pwd_hash);
+        let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
+        let acc = Account::new(sid, ar.moniker, pwd_hash);
 
+        
         match acc.save(&DB, true) {
             Ok(()) => {
                 if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
                     res.status_code(StatusCode::ACCEPTED);
-                    res.add_cookie(cookie::Cookie::new("auth", session_token.clone()));
+                    let mut c = cookie::Cookie::new("auth", session_token.clone());
+                    let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
+                    c.set_expires(exp);
+                    c.set_domain(
+                        req.uri().host().unwrap_or("localhost").to_string()
+                    );
+                    c.set_path("/");
+                    res.add_cookie(c);
                     res.render(Json(serde_json::json!({
                         "msg": "authorized",
                         "sid": sid
@@ -1907,7 +2021,10 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             res.render(Json(serde_json::json!({"err":"Failed to call next http handler"})));
         }
     } else {
-        brq(res, "failed to authorize, bad AuthRequest details");
+        if let Ok(b) = req.parse_body_with_max_size(4000).await {
+            println!("bad auth request: {}", String::from_utf8(b).unwrap_or_else(|_| String::from("unknown")));
+        }
+        brq(res, "failed to authorize, bad Auth Request details");
     }
 }
 
@@ -2413,14 +2530,21 @@ const SEARCH_INDEX_PATH: &str = "./search-index";
 struct PutWrit{
     public: bool,
     title: String,
+    kind: String,
     content: String,
     state: Option<String>,
     tags: String // comma separated
 }
 
 #[derive(Deserialize, Serialize)]
+struct DeleteWrit {
+    ts: u64
+}
+
+#[derive(Deserialize, Serialize)]
 struct Writ{
     ts: u64,
+    kind: String,
     owner: u64,
     public: bool,
     title: String,
@@ -2505,6 +2629,7 @@ impl Search{
             .set_index_option(IndexRecordOption::WithFreqsAndPositions));
         schema_builder.add_text_field("content", text_options.clone());
         schema_builder.add_text_field("title", text_options.clone());
+        schema_builder.add_text_field("kind", text_options.clone());
         schema_builder.add_text_field("tags", text_options);
         schema_builder.add_json_field("state", STORED | TEXT);
         schema_builder.add_bool_field("public", INDEXED | STORED);
@@ -2527,6 +2652,19 @@ impl Search{
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
+    fn remove_doc(&self, ts: u64) -> tantivy::Result<()> {
+        let mut index_writer = self.index_writer.write();
+        index_writer.delete_term(Term::from_field_u64(self.schema.get_field("ts").unwrap(), ts));
+        index_writer.commit()?;
+        Ok(())
+    }
+
+    fn update_doc(&self, writ: &Writ) -> tantivy::Result<()> {
+        let mut index_writer = self.index_writer.write();
+        index_writer.delete_term(Term::from_field_u64(self.schema.get_field("ts").unwrap(), writ.ts));
+        writ.add_to_index(&mut index_writer, &self.schema)
+    }
+
     fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>) -> tantivy::Result<Vec<Writ>> {
         match Writ::search_for(query, limit, page, self) {
             Ok(results) => {
@@ -2535,6 +2673,7 @@ impl Search{
                     let mut ts: u64 = 0;
                     let mut title = String::new();
                     let mut content = String::new();
+                    let mut kind = String::new();
                     let mut tags: String = String::new();
                     let mut public = false;
                     let mut owner: u64 = 1997;
@@ -2550,6 +2689,9 @@ impl Search{
                             },
                             "title" => {
                                 title = val.as_text().unwrap().to_string();
+                            },
+                            "kind" => {
+                                kind = val.as_text().unwrap().to_string();
                             },
                             "content" => {
                                 content = val.as_text().unwrap().to_string();
@@ -2574,7 +2716,7 @@ impl Search{
                         }
                     }
                     if public || include_public_for_owner.is_some_and(|o| o == owner || o == 1997) {
-                        writs.push(Writ{ts, public, owner, title, content, state, tags});
+                        writs.push(Writ{ts, public, owner, kind, title, content, state, tags});
                     }
                 }
                 Ok(writs)
@@ -2610,17 +2752,37 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             if let Ok((_pm, o, _, _, _)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
                 // token session
                 _owner = Some(o);
-            } else {
+            } else if req.method() != Method::GET {
                 brq(res, "not authorized to use the search api");
                 return;
             }
-        } else {
+        } else if req.method() != Method::GET {
             brq(res, "not authorized to use the search api");
             return;
         }
     }
 
-    if req.method() == Method::POST {
+    if req.method() == Method::GET {
+        // serve public searchable items
+        match req.query::<String>("q") {
+            Some(q) => {
+                // if there's a page query use it
+                let page = match req.query::<usize>("p") {
+                    Some(p) => p,
+                    None => 0,
+                };
+                match SEARCH.search(&q, 128, page, _owner) {
+                    Ok(writs) => {
+                        res.render(Json(writs));
+                    },
+                    Err(e) => brqe(res, &e.to_string(), "failed to search"),
+                }
+            },
+            None => {
+                brq(res, "no query provided");
+            }
+        }
+    } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => {
                 // search for the query
@@ -2641,6 +2803,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 let writ = Writ{
                     ts: now(),
                     public: pw.public,
+                    kind: pw.kind,
                     owner: _owner.unwrap(),
                     title: pw.title,
                     content: pw.content,
@@ -2656,6 +2819,42 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 }
             },
             Err(e) => brqe(res, &e.to_string(), "failed to add to index, bad body"),
+        }
+    } else if req.method() == Method::DELETE { 
+        match req.parse_json::<DeleteWrit>().await {
+            Ok(dw) => {
+                // remove the writ from the index
+                match SEARCH.remove_doc(dw.ts) {
+                    Ok(()) => res.render(Json(serde_json::json!({
+                        "success": true,
+                    }))),
+                    Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
+                }
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to remove from index, bad body"),
+        }
+    } else if req.method() == Method::PATCH {
+        match req.parse_json::<PutWrit>().await {
+            Ok(pw) => {
+                let writ = Writ{
+                    ts: now(),
+                    public: pw.public,
+                    owner: _owner.unwrap(),
+                    title: pw.title,
+                    kind: pw.kind,
+                    content: pw.content,
+                    state: pw.state,
+                    tags: pw.tags,
+                };
+                // update the writ in the index
+                match SEARCH.update_doc(&writ) {
+                    Ok(()) => res.render(Json(serde_json::json!({
+                        "success": true,
+                    }))),
+                    Err(e) => brqe(res, &e.to_string(), "failed to update index"),
+                }
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to update index, bad body"),
         }
     } else {
         return brqe(res, "method not allowed", "method not allowed");

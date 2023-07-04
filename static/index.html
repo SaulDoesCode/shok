@@ -6,24 +6,14 @@
     <link rel='icon' type='image/png' href='https://bafybeic6u7hg2zuml3azq75byba4nvocgti65r7xsplrak2crwajlenhbq.ipfs.w3s.link/favicon.png'>
     <title>kurshok</title>
     <link rel="stylesheet" href="style.css">
+    <script src="./panbox.js"></script>
 </head>
 <body>
     <header>
         shok
     </header>
     <main>
-      
-    </main>
-    <script type="module" async>
-        import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
-        const {section, div, span, h1, header, article} = d.domfn
-        const {query, render} = d
-        await d.ready
-
-        
-    </script>
-    <nav>
-        <header class="gr">
+        <pan-box>
             <a href="https://github.com/SaulDoesCode">
                 <img height="26" width="26" src="https://unpkg.com/simple-icons@v9/icons/github.svg" alt="github link">
             </a>
@@ -45,6 +35,21 @@
 			<a href="https://www.goodreads.com/author/show/19677114.Saul_van_der_Walt" title="goodreads">
 				<img height="26" width="26" alt="goodreads" src="https://unpkg.com/simple-icons@v9/icons/goodreads.svg" />
 			</a>
+
+            
+        </pan-box>
+    </main>
+    <script type="module" async>
+        import d from './domlib.js'
+        const {section, div, span, h1, header, article} = d.domfn
+        const {query, render} = d
+        await d.ready
+
+        
+    </script>
+    <nav>
+        <header class="gr">
+            
             <h1>kurshok</h1>
         </header>
     </nav>

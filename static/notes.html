@@ -157,6 +157,7 @@
     </main>
     <script type="module" async>
         import d from 'https://cdn.jsdelivr.net/gh/SaulDoesCode/kurshok/dist/domlib.js'
+        import http from 'http.js'
         const {section, div, span, h1, p, button, header, article, footer} = d.domfn
         const {queryAsync, render} = d
 
@@ -247,6 +248,13 @@
                             p(
                                 span.timestamp(new Date(note.ts)),
                                 span.owner(note.owner)
+                            ),
+                            section.writ_btns(
+                                button.edit({
+                                    async onpointerdown(e) {
+                                        http.patch.json('/api/search', {ts: note.ts})
+                                    }
+                                }, 'edit')
                             )
                         ),
                         section(note.content),
