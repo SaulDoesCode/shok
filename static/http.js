@@ -56,7 +56,7 @@ const fancify = fn => new Proxy(fn, {get: (f, url) => async (...args) => await f
 const ppp = method => fancify(async (url, body, ops = {}) => await handleResponse(await fetch(url, mog(method, body, ops))))
 const gl = method => fancify(async (url, ops) => await handleResponse(await fetch(url, mog(method, null, ops))))
 
-document.body.prepend(httpOutput)
+document.body.append(httpOutput)
 
 export default {
     post: ppp('POST'),

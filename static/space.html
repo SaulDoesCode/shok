@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>space</title>
     <style>
+        :root {
+            --highlight-color: #e90b3ff1;
+            --selected-color: #f12260;
+        }
         html {
             font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
             background: #ffdddd;
@@ -12,14 +16,13 @@
         body {
             display: flex;
             flex-flow: column nowrap;
-            justify-content: center;
+            justify-content: flex-start;
             align-items: center;
             overflow: hidden;
             overscroll-behavior: none;
             width: 100vw;
             height: 100vh;
             margin: 0;
-            margin-top: 1cm;
             padding: 0;
             background: #ffdddd;
         }
@@ -36,7 +39,7 @@
             align-content: space-evenly;
             align-items: center;
             width: calc(4 * 7.3cm);
-            max-height: 70vh;
+            max-height: 72.5vh;
             padding: 3mm;
             margin: 1mm auto 3mm auto;
             overflow: scroll;
@@ -45,20 +48,18 @@
             text-align: center;
             z-index: 0;
         }
+
         .item {
             position: relative;
-            display: inline-flex;
-            box-sizing: border-box;
-            width: 7.14296cm;
-            height: 4cm;
-            font-size: 1.044rem;
+            display: inline-block;
+            width: 6cm;
+            height: 6cm;
             background: #fff;
-            border-radius: 2mm;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-items: center;
-            margin: 1.888mm;
-            user-select: none;
+            border-radius: 1mm;
+            margin: 1mm;
+            padding: 1mm;
+            line-height: 1;
+            border: 1px dashed #e90b3ff1;
         }
         .item.active {
             background: #000;
@@ -67,16 +68,57 @@
             box-shadow: 0 0 .98rem 0.3rem #00000020, 0 0 .8rem 0.3rem hsla(346, 91%, 48%, .4);
             user-select: text;
         }
-        textarea.item {
-            resize: none;
+        .item > header {
+            position: relative;
+            box-sizing: border-box;
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            margin: 1mm;
+        }
+        .item > header > h2 {
+            position: relative;
+            display: inline-flex;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            margin: 3mm;
+            padding: 0;
+            font-size: 1.2rem;
+            text-align: center;
             overflow-wrap: break-word;
             overflow: hidden;
-            padding: .4mm;
-            text-align: center;
-            align-self: center;
-            line-height: .87;
+            text-overflow: ellipsis;
         }
-
+        .tags {
+            position: relative;
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            margin: 1mm;
+            padding: 0;
+            text-align: center;
+            text-overflow: ellipsis;
+        }
+        .composer {
+            position: relative;
+            display: flex;
+            flex-flow: column wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            margin: 0;
+            padding: 0;
+            background: #fff;
+            border-radius: 2mm;
+            margin: 2mm auto 1mm auto;
+            user-select: none;
+        }
         .controls {
             position: relative;
             display: flex;
@@ -131,20 +173,25 @@
             box-shadow: 0 0 1rem .99rem hsl(0, 0%, 100%);
         }
 
-        body > header:last-of-type {
+        .interaction-ui {
             overscroll-behavior: none; 
-            margin-top: 1.2cm;
-            position: relative;
+            margin-top: 4mm;
+            position: fixed;
+            bottom: 0%;
             display: grid;
-            align-content: baseline;
+            align-content: flex-start;
             justify-content: space-between;
             align-items: center;
             flex-flow: row wrap;
-            grid-template-columns: 3cm 1fr 1fr;
+            grid-template-columns: 3cm 1fr 1fr 1fr 1fr;
             gap: 1mm;
             z-index: 1;
             user-select: none;
             text-align: center;
+        }
+
+        .divider {
+            color: #ccccccc5;
         }
 
         header > b:first-of-type {
@@ -176,15 +223,16 @@
         }
 
         nav {
-            position: fixed;
+            position: relative;
             top: 0;
             display: flex;
             flex-flow: row wrap;
             justify-content: center;
             align-content: center;
             align-items: center;
-            border-radius: 2mm;
-            height: 1.2cm;
+            border-radius: 1px;
+            height: 8mm;
+            margin: 2mm auto 8mm auto;
             background: #fff;
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
             filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
@@ -194,15 +242,17 @@
         input[name="search"] {
             box-sizing: border-box;
             width: 100%;
-            height: 100%;
             border: none;
             background: transparent;
             outline: none;
-            font-size: 1.2rem;
-            font-weight: 600;
+            font-size: .98rem;
             text-align: left;
             color: #000;
             user-select: none;
+        }
+
+        .private {
+            font-size: .6rem;
         }
 
         /*
@@ -223,19 +273,67 @@
                 margin: 1mm;
             }
         }
+
+        button, input[type="submit"] {
+            padding: 0.5rem 1rem;
+            border-radius: .333rem;
+            margin: .333rem;
+            cursor: pointer;
+            background: var(--highlight-color);
+            color: #fff;
+            text-shadow: 0 1px 3px #00000020;
+            transition: all 120ms ease-in;
+            box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213);
+        }
+
+        button:hover, input[type="submit"]:hover {
+            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
+            background-color: var(--selected-color);
+            border: .02rem solid var(--highlight-color);
+        }
+
+        input {
+            padding: 0.25rem .75rem;
+            border-radius: .333rem;
+            margin: .111rem;
+            border: 1px solid #00000020;
+        }
+
+        button:hover {
+            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
+        }
+
+        .auth {
+            display: flex;
+            flex-flow: column wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            border-radius: 1px;
+            background: #fff;
+            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
+            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
+            z-index: 1;
+        }
     </style>
 </head>
 <body>
     <nav>
         <section class="search">
-            <input type="text" name="search" placeholder="search" />
+            <input type="text" name="search" placeholder="search" value="meta"/>
         </section>
     </nav>
     <main class="soft-edge">
         
     </main>
-    <header>
+    <header class="interaction-ui">
         <b><span class="kur">kur</span>shok</b>
+
+        <section class="auth">
+            <input type="text">
+            <input type="password">
+            <button class="auth-btn">authenticate</button>
+        </section>
         
         <section class="controls">
             <span>←</span>
@@ -268,12 +366,16 @@
             if (active < 0) active = items.length + (active % items.length)
             else if (active >= items.length) active = active % items.length
             if (lastActive) lastActive.classList.remove('active')
-            items[active].classList.add('active')
-            scroll && items[active].scrollIntoViewIfNeeded()
-            lastActive = items[active]
+            const ia = items[active]
+            if (ia) {
+                ia.classList.add('active')
+                scroll && ia.scrollIntoViewIfNeeded()
+                lastActive = ia
+            }
         }
         // get the amound of items in a row given the size and margins
         const getItemsInRow = () => {
+            if (!items.length) return 0
             const {width, marginLeft, marginRight} = getComputedStyle(items[0])
             const itemWidth = parseFloat(width)
             const itemMarginLeft = parseFloat(marginLeft)
@@ -283,10 +385,9 @@
             return itemsInRow
         }
         const makeItem = (text, i) => {
-            const item = document.createElement('textarea')
+            const item = article.item(text)
             item.classList.add('item')
-            item.name = i
-            item.value = text
+            item.getAttribute('name', i)
             items.push(item)
             return item
         }
@@ -351,6 +452,7 @@
 
         document.onkeydown = async e => {
             if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
+            if (e.target.tagName != 'INPUT' || e.target.getAttribute('name') != 'search') return
             if (e.key.includes('Arrow')) {
                 e.preventDefault()
                 switch(e.key.replace('Arrow', '')) {
@@ -380,62 +482,204 @@
             }
         }
 
-        main.ondblclick = e => {
-            if (e.target.classList && e.target.classList.contains('item')) {
-                if (e.target.style.width === '6cm') {
-                    Object.assign(e.target.style, {
-                        width: '',
-                        height: ''
-                    })
-                } else {
-                    Object.assign(e.target.style, {
-                        width: '6cm',
-                        height: '6cm'
-                    })
+        main.onpointerdown = e => {
+            let item = e.target
+            if (!item && item.classList) return
+            if (!item.classList.contains('item')) {
+                if (item.tagName == 'SPAN' && item.textContent.includes('private')) {
+                    // togle the writ's public boolean
+
                 }
-                e.target.focus()
+                if (item.parentNode && item.parentNode.classList) {
+                    if (item.parentNode.classList.contains('item')) {
+                        item = item.parentNode
+                    }
+                }
             }
+            if (!item.classList.contains('item')) return
+            if (e.button === 1) {
+                console.log(e)
+                e.preventDefault()
+                http.del('/api/search/'+ item.ts)
+                setTimeout(() => {
+                    populateBodywithCards()
+                }, 600)
+            }
+            if (item.style.width === '11cm') {
+                Object.assign(item.style, {
+                    width: '',
+                    height: ''
+                })
+            } else {
+                Object.assign(item.style, {
+                    width: '11cm',
+                    height: 'content-fit'
+                })
+            }
+            e.target.focus()
         }
 
-        main.onpointerdown = e => {
-            if (e.target.classList && e.target.classList.contains('item')) {
-                e.preventDefault()
-                if (lastActive) lastActive.classList.remove('active')
-                e.target.classList.add('active')
-                lastActive = e.target
-                active = items.indexOf(e.target)
+        const customContextMenu = (e, obj) => {
+            e.preventDefault()
+            const menu = document.createElement('div')
+            menu.classList.add('context-menu')
+            menu.style.left = e.clientX + 'px'
+            menu.style.top = e.clientY + 'px'
+            const text = document.createElement('p')
+            text.textContent = 'Copy'
+            text.classList.add('context-menu-item')
+            text.onpointerdown = () => {
+                navigator.clipboard.writeText(displayObjectText(obj))
+                menu.remove()
             }
+            menu.appendChild(text)
+            document.body.appendChild(menu)
+            setTimeout(() => {
+                menu.remove()
+            }, 3000)
         }
 
         main.oncontextmenu = e => {
             if (e.target.classList && e.target.classList.contains('item')) {
                 e.preventDefault()
                 e.target.focus()
+                customContextMenu(e, lastActive)
             }
         }
 
-        const searchForWrits = async (q = search.value, p = 0) => {
-            q = `kind:note ${q}`
-            const res = await http.get('/api/search?q=' + q + `&p=${p}`)
-            console.log(res)
+        const niceTime = ts => {
+            const date = new Date(ts * 1000)
+            return `${date.getMonth()}/${date.getDate()}/${date.getFullYear()}`
         }
 
-        window.makeWrit = async w => {
-            const res = await http.put('/api/search/', w)
+        const displayObject = obj => {
+            const div = document.createElement('div')
+            for (const key in obj) {
+                const p = document.createElement('p')
+                p.textContent = `${key}: ${obj[key]}`
+                div.appendChild(p)
+            }
+            return div
+        }
+
+        const displayObjectText = obj => {
+            let text = ''
+            for (const key in obj) text += `${key}: ${obj[key]}\n`
+            return text
+        }
+
+        const searchForWrits = async (q = search.value, p = 0) => {
+            q = `kind:post ${q}`
+            const writs = await http.get('/api/search?q=' + q + `&p=${p}`)
+            if (writs.length) {
+                // display them in main as items
+                const divider = "<span class=\"divider\"> | </span>"
+                main.innerHTML = ''
+                for (const writ of writs) {
+                    const item = makeItem(d.html`<header>
+                            <h2>${writ.title}</h2>
+                            <time>${niceTime(writ.ts)}</time>${divider}
+                            ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
+                            <span class="owner">${writ.owner}</span>${divider}
+                        </header>
+                        <section class="content">${writ.content}</section>
+                        <div class="tags">${writ.tags}</div>
+                        <div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`,
+                     writ.id)
+                    item.writ = writ
+                    item.ts = writ.ts
+                    main.appendChild(item)
+                }
+                console.log(writs)
+            }
+        }
+
+        const composeWrit = async (title, content, tags = '', state = {}, p) => {
+            const writ = {
+                public: !!p,
+                title,
+                kind: 'post',
+                content,
+                state: (state != null && state != '') ? JSON.stringify(state) : '{}',
+                tags: 'post experimental ' + tags
+            }
+            const res = await http.put('/api/search', writ)
             console.log(res)
+            return res
+        }
+
+        const htmlWritMaker = d.html`<section class="composer">
+<input type="text" name="title" placeholder="Title" />
+<textarea name="content" placeholder="Content" ></textarea>
+<input type="text" name="tags" placeholder="Tags" />
+<input type="text" name="state" placeholder="optional json state field" />
+<div>
+    <input type="checkbox" name="public" checked/>
+    <input type="submit" value="save" />
+</div>
+</section>`[0][0]
+
+        const [
+            titleIn,
+            contentIn,
+            tagsIn,
+            stateIn,
+            pbbdiv
+        ] = htmlWritMaker.children
+        const [pbIn, saveBtn] = pbbdiv.children
+
+        render(htmlWritMaker, 'body > header')
+
+        saveBtn.onpointerdown = async e => {
+            e.preventDefault()
+            const res = await composeWrit(
+                titleIn.value,
+                contentIn.value,
+                tagsIn.value,
+                stateIn.value.length ? JSON.parse(stateIn.value) : '',
+                pbIn.checked
+            )
+            console.log(res)
+            populateBodywithCards()
         }
 
         const populateBodywithCards = async () => {
-            const body = document.body
-            let i = 256
-            while (--i > -1) makeItem(`${i}`.repeat(93), i)
-            items[0].classList.add('active')
-            lastActive = items[0]
-            main.append(...items)
+            await searchForWrits(search.value)
             rowWidth = getItemsInRow()
         }
 
         populateBodywithCards()
+
+        const authenticate = async () => {
+            try {
+                const data = await http.post('/auth', {
+                    moniker: query('.auth input[type="text"]').value.trim(),
+                    pwd: query('.auth input[type="password"]').value.trim()
+                })
+                // display the result then remove the auth form
+                if (data.err == null) {
+                    query('.auth').innerHTML = `
+                        <p>Authenticated</p>
+                        <p>Server Response Info: ${displayObjectText(data)}</p>
+                    `
+                    populateBodywithCards()
+                }
+            } catch(e) {
+                const errMsg = d.html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
+                query('.auth').append(errMsg)
+                setTimeout(() => errMsg.remove(), 5000)
+            }
+        }
+
+        query('button.auth-btn').onpointerdown = e => {
+            authenticate()
+        }
+
+        query('input[type="password"]').onkeydown = e => {
+            if (e.key === 'Enter') {
+                authenticate()
+            }
+        }
     </script>
 </body>
 </html>

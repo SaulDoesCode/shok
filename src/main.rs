@@ -15,11 +15,11 @@ use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, Re
 use tantivy::{
     doc,
     collector::TopDocs,
-    query::QueryParser,
+    query::{QueryParser, TermQuery},
     schema::*,
     Index,
     // IndexReader, ReloadPolicy,
-    IndexWriter, DateTime, columnar::MonotonicallyMappableToU64,
+    IndexWriter, DateTime
 };
 use parking_lot::RwLock;
 
@@ -296,17 +296,18 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
 const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
 // token, account_id, expiry
-const SESSIONS: TableDefinition<&str, (u64, u64)> = TableDefinition::new("sessions");
+const SESSIONS: TableDefinition<&[u8], (u64, u64)> = TableDefinition::new("sessions");
 
-const SESSION_EXPIRIES: TableDefinition<u64, &str> = TableDefinition::new("session_expiries");
+const SESSION_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("session_expiries");
 
 fn expire_sessions() -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
-        t.drain_filter(now().., |_, v| {
+        t.drain_filter(..now(), |_, v| {
             let st = wrtx.open_table(SESSIONS);
-            st.is_ok() && st.unwrap().remove(v).is_ok()
+            let tkh = TOKEN_HASHER.hash(v);
+            st.is_ok() && st.unwrap().remove(tkh.as_slice()).is_ok()
         })?;
     }
     wrtx.commit()?;
@@ -317,7 +318,8 @@ fn expire_session(token: &str) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(SESSIONS)?;
-        t.remove(token)?;
+        let tkh = TOKEN_HASHER.hash(token.as_bytes());
+        t.remove(tkh.as_slice())?;
     }
     Ok(())
 }
@@ -326,7 +328,8 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
-        t.insert(expiry, token)?;
+        let tkh = TOKEN_HASHER.hash(token.as_bytes());
+        t.insert(expiry, tkh.as_slice())?;
     }
     Ok(())
 }
@@ -468,6 +471,17 @@ struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     pd: PhantomData<T>,
 }
 
+/*
+
+Welcome, tis an experiment at blogging
+
+Handrolled tech stack, and auth lol. oop. 
+
+anyway, it seems to work, not really finished but for a doodle it is functional.. somewhat, now and again.. eh. lemme know. 
+
+meta update
+ */
+
 // todo: encryption, serialization, generics for value type [done :D, 30 June, but not tested yet]
 
 #[handler]
@@ -476,7 +490,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
     let mut _pwd: Option<U8s> = None;
-    if session_check(req, Some(ADMIN_ID)).await {
+    if session_check(req, Some(ADMIN_ID)).await.is_some() {
         // admin session
         _is_admin = true;
         _pwd = Some(PWD.0.clone());
@@ -762,7 +776,7 @@ fn run_scoped_variable_exps() -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut exp_t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
-        exp_t.drain_filter(now().., |_, (_owner, _moniker)| {
+        exp_t.drain_filter(..now(), |_, (_owner, _moniker)| {
             true
         })?;
     }
@@ -959,7 +973,7 @@ async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
-    if session_check(req, Some(ADMIN_ID)).await {
+    if session_check(req, Some(ADMIN_ID)).await.is_some() {
         // admin session
         _is_admin = true;
     } else {
@@ -1350,12 +1364,16 @@ async fn main() {
                         .post(speak)
                 )
                 .push(
-                    Router::with_path("/perms")
-                        .post(modify_perm_schema)
-                )
-                .push(
                     Router::with_path("/search")
                     .handle(search_api)
+                )
+                .push(
+                    Router::with_path("/search/<ts>")
+                        .delete(search_api)
+                )
+                .push(
+                    Router::with_path("/perms")
+                        .post(modify_perm_schema)
                 )
                 .push(
                     Router::with_path("/make-tokens")
@@ -1554,7 +1572,7 @@ impl Account {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Session(String, u64, u64); // auth cookie, id, expiry
 
 impl Session {
@@ -1574,10 +1592,10 @@ impl Session {
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_table(SESSIONS)?;
-            t.insert(self.0.as_str(), (self.1, self.2))?;
+            let tkh = TOKEN_HASHER.hash(self.0.as_bytes());
+            t.insert(tkh.as_slice(), (self.1, self.2))?;
             let mut et = wrtx.open_table(SESSION_EXPIRIES)?;
-            et.insert(self.2, self.0.as_str())?;
-            
+            et.insert(self.2, tkh.as_slice())?;
         }
         wrtx.commit()?;
         Ok(())
@@ -1592,16 +1610,17 @@ impl Session {
         let mut expired = false;
         let mut exiry_timestamp = 0;
         let mut sid = None;
+        let tkh = TOKEN_HASHER.hash(auth.as_bytes());
         {
             let mut t = wrtx.open_table(SESSIONS)?;
-            if let Some(ag) = t.get(auth)? {
+            if let Some(ag) = t.get(tkh.as_slice())? {
                 let (id, exp) = ag.value();
                 expired = exp < now();
                 sid = Some(id);
                 exiry_timestamp = exp;
             }
             if expired {
-                t.remove(auth)?;
+                t.remove(tkh.as_slice())?;
                 return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session expired.")));
             }
         }
@@ -1765,7 +1784,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
                             }
                         },
                         None => {
-                            if !session_check(req, Some(ADMIN_ID)).await {
+                            if session_check(req, Some(ADMIN_ID)).await.is_none() {
                                 brq(res, "unauthorized");
                                 return;
                             }
@@ -1794,7 +1813,7 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
             Ok((_, _, _, _, _)) => tkn = format!("?tk={tk}"),
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
-        None => if !session_check(req, Some(ADMIN_ID)).await {
+        None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
             return brq(res, "unauthorized");
         }
     };
@@ -1826,7 +1845,7 @@ async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Res
             Ok(_) => {},
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
-        None => if !session_check(req, Some(ADMIN_ID)).await {
+        None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
             return brq(res, "unauthorized");
         }
     }
@@ -1862,16 +1881,21 @@ async fn auth_check(pwd: &str) -> bool {
     check_admin_password(pwd.as_bytes())
 }
 
-async fn session_check(req: &mut Request, id: Option<u64>) -> bool {
+async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
     if let Some(session) = req.cookie("auth") {
         if let Ok(s) = Session::check(session.value(), &DB) {
+            println!("session checked: {:?}", s);
             if let Some(id) = id {
-                return s.1 == id;
+                if s.1 != id {
+                    return None;
+                }
             }
-            return true;
-        }   
+            return Some(s.1);
+        } else {
+            println!("invalid session");
+        }
     }
-    false
+    None
 }
 
 
@@ -1902,6 +1926,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
         }
         match Account::from_moniker(&ar.moniker, &DB) {
             Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
+                println!("acc: {:?}", acc);
                 res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
@@ -2217,7 +2242,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
-    if session_check(req, Some(ADMIN_ID)).await {
+    if session_check(req, Some(ADMIN_ID)).await.is_some() {
         // admin session
         _is_admin = true;
     } else {
@@ -2365,7 +2390,7 @@ struct MakeTokenRequest {
 async fn make_token_request(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // get a string from the post body, and set it as a variable called text
     if let Ok(mtr) = req.parse_json_with_max_size::<MakeTokenRequest>(2048).await {
-        if session_check(req, Some(ADMIN_ID)).await {
+        if session_check(req, Some(ADMIN_ID)).await.is_some() {
             // admin session
         } else {
             brq(res, "not authorized to make tokens");
@@ -2402,7 +2427,7 @@ async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Res
     // get a string from the post body, and set it as a variable called text
     if let Ok(pm) = req.parse_json_with_max_size::<PermSchemaCreationRequest>(1024).await {
         if pm.pwd.is_some() || !auth_check(&pm.pwd.unwrap()).await {
-            if session_check(req, Some(ADMIN_ID)).await {
+            if session_check(req, Some(ADMIN_ID)).await.is_some() {
                 // admin session
             } else {
                 res.status_code(StatusCode::BAD_REQUEST);
@@ -2432,7 +2457,7 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<SpeakRequest>(1024).await {
         if sr.pwd.is_none() || !auth_check(&sr.pwd.clone().unwrap()).await {
-            if session_check(req, Some(ADMIN_ID)).await {
+            if session_check(req, Some(ADMIN_ID)).await.is_some() {
                 // admin session
             } else {
                 res.status_code(StatusCode::BAD_REQUEST);
@@ -2500,7 +2525,7 @@ impl CMDRequest {
 
 #[handler]
 async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) {
-    if !session_check(req, Some(ADMIN_ID)).await {
+    if !session_check(req, Some(ADMIN_ID)).await.is_some() {
         // unauthorized
         res.status_code(StatusCode::UNAUTHORIZED);
         res.render(Json(serde_json::json!({"err": "unauthorized"})));
@@ -2556,10 +2581,11 @@ struct Writ{
 impl Writ {
     fn to_doc(&self, schema: &Schema) -> tantivy::Document {
         let mut doc = Document::new();
-        doc.add_date(schema.get_field("ts").unwrap(), DateTime::from_u64(self.ts));
+        doc.add_date(schema.get_field("ts").unwrap(), DateTime::from_timestamp_secs(self.ts as i64));
         doc.add_u64(schema.get_field("owner").unwrap(), self.owner);
         doc.add_text(schema.get_field("title").unwrap(), &self.title);
         doc.add_text(schema.get_field("content").unwrap(), &self.content);
+        doc.add_text(schema.get_field("kind").unwrap(), &self.kind);
         doc.add_text(schema.get_field("tags").unwrap(), &self.tags);
         doc.add_bool(schema.get_field("public").unwrap(), self.public);
         if let Some(state) = &self.state {
@@ -2631,7 +2657,7 @@ impl Search{
         schema_builder.add_text_field("title", text_options.clone());
         schema_builder.add_text_field("kind", text_options.clone());
         schema_builder.add_text_field("tags", text_options);
-        schema_builder.add_json_field("state", STORED | TEXT);
+        schema_builder.add_json_field("state", TEXT | STORED);
         schema_builder.add_bool_field("public", INDEXED | STORED);
         let schema = schema_builder.build();
 
@@ -2652,16 +2678,33 @@ impl Search{
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
-    fn remove_doc(&self, ts: u64) -> tantivy::Result<()> {
+    fn get_doc(&self, ts: u64) -> tantivy::Result<Document> {
+        let reader = self.index.reader()?;
+        let term = Term::from_field_date(self.schema.get_field("ts")?, DateTime::from_timestamp_secs(ts as i64));
+        let searcher = reader.searcher();
+        let term_query = TermQuery::new(term, IndexRecordOption::Basic);
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
+        let doc_address = top_docs[0].1;
+        let doc = searcher.doc(doc_address)?;
+        Ok(doc)
+    }
+
+    fn remove_doc(&self, ts: u64) -> tantivy::Result<u64> {
         let mut index_writer = self.index_writer.write();
-        index_writer.delete_term(Term::from_field_u64(self.schema.get_field("ts").unwrap(), ts));
+        let op_stamp = index_writer.delete_term(Term::from_field_date(
+            self.schema.get_field("ts")?,
+            DateTime::from_timestamp_secs(ts as i64)
+        ));
         index_writer.commit()?;
-        Ok(())
+        Ok(op_stamp)
     }
 
     fn update_doc(&self, writ: &Writ) -> tantivy::Result<()> {
         let mut index_writer = self.index_writer.write();
-        index_writer.delete_term(Term::from_field_u64(self.schema.get_field("ts").unwrap(), writ.ts));
+        index_writer.delete_term(Term::from_field_date(
+            self.schema.get_field("ts").unwrap(),
+            DateTime::from_timestamp_secs(writ.ts as i64)
+        ));
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
@@ -2685,7 +2728,7 @@ impl Search{
                         };
                         match fe.name() {
                             "ts" => if let Some(val) = val.as_date() {
-                                ts = val.to_u64();
+                                ts = val.into_timestamp_secs() as u64;
                             },
                             "title" => {
                                 title = val.as_text().unwrap().to_string();
@@ -2706,8 +2749,11 @@ impl Search{
                                 owner = o
                             },
                             "state" => if let Some(jsn) = val.as_json() {
-                                if let Ok(raw) = serde_json::to_string(jsn) {
-                                    state = Some(raw);
+                                // create a nice json object and stringify it so it is easy to consume on the client side
+                                if let Ok(out) = serde_json::to_vec_pretty(&jsn) {
+                                    if let Ok(s) = String::from_utf8(out) {
+                                        state = Some(s);
+                                    }
                                 }
                             },
                             _ => {
@@ -2743,10 +2789,14 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
     // authenticate
     let mut _is_admin = false;
     let mut _owner: Option<u64> = None;
-    if session_check(req, Some(ADMIN_ID)).await {
+    if session_check(req, Some(ADMIN_ID)).await.is_some() {
         // admin session
         _is_admin = true;
         _owner = Some(ADMIN_ID);
+        println!("the admin is searching...");
+    } else if let Some(id) = session_check(req, None).await { 
+        // user session
+        _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
             if let Ok((_pm, o, _, _, _)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
@@ -2820,18 +2870,49 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             },
             Err(e) => brqe(res, &e.to_string(), "failed to add to index, bad body"),
         }
-    } else if req.method() == Method::DELETE { 
-        match req.parse_json::<DeleteWrit>().await {
-            Ok(dw) => {
+    } else if req.method() == Method::DELETE {
+        if _owner.is_none() {
+            brq(res, "not authorized to delete posts from the index without the right credentials");
+            return;
+        }
+        match req.param::<u64>("ts") {
+            Some(ts) => {
+                // first lookup the document and see if the owner is the same as the request owner
+                match SEARCH.get_doc(ts) {
+                    Ok(doc) => {
+                        // get the owner field from the doc
+                        if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
+                            if let Some(o) = o.as_u64() {
+                                if o != _owner.unwrap() {
+                                    brq(res, "not authorized to delete posts from the index without the right credentials");
+                                    return;
+                                }
+                            } else {
+                                brq(res, "failed to remove from index, owner field is not a u64");
+                                return;
+                            }
+                        } else {
+                            brq(res, "failed to remove from index, owner field is missing");
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to remove from index, maybe it doesn't exist");
+                        return;
+                    },
+                };
                 // remove the writ from the index
-                match SEARCH.remove_doc(dw.ts) {
-                    Ok(()) => res.render(Json(serde_json::json!({
+                match SEARCH.remove_doc(ts) {
+                    Ok(op_stamp) => res.render(Json(serde_json::json!({
                         "success": true,
+                        "ops": op_stamp,
                     }))),
                     Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
                 }
             },
-            Err(e) => brqe(res, &e.to_string(), "failed to remove from index, bad body"),
+            None => {
+                brq(res, "failed to remove from index, invalid timestamp param")
+            },
         }
     } else if req.method() == Method::PATCH {
         match req.parse_json::<PutWrit>().await {
