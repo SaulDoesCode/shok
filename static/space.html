@@ -36,10 +36,10 @@
             display: block;
             flex-flow: row wrap;
             justify-content: center;
-            align-content: space-evenly;
+            align-content: center;
             align-items: center;
-            width: calc(4 * 7.3cm);
-            max-height: 72.5vh;
+            width: 97vw;
+            height: 82%;
             padding: 3mm;
             margin: 1mm auto 3mm auto;
             overflow: scroll;
@@ -52,8 +52,8 @@
         .item {
             position: relative;
             display: inline-block;
-            width: 6cm;
-            height: 6cm;
+            width: 6.6cm;
+            height: fit-content;
             background: #fff;
             border-radius: 1mm;
             margin: 1mm;
@@ -85,8 +85,9 @@
             justify-content: center;
             align-content: center;
             align-items: center;
-            margin: 3mm;
+            margin: 2.4mm;
             padding: 0;
+            width: 100%;
             font-size: 1.2rem;
             text-align: center;
             overflow-wrap: break-word;
@@ -126,11 +127,19 @@
             transform: translateY(0) scale(1);
             box-shadow: 0 0 .5rem 0.2rem hsla(0, 0%, 0%, 0.1), 0 0 .4rem 0.2rem hsla(346, 91%, 48%, .3);
         }
+        .composer textarea {
+            transition: all 120ms ease-in;
+        }
+        .composer:hover textarea {
+            min-height: 244px;
+            min-width: 174px;
+        }
         .controls {
             position: relative;
             display: flex;
             flex-flow: row wrap;
             justify-content: space-evenly;
+            min-width: 140px;
             align-content: center;
             align-items: center;
             gap: 1mm;
@@ -242,7 +251,7 @@
             align-items: center;
             border-radius: 1px;
             height: 8mm;
-            margin: 2mm auto 8mm auto;
+            margin: 2mm auto 4mm auto;
             background: #fff;
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
             filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
@@ -319,13 +328,18 @@
             justify-content: center;
             align-content: center;
             align-items: center;
-            border-radius: 1px;
+            border-radius: 1.5px;
             background: #fff;
             max-width: 5cm;
             width: min-content;
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
             filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
             z-index: 1;
+        }
+
+        .auth > button {
+            margin: .12rem;
+            padding: .12rem;
         }
     </style>
 </head>
@@ -516,13 +530,6 @@
                 http.del('/api/search/'+ item.ts)
                 setTimeout(populateBodywithCards, 600)
             }
-            Object.assign(item.style, item.style.width === '11cm' ? {
-                width: '',
-                height: ''
-            } : {
-                width: '11cm',
-                height: 'content-fit'
-            })
             e.target.focus()
         }
 
