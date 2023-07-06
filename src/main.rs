@@ -356,7 +356,15 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                     println!("failed to expire resources: {:?}", e);
                 }
             }
-            update_static_dir_paths();
+            std::thread::spawn(|| {
+                update_static_dir_paths();
+                match run_stored_commands() {
+                    Ok(()) => {},
+                    Err(e) => {
+                        println!("failed to run stored commands: {:?}", e);
+                    }
+                }
+            });
             match run_scoped_variable_exps() {
                 Ok(()) => {},
                 Err(e) => {
@@ -2574,15 +2582,59 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+
+// redb table definition to capture CMDRequest orders with a when field
+const CMD_ORDERS: TableDefinition<u64, &[u8]> = TableDefinition::new("cmd_orders"); 
+
+fn run_stored_commands() -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_table(CMD_ORDERS)?;
+        let mut _df = t.drain_filter(..now(), |_when, raw| {
+            if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
+                tokio::spawn(async move {
+                    let res = cmd.run().await;
+                    match res {
+                        Ok(out) => {
+                            println!("ran command: {:?}", cmd);
+                            println!("output: {:?}", out);
+                        },
+                        Err(e) => {
+                            println!("failed to run command: {:?}", cmd);
+                            println!("error: {:?}", e);
+                        }
+                    }
+                });
+                true
+            } else {
+                false
+            }
+        })?;
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct CMDRequest{
     cmd: String,
     cd: Option<String>,
     args: Strings,
-    stream: Option<bool>
+    stream: Option<bool>,
+    when: Option<u64>
 }
 
 impl CMDRequest {
+    async fn save_to_run_later(&self, db: &Database) -> anyhow::Result<()> {
+        let wrtx = db.begin_write()?;
+        {
+            let mut t = wrtx.open_table(CMD_ORDERS)?;
+            t.insert( &self.when.unwrap_or_else(|| now()), serde_json::to_vec(self)?.as_slice())?;
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
     async fn run(&self) -> std::io::Result<std::process::Output> {
         tokio::process::Command::new(&self.cmd)
             .args(&self.args)
@@ -2648,6 +2700,16 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
     }
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<CMDRequest>(168192).await {
+        if sr.when.is_some_and(|w| w < now()) {
+            if let Err(e) = sr.save_to_run_later(&DB).await {
+                brqe(res, &e.to_string(), "failed to save command to run later");
+            } else {
+                res.render(Json(serde_json::json!({
+                    "msg": "command saved to run later",
+                })));
+            }
+            return;
+        }
         if sr.stream.is_some_and(|stream| stream) {
             if let Err(e) = sr.stream_output(req, res).await {
                 brqe(res, &e.to_string(), "failed to stream output");
@@ -2978,7 +3040,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             Err(e) => brqe(res, &e.to_string(), "failed to search, bad body"),
         }
     } else if req.method() == Method::PUT {
-        match req.parse_json::<PutWrit>().await {
+        match req.parse_json_with_max_size::<PutWrit>(100_002).await {
             Ok(pw) => {
                 let writ = Writ{
                     ts: pw.ts.unwrap_or_else(|| now()),
@@ -3085,10 +3147,10 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             },
         }
     } else if req.method() == Method::PATCH {
-        match req.parse_json::<PutWrit>().await {
+        match req.parse_json_with_max_size::<PutWrit>(100_002).await {
             Ok(pw) => {
                 let writ = Writ{
-                    ts: now(),
+                    ts: pw.ts.unwrap_or_else(|| now()),
                     public: pw.public,
                     owner: _owner.unwrap(),
                     title: pw.title,
@@ -3099,9 +3161,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 };
                 // update the writ in the index
                 match SEARCH.update_doc(&writ) {
-                    Ok(()) => res.render(Json(serde_json::json!({
-                        "success": true,
-                    }))),
+                    Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
                     Err(e) => brqe(res, &e.to_string(), "failed to update index"),
                 }
             },
