@@ -1351,17 +1351,22 @@ async fn main() {
         )
         .push(
             Router::with_path("/auth").hoop(auth_limiter)
-            .post(auth_handler)
+                .post(auth_handler)
+                .delete(auto_unauth)
+        )
+        .push(
+            Router::with_path("/unauth")
+                .get(auto_unauth)
         )
         .push(
             Router::with_path("/api").hoop(api_limiter)
                 .push(
                     Router::with_path("/cmd")
-                        .post(cmd_request)
+                                .post(cmd_request)
                 )
                 .push(
                     Router::with_path("/speak")
-                        .post(speak)
+                            .post(speak)
                 )
                 .push(
                     Router::with_path("/search")
@@ -1601,11 +1606,15 @@ impl Session {
         Ok(())
     }
 
+    pub fn remove(auth: &str, db: &Database) -> Result<Self, redb::Error> {
+        Self::check(auth, true, db)
+    }
+
     pub fn expired(&self) -> bool {
         self.2 < now()
     }
 
-    pub fn check(auth: &str, db: &Database) -> Result<Self, redb::Error> {
+    pub fn check(auth: &str, force_remove: bool, db: &Database) -> Result<Self, redb::Error> {
         let wrtx = db.begin_write()?;
         let mut expired = false;
         let mut exiry_timestamp = 0;
@@ -1619,7 +1628,7 @@ impl Session {
                 sid = Some(id);
                 exiry_timestamp = exp;
             }
-            if expired {
+            if expired || force_remove {
                 t.remove(tkh.as_slice())?;
                 return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session expired.")));
             }
@@ -1785,7 +1794,8 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
                         },
                         None => {
                             if session_check(req, Some(ADMIN_ID)).await.is_none() {
-                                brq(res, "unauthorized");
+                                // return a 404
+                                nfr(res);
                                 return;
                             }
                         }
@@ -1883,7 +1893,7 @@ async fn auth_check(pwd: &str) -> bool {
 
 async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
     if let Some(session) = req.cookie("auth") {
-        if let Ok(s) = Session::check(session.value(), &DB) {
+        if let Ok(s) = Session::check(session.value(), false, &DB) {
             if let Some(id) = id {
                 if s.1 != id {
                     return None;
@@ -2066,6 +2076,23 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             println!("bad auth request: {}", String::from_utf8(b).unwrap_or_else(|_| String::from("unknown")));
         }
         brq(res, "failed to authorize, bad Auth Request details");
+    }
+}
+
+#[handler]
+async fn auto_unauth(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // remove the auth cookie and send an ok
+    if let Some(c) = req.cookie("auth") {
+        // remove the cookie
+        if let Err(e) = Session::remove(c.value().trim(), &DB) {
+            brqe(res, &e.to_string(), "failed to remove session from the system");
+            return;
+        }
+        res.cookies_mut().force_remove(&c);
+        res.status_code(StatusCode::ACCEPTED);
+        res.render(Json(serde_json::json!({"msg":"logged out"})));
+    } else {
+        brq(res, "no auth cookie");
     }
 }
 
@@ -2384,6 +2411,20 @@ pub fn brq(res: &mut Response, msg: &str) {
     })));
 }
 
+pub fn uares(res: &mut Response) {
+    res.status_code(StatusCode::UNAUTHORIZED);
+    res.render(Json(serde_json::json!({
+        "err": "not authorized to use the resource_api"
+    })));
+}
+// not found 404
+pub fn nfr(res: &mut Response) {
+    res.status_code(StatusCode::NOT_FOUND);
+    res.render(Json(serde_json::json!({
+        "err": "not found"
+    })));
+}
+
 fn brqe(res: &mut Response, err: &str, msg: &str) {
     res.status_code(StatusCode::BAD_REQUEST);
     res.render(Json(serde_json::json!({
@@ -2521,20 +2562,66 @@ async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl:
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 struct CMDRequest{
     cmd: String,
+    cd: Option<String>,
     args: Strings,
+    stream: Option<bool>
 }
 
 impl CMDRequest {
     async fn run(&self) -> std::io::Result<std::process::Output> {
-        let mut cmd = std::process::Command::new(&self.cmd);
-        for arg in &self.args {
-            cmd.arg(arg);
+        tokio::process::Command::new(&self.cmd)
+            .args(&self.args)
+            .current_dir(
+                &self.cd.clone().unwrap_or(
+                    std::env::current_dir().unwrap().to_string_lossy().to_string()
+                )
+            )
+            .output().await
+    }
+    async fn stream_output(&self, _req: &mut Request, res: &mut Response) -> anyhow::Result<()> {
+        // spawn a child process and have it run the command in a tokio task, use a channel to stream its outputs to the client
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(2048 * 2);
+        let mut child = tokio::process::Command::new(&self.cmd)
+            .args(&self.args)
+            .current_dir(
+                &self.cd.clone().unwrap_or(
+                    std::env::current_dir().unwrap().to_string_lossy().to_string()
+                )
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+
+        use tokio::io::*;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => return Err(
+                std::io::Error::new(std::io::ErrorKind::Other, "failed to get stdout").into()
+            )
+        };
+        let stderr = match child.stderr.take() {
+            Some(stdout) => stdout,
+            None => return Err(
+                std::io::Error::new(std::io::ErrorKind::Other, "failed to get stderr").into()
+            )
+        };
+        let mut stdout = BufReader::new(stdout).lines();
+        let mut stderr = BufReader::new(stderr).lines();
+        tokio::spawn(async move {
+            while let Some(line) = stdout.next_line().await.unwrap() {
+                tx.send(line).await.unwrap();
+            }
+            while let Some(line) = stderr.next_line().await.unwrap() {
+                tx.send(line).await.unwrap();
+            }
+        });
+        while let Some(line) = rx.recv().await {
+            res.render(Text::Plain(line));
         }
-        cmd.output()
+        Ok(())       
     }
 }
 
@@ -2549,15 +2636,17 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
     }
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<CMDRequest>(168192).await {
+        if sr.stream.is_some_and(|stream| stream) {
+            if let Err(e) = sr.stream_output(req, res).await {
+                brqe(res, &e.to_string(), "failed to stream output");
+            }
+            return;
+        }
         match sr.run().await {
-            Ok(result) => {
-                let output = String::from_utf8_lossy(&result.stdout);
-                let err = String::from_utf8_lossy(&result.stderr);
-                res.render(Json(serde_json::json!({
-                    "output": output,
-                    "err": err,
-                })));
-            },
+            Ok(result) => res.render(Json(serde_json::json!({
+                "output": String::from_utf8_lossy(&result.stdout),
+                "err": String::from_utf8_lossy(&result.stderr),
+            }))),
             Err(e) => brqe(res, &e.to_string(), "failed to run command, bad command prolly")
         }
     } else {
