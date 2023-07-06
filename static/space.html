@@ -106,7 +106,7 @@
             text-overflow: ellipsis;
         }
         .composer {
-            position: relative;
+            position:relative;
             display: flex;
             flex-flow: column wrap;
             justify-content: center;
@@ -118,6 +118,13 @@
             border-radius: 2mm;
             margin: 2mm auto 1mm auto;
             user-select: none;
+            box-shadow: 0 0 .98rem 0.3rem #00000020, 0 0 .8rem 0.3rem hsla(346, 91%, 48%, .4);
+            transform: translateY(7.777mm) scale(.666);
+            transition: all 123ms ease-in;
+        }
+        .composer:hover {
+            transform: translateY(0) scale(1);
+            box-shadow: 0 0 .5rem 0.2rem hsla(0, 0%, 0%, 0.1), 0 0 .4rem 0.2rem hsla(346, 91%, 48%, .3);
         }
         .controls {
             position: relative;
@@ -137,9 +144,10 @@
             justify-content: center;
             align-items: center;
             flex-flow: row wrap;
-            margin: .6mm;
+            margin-bottom: .4mm;
             width: 1.5rem;
             height: 1.5rem;
+            transform: translateY(-2rem);
             border-radius: 50%;
             background: #fff;
             box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
@@ -156,14 +164,14 @@
 
         .controls > span:nth-of-type(2) {
             position: absolute;
-            left: calc(50% - 14px);
+            left: calc(50% - 12px);
             top: 97%;
             z-index: 3;
         }
 
         .controls > span:last-of-type {
             position: absolute;
-            left: calc(50% - 14px);
+            left: calc(50% - 12px);
             bottom: 97%;
             z-index: 0;
         }
@@ -174,14 +182,16 @@
         }
 
         .interaction-ui {
+            box-sizing: border-box;
             overscroll-behavior: none; 
             margin-top: 4mm;
             position: fixed;
-            bottom: 0%;
+            bottom: 1.54mm;
+            padding: 1mm;
             display: grid;
             align-content: flex-start;
-            justify-content: space-between;
-            align-items: center;
+            justify-content: space-around;
+            align-items: flex-end;
             flex-flow: row wrap;
             grid-template-columns: 3cm 1fr 1fr 1fr 1fr;
             gap: 1mm;
@@ -305,12 +315,14 @@
 
         .auth {
             display: flex;
-            flex-flow: column wrap;
+            flex-flow: row wrap;
             justify-content: center;
             align-content: center;
             align-items: center;
             border-radius: 1px;
             background: #fff;
+            max-width: 5cm;
+            width: min-content;
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
             filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
             z-index: 1;
@@ -320,7 +332,7 @@
 <body>
     <nav>
         <section class="search">
-            <input type="text" name="search" placeholder="search" value="meta"/>
+            <input type="text" name="search" placeholder="search" value="test OR meta"/>
         </section>
     </nav>
     <main class="soft-edge">
@@ -330,9 +342,11 @@
         <b><span class="kur">kur</span>shok</b>
 
         <section class="auth">
-            <input type="text">
-            <input type="password">
-            <button class="auth-btn">authenticate</button>
+            <span class="inputs">
+                <input type="text">
+                <input type="password">
+            </span>
+            <button class="auth-btn" title="authenticate">🔓</button>
         </section>
         
         <section class="controls">
@@ -349,7 +363,7 @@
         import http from './http.js'
 
         const {query, render, domfn} = d
-        const {section, div, span, p, header, article, textarea} = domfn
+        const {section, div, button, span, p, header, article, textarea} = domfn
         await d.ready
         const main = query('main')
         const controls = query('.controls')
@@ -411,16 +425,16 @@
                 switch(dir) {
                     case '←':
                         setActive(active - 1)
-                        break
+                    break
                     case '→':
                         setActive(active + 1)
-                        break
+                    break
                     case '↑':
                         setActive(active - rowWidth)
-                        break
+                    break
                     case '↓':
                         setActive(active + rowWidth)
-                        break
+                    break
                 }
             }
         }
@@ -452,7 +466,7 @@
 
         document.onkeydown = async e => {
             if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
-            if (e.target.tagName != 'INPUT' || e.target.getAttribute('name') != 'search') return
+            if (e.target.tagName == 'INPUT' && !e.target == search) return
             if (e.key.includes('Arrow')) {
                 e.preventDefault()
                 switch(e.key.replace('Arrow', '')) {
@@ -482,40 +496,33 @@
             }
         }
 
-        main.onpointerdown = e => {
+        main.onpointerdown = async e => {
             let item = e.target
             if (!item && item.classList) return
             if (!item.classList.contains('item')) {
                 if (item.tagName == 'SPAN' && item.textContent.includes('private')) {
-                    // togle the writ's public boolean
-
+                    // togle the writ's public boolean by upserting the whole document with that field fliped
+                    const writ = item.parentNode.parentNode.writ
+                    writ.public = !writ.public
+                    await http.put('/api/search/', writ)
                 }
-                if (item.parentNode && item.parentNode.classList) {
-                    if (item.parentNode.classList.contains('item')) {
-                        item = item.parentNode
-                    }
-                }
+                if (item.parentNode && item.parentNode.classList) 
+                    if (item.parentNode.classList.contains('item')) item = item.parentNode
             }
             if (!item.classList.contains('item')) return
             if (e.button === 1) {
                 console.log(e)
                 e.preventDefault()
                 http.del('/api/search/'+ item.ts)
-                setTimeout(() => {
-                    populateBodywithCards()
-                }, 600)
+                setTimeout(populateBodywithCards, 600)
             }
-            if (item.style.width === '11cm') {
-                Object.assign(item.style, {
-                    width: '',
-                    height: ''
-                })
-            } else {
-                Object.assign(item.style, {
-                    width: '11cm',
-                    height: 'content-fit'
-                })
-            }
+            Object.assign(item.style, item.style.width === '11cm' ? {
+                width: '',
+                height: ''
+            } : {
+                width: '11cm',
+                height: 'content-fit'
+            })
             e.target.focus()
         }
 
@@ -569,8 +576,7 @@
         }
 
         const searchForWrits = async (q = search.value, p = 0) => {
-            q = `kind:post ${q}`
-            const writs = await http.get('/api/search?q=' + q + `&p=${p}`)
+            const writs = await http.get('/api/search?q=' + q + `&p=${p}k=post`)
             if (writs.length) {
                 // display them in main as items
                 const divider = "<span class=\"divider\"> | </span>"
@@ -628,8 +634,6 @@
         ] = htmlWritMaker.children
         const [pbIn, saveBtn] = pbbdiv.children
 
-        render(htmlWritMaker, 'body > header')
-
         saveBtn.onpointerdown = async e => {
             e.preventDefault()
             const res = await composeWrit(
@@ -651,33 +655,56 @@
         populateBodywithCards()
 
         const authenticate = async () => {
+            const ae = query('.auth')
             try {
                 const data = await http.post('/auth', {
-                    moniker: query('.auth input[type="text"]').value.trim(),
-                    pwd: query('.auth input[type="password"]').value.trim()
+                    moniker: query('[type="text"]', ae).value.trim(),
+                    pwd: query('[type="password"]', ae).value.trim()
                 })
                 // display the result then remove the auth form
                 if (data.err == null) {
-                    query('.auth').innerHTML = `
-                        <p>Authenticated</p>
-                        <p>Server Response Info: ${displayObjectText(data)}</p>
-                    `
+                    ae.innerHTML = `<p>Authenticated</p><p>Info: ${displayObjectText(data)}</p>`
+                    setTimeout(() => {
+                        ae.parentNode.style.gridTemplateRows = '3cm 1fr 1fr'
+                        ae.remove()
+                    }, 5000)
+                    localStorage.setItem('auth', 'true')
+                    render(htmlWritMaker, 'body > header')
                     populateBodywithCards()
                 }
             } catch(e) {
                 const errMsg = d.html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
-                query('.auth').append(errMsg)
+                ae.append(errMsg)
                 setTimeout(() => errMsg.remove(), 5000)
             }
         }
 
-        query('button.auth-btn').onpointerdown = e => {
-            authenticate()
-        }
-
-        query('input[type="password"]').onkeydown = e => {
-            if (e.key === 'Enter') {
-                authenticate()
+        const ae = query('.auth')
+        if (localStorage.getItem('auth')) {
+            ae.innerHTML = ''
+            button.unauth({
+                $: ae,
+                attr: {
+                    title: 'Unauthenticate/Logout'
+                },
+                async onpointerdown(e) {
+                    localStorage.removeItem('auth')
+                    const data = await http.get('/unauth')
+                    query('.auth').innerHTML = `
+                        <p>Unauthenticated</p>
+                        <p>Server Response Info: ${displayObjectText(data)}</p>
+                    `
+                    setTimeout(() => {
+                        location.reload()
+                    }, 5000)
+                }
+            }, '🔒 ')
+            render(htmlWritMaker, 'body > header')
+        } else {
+            ae.parentNode.style.gridTemplateRows = '3cm 1fr 1fr'
+            query('button', ae).onpointerdown = e => authenticate()
+            query('[type="password"]', ae).onkeydown = e => {
+                if (e.key === 'Enter') authenticate()
             }
         }
     </script>

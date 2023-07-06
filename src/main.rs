@@ -1606,8 +1606,13 @@ impl Session {
         Ok(())
     }
 
-    pub fn remove(auth: &str, db: &Database) -> Result<Self, redb::Error> {
-        Self::check(auth, true, db)
+    pub fn remove(auth: &str, db: &Database) -> Result<(), redb::Error> {
+        if Self::check(auth, true, db).unwrap_err().to_string().contains("removed") {
+            return Ok(());
+        }
+        Err(
+            redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Could not remove session."))
+        )
     }
 
     pub fn expired(&self) -> bool {
@@ -1630,11 +1635,16 @@ impl Session {
             }
             if expired || force_remove {
                 t.remove(tkh.as_slice())?;
-                return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session expired.")));
+                sid = None;
             }
         }
         wrtx.commit()?;
-        if !sid.is_some() {
+        if expired {
+            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session expired.")));
+        } else if force_remove {
+            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session removed.")));
+        }
+        if sid.is_none() {
             return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session not found.")));
         }
         return Ok(Self(auth.to_string(), sid.unwrap(), exiry_timestamp));
@@ -2088,7 +2098,9 @@ async fn auto_unauth(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
             brqe(res, &e.to_string(), "failed to remove session from the system");
             return;
         }
-        res.cookies_mut().force_remove(&c);
+        res.remove_cookie("auth");
+        // set the unset cookie header
+        
         res.status_code(StatusCode::ACCEPTED);
         res.render(Json(serde_json::json!({"msg":"logged out"})));
     } else {
@@ -2658,6 +2670,7 @@ const SEARCH_INDEX_PATH: &str = "./search-index";
 
 #[derive(Deserialize, Serialize)]
 struct PutWrit{
+    ts: Option<u64>,
     public: bool,
     title: String,
     kind: String,
@@ -2813,7 +2826,7 @@ impl Search{
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
-    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>) -> tantivy::Result<Vec<Writ>> {
+    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>, prefered_kind: Option<String>) -> tantivy::Result<Vec<Writ>> {
         match Writ::search_for(query, limit, page, self) {
             Ok(results) => {
                 let mut writs = vec![];
@@ -2839,7 +2852,14 @@ impl Search{
                                 title = val.as_text().unwrap().to_string();
                             },
                             "kind" => {
-                                kind = val.as_text().unwrap().to_string();
+                                if let Some(k) = val.as_text() {
+                                    if let Some(pk) = &prefered_kind {
+                                        if pk != k {
+                                            continue;
+                                        }
+                                    }
+                                    kind = k.to_string();
+                                }
                             },
                             "content" => {
                                 content = val.as_text().unwrap().to_string();
@@ -2885,6 +2905,7 @@ impl Search{
 #[derive(Deserialize, Serialize)]
 struct SearchRequest{
     query: String,
+    kind: Option<String>,
     limit: usize,
     page: usize,
 }
@@ -2926,7 +2947,11 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     Some(p) => p,
                     None => 0,
                 };
-                match SEARCH.search(&q, 128, page, _owner) {
+                let kind = match req.query::<String>("k") {
+                    Some(k) => Some(k),
+                    None => None,
+                };
+                match SEARCH.search(&q, 128, page, _owner, kind) {
                     Ok(writs) => {
                         res.render(Json(writs));
                     },
@@ -2941,7 +2966,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => {
                 // search for the query
-                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner) {
+                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind) {
                     Ok(writs) => {
                         res.render(Json(serde_json::json!({
                             "writs": writs,
@@ -2956,7 +2981,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         match req.parse_json::<PutWrit>().await {
             Ok(pw) => {
                 let writ = Writ{
-                    ts: now(),
+                    ts: pw.ts.unwrap_or_else(|| now()),
                     public: pw.public,
                     kind: pw.kind,
                     owner: _owner.unwrap(),
@@ -2965,12 +2990,52 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     state: pw.state,
                     tags: pw.tags,
                 };
-                // add the writ to the index
-                match SEARCH.add_doc(&writ) {
-                    Ok(()) => res.render(Json(serde_json::json!({
-                        "success": true,
-                    }))),
-                    Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
+
+                if writ.owner != _owner.unwrap() {
+                    brq(res, "not authorized to add posts to the index without the right credentials");
+                    return;
+                }
+
+                if pw.ts.is_some() {
+                    // first lookup the document and see if the owner is the same as the request owner
+                    match SEARCH.get_doc(writ.ts) {
+                        Ok(doc) => {
+                            // get the owner field from the doc
+                            if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
+                                if let Some(o) = o.as_u64() {
+                                    if o != _owner.unwrap() {
+                                        brq(res, "not authorized to delete posts from the index without the right credentials");
+                                        return;
+                                    }
+                                } else {
+                                    brq(res, "failed to remove from index, owner field is not a u64");
+                                    return;
+                                }
+                            } else {
+                                brq(res, "failed to remove from index, owner field is missing");
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to remove from index, maybe it doesn't exist");
+                            return;
+                        },
+                    };
+                    // try to update existing documet
+                    match SEARCH.update_doc(&writ) {
+                        Ok(()) => res.render(Json(serde_json::json!({
+                            "success": true,
+                        }))),
+                        Err(e) => brqe(res, &e.to_string(), "failed to update index"),
+                    }
+                } else {
+                    // add the writ to the index
+                    match SEARCH.add_doc(&writ) {
+                        Ok(()) => res.render(Json(serde_json::json!({
+                            "success": true,
+                        }))),
+                        Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
+                    }
                 }
             },
             Err(e) => brqe(res, &e.to_string(), "failed to add to index, bad body"),
