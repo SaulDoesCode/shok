@@ -1884,7 +1884,6 @@ async fn auth_check(pwd: &str) -> bool {
 async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
     if let Some(session) = req.cookie("auth") {
         if let Ok(s) = Session::check(session.value(), &DB) {
-            println!("session checked: {:?}", s);
             if let Some(id) = id {
                 if s.1 != id {
                     return None;
@@ -1910,7 +1909,7 @@ const DICT: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 #[handler]
 async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(14086).await {
-        if ar.moniker.len() < 3 || ar.pwd.len() < 3 {
+        if ar.moniker.len() < 3 || ar.pwd.len() < 3 || ar.pwd.len() > 128 || ar.moniker.len() > 42 {
             res.status_code(StatusCode::BAD_REQUEST);
             res.render(Json(serde_json::json!({"err":"moniker and password must be at least 3 characters long"})));
             return;
@@ -1924,6 +1923,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 }
             }
         }
+        let mut _acc = None;
         match Account::from_moniker(&ar.moniker, &DB) {
             Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
                 println!("acc: {:?}", acc);
@@ -1932,6 +1932,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 return;
             } else {
                 println!("a new user is trying to join: {}", &ar.moniker);
+                _acc = Some(acc);
             },
             Err(e) => {
                 println!("new user not seen before, also moniker lookup error because of this: {:?}", e);
@@ -1940,7 +1941,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 return;*/
             }
         }
-        let mut new_admin = false;
+        let mut admin_xp = None;
         // random session token
         let session_token = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
@@ -1951,8 +1952,14 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
         if ar.moniker == "admin" {
             // check if admin exists
             match Account::from_id(ADMIN_ID, &DB) {
-                Ok(acc) => if acc.check_password(ar.pwd.as_bytes()) {
+                Ok(mut acc) => if acc.check_password(ar.pwd.as_bytes()) {
                    // verified admin 
+                   acc.xp += 1;
+                   admin_xp = Some(acc.xp);
+                   if let Err(e) = acc.save(&DB, false) {
+                       brqe(res, &e.to_string(), "failed to update admin account");
+                       return;
+                   }
                 } else {
                     brq(res, "admin password incorrect");
                     return;
@@ -1964,17 +1971,16 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                     match na.save(&DB, true) {
                         Ok(_) => {
                             // new admin
-                            new_admin = true;
                         },
-                        Err(_) => {
-                            brq(res, "failed to save new admin account");
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to save new admin account");
                             return;
                         }
                     }
                 }    
             }
-
-            if Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB).is_ok() {
+            let sres = Session::new(ADMIN_ID, Some(session_token.clone())).save(&DB);
+            if sres.is_ok() {
                 res.status_code(StatusCode::ACCEPTED);
                 let mut c = cookie::Cookie::new("auth", session_token.clone());
                 let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
@@ -1984,26 +1990,30 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 );
                 c.set_path("/");
                 res.add_cookie(c);
-                if new_admin {
+                if admin_xp.is_none() {
                     res.render(Json(serde_json::json!({
                         "msg": "authorized, remember to save the admin password, it will not be shown again",
                         "sid": ADMIN_ID,
+                        "xp": 0,
                         "pwd": String::from_utf8(PWD.0.clone()).expect("foreign characters broke the re-stringification of the admin password")
                     })));
                 } else {
                     res.render(Json(serde_json::json!({
                         "msg": "authorized",
-                        "sid": ADMIN_ID
+                        "sid": ADMIN_ID,
+                        "xp": admin_xp.unwrap()
                     })));
                 }
                 return;
             } else {
-                brq(res, "failed to save session, try another time or way");
+                brqe(res, &sres.unwrap_err().to_string(), "failed to save session, try another time or way");
                 return;
             }
         }
         
-        let sid: u64 = {
+        let sid: u64 = if let Some(acc) = &_acc {
+            acc.id
+        } else {
             let mut sid = rand::thread_rng().gen::<u64>();
             // check for clash
             while Account::from_id(sid, &DB).is_ok() {
@@ -2011,12 +2021,17 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             }
             sid
         };
-
+        let new_acc = _acc.is_none();
         let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
-        let acc = Account::new(sid, ar.moniker, pwd_hash);
+        let mut acc = if !new_acc {
+            _acc.unwrap()
+        } else {
+            Account::new(sid, ar.moniker, pwd_hash)
+        };
 
+        acc.xp += 1;
         
-        match acc.save(&DB, true) {
+        match acc.save(&DB, new_acc) {
             Ok(()) => {
                 if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
                     res.status_code(StatusCode::ACCEPTED);
@@ -2030,7 +2045,8 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                     res.add_cookie(c);
                     res.render(Json(serde_json::json!({
                         "msg": "authorized",
-                        "sid": sid
+                        "sid": sid,
+                        "xp": acc.xp
                     })));
                 } else {
                     brq(res, "failed to save session, try another time or way");
