@@ -253,6 +253,20 @@ fn zstd_decompress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<u
     Ok(decompressed_size)
 }
 
+fn serialize_and_compress<T: Serialize>(payload: T) -> anyhow::Result<U8s> {
+    let mut serialized = serde_json::to_vec(&payload)?;
+    let mut serialized_payload = vec![];
+    zstd_compress(&mut serialized, &mut serialized_payload)?;
+    Ok(serialized_payload)
+}
+
+fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(whole: &'a [u8]) -> anyhow::Result<T> {
+    let mut serialized_payload = vec![];
+    let mut serialized = vec![];
+    zstd_decompress(&mut serialized_payload, &mut serialized)?;
+    let payload: T = serde_json::from_slice(&serialized)?;
+    Ok(payload)
+}
 
 fn encrypt<T: Serialize>(payload: T, pwd: &[u8]) -> anyhow::Result<U8s> {
     let mut serialized = serde_json::to_vec(&payload)?;
@@ -470,11 +484,10 @@ const SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP: MultimapTableDefinition<(u64, &str), 
 const SCOPED_VARIABLE_TAGS: MultimapTableDefinition<(u64, &str), u64> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAGS");
 // const SCOPED_VARIABLE_TAG_INDEX: MultimapTableDefinition<u64, (u64, &str)> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAG_INDEX");
 
-const SCOPED_PW_HASH_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("SCOPED_PW_HASH_INDEX");
+// const SCOPED_PW_HASH_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("SCOPED_PW_HASH_INDEX");
 
 struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
-    pwd: U8s,
     s: Sender<MutEvent>, // name, value, is_insert
     pd: PhantomData<T>,
 }
@@ -497,11 +510,9 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
-    let mut _pwd: Option<U8s> = None;
     if session_check(req, Some(ADMIN_ID)).await.is_some() {
         // admin session
         _is_admin = true;
-        _pwd = Some(PWD.0.clone());
         _owner = Some(ADMIN_ID);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
@@ -509,8 +520,9 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 // token session
                 _pm = Some(perm_schema);
                 _owner = Some(owner);
-                if uses == u64::MAX {
-                    _pwd = Some(tk.as_bytes().to_vec());
+                if uses == 0 {
+                    brq(res, "token's uses are exhausted, it expired, let it go m8");
+                    return;
                 }
             } else {
                 brq(res, "not authorized to use the scoped_variable_api, bad token and not an admin");
@@ -527,11 +539,6 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
         return;
     }
 
-    if _pwd.is_none() {
-        brq(res, "not authorized to use the scoped_variable_api, no password");
-        return;
-    }
-
     let moniker = match req.param::<String>("moniker") {
         Some(m) => m,
         None => {
@@ -542,7 +549,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
     match *req.method() {
         Method::GET => {
-            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
+            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
                 match svs.get(&moniker) {
                     Ok(v) => {
                         if v.is_none() {
@@ -571,7 +578,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             };
 
-            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
+            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
                 Ok((svs, _)) => {
                     if let Err(e) = svs.set(&moniker, body) {
                         // println!("error setting variable: {:?}", e);
@@ -589,7 +596,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             }
         },
-        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), &_pwd.unwrap()) {
+        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
             if let Err(e) = svs.rm(&moniker) {
                 brq(res, &format!("error deleting variable: {}", e));
                 return;
@@ -610,33 +617,9 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
 
 impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
-    fn open(owner: u64, pwd: &[u8]) -> anyhow::Result<(Self, Receiver<MutEvent>)> {
-        let ph = PWD.1.hash(pwd);
+    fn open(owner: u64) -> anyhow::Result<(Self, Receiver<MutEvent>)> {
         let (s, r) = channel::<MutEvent>();
-        let wrtx = DB.begin_write()?;
-        match wrtx.open_table(SCOPED_PW_HASH_INDEX) {
-            Ok(t) => {
-                if let Some(ag) = t.get(ph.as_slice())? {
-                    if ag.value() != owner {
-                        anyhow::bail!("invalid password");
-                    }
-                    return Ok((Self{owner, pwd: pwd.to_vec(), s, pd: PhantomData::default()}, r));
-                }
-            },
-            Err(e) => {
-                println!("error opening scoped pw hash index: {}", e);                
-                let mut t = wrtx.open_table(SCOPED_PW_HASH_INDEX)?;
-                t.insert(ph.as_slice(), owner)?;
-            }
-        }
-        wrtx.commit()?;
-        Ok((Self{owner, pwd: pwd.to_vec(), s, pd: PhantomData::default()}, r))
-    }
-    fn encrypt(&self, value: T) -> anyhow::Result<U8s> {
-        encrypt::<T>(value, &self.pwd)
-    }
-    fn decrypt(&self, value: &[u8]) -> anyhow::Result<T> {
-        decrypt::<T>(value, &self.pwd)
+        Ok((Self{owner, s, pd: PhantomData::default()}, r))
     }
     #[allow(dead_code)]
     fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
@@ -653,9 +636,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let old_data = t.insert((self.owner, name), self.encrypt(value)?.as_slice())?;
+            let old_data = t.insert((self.owner, name), serialize_and_compress(value)?.as_slice())?;
             if let Some(ag) = old_data {
-                _od = Some(decrypt::<T>(ag.value(), &self.pwd)?);   
+                _od = Some(decompress_and_deserialize(ag.value())?);   
             }
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             ot.insert(self.owner, name)?;
@@ -671,7 +654,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             for (name, value) in values {
-                t.insert((self.owner, name.as_ref()), self.encrypt(value.clone())?.as_slice())?;
+                t.insert((self.owner, name.as_ref()), serialize_and_compress(value)?.as_slice())?;
                 ot.insert(self.owner, name.as_ref())?;
             }
         }
@@ -687,7 +670,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let rtx = DB.begin_read()?;
         let t = rtx.open_table(SCOPED_VARIABLES)?;
         if let Some(ag) = t.get((self.owner, name))? {
-            data = Some(self.decrypt(ag.value())?);
+            data = Some(decompress_and_deserialize(ag.value())?);
         }
         match data {
             Some(d) => Ok(Some(d)),
@@ -703,7 +686,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let t = rtx.open_table(SCOPED_VARIABLES)?;
         for name in names {
             if let Some(ag) = t.get((self.owner, *name))? {
-                data.push(Some(self.decrypt(ag.value())?));
+                data.push(Some(decompress_and_deserialize(ag.value())?));
             } else {
                 data.push(None);
             }
@@ -719,7 +702,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let old_data = t.remove((self.owner, name))?;
             ot.remove(self.owner, name)?;
             if let Some(ag) = old_data {
-                let v = decrypt::<T>(ag.value(), &self.pwd)?;
+                let v = decompress_and_deserialize::<T>(ag.value())?;
                 self.s.send((Arc::from(name), false))?;
                 data = Some(v);
             }
@@ -751,7 +734,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             for name in names {
                 if let Some(ag) = t.remove((self.owner, *name))? {
-                    let v = decrypt::<T>(ag.value(), &self.pwd)?;
+                    let v = decompress_and_deserialize::<T>(ag.value())?;
                     self.s.send((Arc::from(*name), false))?;
                     data.push(Some(v));
                 } else {
