@@ -1378,6 +1378,8 @@ async fn main() {
                 )
                 .push(
                     Router::with_path("/search")
+                    .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                    .hoop(CachingHeaders::new())
                     .handle(search_api)
                 )
                 .push(
@@ -1853,14 +1855,17 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
     
     paths.sort();
     let mut html = String::new();
-    html.push_str("<html><head><title>Uploaded Files</title></head><body><h1>Uploaded Files</h1><ul>");
+    html.push_str("<html><head><title>Uploaded Files</title><link rel=\"stylesheet\" href=\"/marx.css\"></head><body><h1>Uploaded Files</h1><ul>");
     for path in paths {
         if let Some(file_name) = path.file_name() {
             let file_name = file_name.to_string_lossy();
             html.push_str(&format!("<li><a href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
         }
     }
-    html.push_str("</ul></body></html>");
+    let uploadform = "<section class=\"upload\"><form action=\"/api/upload\" method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\" /><input type=\"submit\" value=\"Upload\" /></form></section>";
+
+    html.push_str(&format!("</ul><br>{}</body></html>", uploadform));
+
     res.render(Text::Html(html));
 }
 
@@ -2629,7 +2634,7 @@ impl CMDRequest {
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_table(CMD_ORDERS)?;
-            t.insert( &self.when.unwrap_or_else(|| now()), serde_json::to_vec(self)?.as_slice())?;
+            t.insert( &self.when.unwrap_or_else(|| now() + 60), serde_json::to_vec(self)?.as_slice())?;
         }
         wrtx.commit()?;
         Ok(())
@@ -2774,6 +2779,10 @@ impl Writ {
             }
         }
         doc
+    }
+
+    fn lookup_owner_moniker(&self) -> anyhow::Result<String> {
+        Ok(Account::from_id(self.owner, &DB)?.moniker)
     }
 
     fn add_to_index(&self, index_writer: &mut IndexWriter, schema: &Schema) -> tantivy::Result<()> {
@@ -3015,7 +3024,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 };
                 match SEARCH.search(&q, 128, page, _owner, kind) {
                     Ok(writs) => {
-                        res.render(Json(writs));
+                        let mut monikers = vec![];
+                        for w in &writs {
+                            monikers.push(
+                                w.lookup_owner_moniker().unwrap_or("unknown".to_string())
+                            );
+                        }
+                        res.render(Json((writs, monikers)));
                     },
                     Err(e) => brqe(res, &e.to_string(), "failed to search"),
                 }
@@ -3115,7 +3130,8 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         // get the owner field from the doc
                         if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
                             if let Some(o) = o.as_u64() {
-                                if o != _owner.unwrap() {
+                                let owner = _owner.unwrap();
+                                if o != owner && owner != ADMIN_ID {
                                     brq(res, "not authorized to delete posts from the index without the right credentials");
                                     return;
                                 }

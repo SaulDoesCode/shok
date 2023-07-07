@@ -56,7 +56,7 @@
             height: fit-content;
             background: #fff;
             border-radius: 1mm;
-            margin: 1mm;
+            margin: 1.11mm;
             padding: 1mm;
             line-height: 1;
             border: 1px dashed #e90b3ff1;
@@ -210,7 +210,8 @@
         }
 
         .divider {
-            color: #ccccccc5;
+            color: #eca3b4c5;
+            margin: 0 1mm 0 1mm;
         }
 
         header > b:first-of-type {
@@ -272,6 +273,38 @@
 
         .private {
             font-size: .6rem;
+        }
+
+        .tags {
+            display: flex;
+            flex-flow: row wrap;
+            justify-content: center;
+            align-content: center;
+            align-items: center;
+            gap: 1mm;
+            margin: 1mm;
+            user-select: none;
+        }
+
+        .tag {
+            box-sizing: border-box;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            flex-flow: row wrap;
+            margin: .666mm;
+            width: min-content;
+            height: 1.4rem;
+            transform: translateY(1.1rem);
+            border-radius: 50% 2px;
+            background: #fff;
+            color: #000 !important;
+            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
+            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            z-index: 2;
         }
 
         /*
@@ -375,10 +408,9 @@
     <script type="module" async>
         import d from './domlib.js'
         import http from './http.js'
-
+        await d.ready
         const {query, render, domfn} = d
         const {section, div, button, span, p, header, article, textarea} = domfn
-        await d.ready
         const main = query('main')
         const controls = query('.controls')
         const search = query('input[name="search"]')
@@ -513,7 +545,9 @@
         main.onpointerdown = async e => {
             let item = e.target
             if (!item && item.classList) return
-            if (!item.classList.contains('item')) {
+            if (item.classList.contains('tag')) {
+                return await searchForWrits(search.value = 'tags:'+ item.textContent)
+            } else if (!item.classList.contains('item')) {
                 if (item.tagName == 'SPAN' && item.textContent.includes('private')) {
                     // togle the writ's public boolean by upserting the whole document with that field fliped
                     const writ = item.parentNode.parentNode.writ
@@ -581,22 +615,31 @@
             for (const key in obj) text += `${key}: ${obj[key]}\n`
             return text
         }
-
+        let lastSearchQuery = ''
         const searchForWrits = async (q = search.value, p = 0) => {
-            const writs = await http.get('/api/search?q=' + q + `&p=${p}k=post`)
+            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=post`)
             if (writs.length) {
+                if (lastSearchQuery !== q) {
+                    // if the search query has changed, reset the page to 0
+                    p = 0
+                    lastSearchQuery = q
+                } else {
+                    lastSearchQuery = q
+                    p += 1
+                }
                 // display them in main as items
                 const divider = "<span class=\"divider\"> | </span>"
                 main.innerHTML = ''
+                let i = -1
                 for (const writ of writs) {
                     const item = makeItem(d.html`<header>
                             <h2>${writ.title}</h2>
                             <time>${niceTime(writ.ts)}</time>${divider}
                             ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
-                            <span class="owner">${writ.owner}</span>${divider}
+                            <span class="owner">${monikers[++i]}</span>${divider}
                         </header>
                         <section class="content">${writ.content}</section>
-                        <div class="tags">${writ.tags}</div>
+                        <div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>
                         <div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`,
                      writ.id)
                     item.writ = writ
@@ -641,6 +684,14 @@
         ] = htmlWritMaker.children
         const [pbIn, saveBtn] = pbbdiv.children
 
+        const clearComposer = () => {
+            titleIn.value = ''
+            contentIn.value = ''
+            tagsIn.value = ''
+            stateIn.value = ''
+            pbIn.checked = true
+        }
+
         saveBtn.onpointerdown = async e => {
             e.preventDefault()
             const res = await composeWrit(
@@ -651,11 +702,12 @@
                 pbIn.checked
             )
             console.log(res)
+            clearComposer()
             populateBodywithCards()
         }
 
         const populateBodywithCards = async () => {
-            await searchForWrits(search.value)
+            await searchForWrits(search.value, 0)
             rowWidth = getItemsInRow()
         }
 
