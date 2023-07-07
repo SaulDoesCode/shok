@@ -9,7 +9,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::{PhantomData}, collections::HashMap, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::{Duration}};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::{PhantomData}, collections::HashMap, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::{Duration}, mem::forget};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 use tantivy::{
@@ -260,10 +260,9 @@ fn serialize_and_compress<T: Serialize>(payload: T) -> anyhow::Result<U8s> {
     Ok(serialized_payload)
 }
 
-fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(whole: &'a [u8]) -> anyhow::Result<T> {
-    let mut serialized_payload = vec![];
+fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(data: &mut Vec<u8>) -> anyhow::Result<T> {
     let mut serialized = vec![];
-    zstd_decompress(&mut serialized_payload, &mut serialized)?;
+    zstd_decompress(data, &mut serialized)?;
     let payload: T = serde_json::from_slice(&serialized)?;
     Ok(payload)
 }
@@ -291,7 +290,7 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
     // split whole into encrypted payload and detached prefix, the last 60 bytes are the detached prefix
     let (encrypted_payload, detached) = whole.split_at(whole.len() - 60);
     let mut decrypted_payload = encrypted_payload.to_vec();
-    std::mem::forget(encrypted_payload);
+    forget(encrypted_payload);
     let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.decrypt(decrypted_payload.as_mut_slice(), detached) {
         Ok(()) => {
@@ -638,7 +637,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let old_data = t.insert((self.owner, name), serialize_and_compress(value)?.as_slice())?;
             if let Some(ag) = old_data {
-                _od = Some(decompress_and_deserialize(ag.value())?);   
+                let mut dt = ag.value().to_vec();
+                forget(ag);
+                _od = Some(decompress_and_deserialize(&mut dt)?);
             }
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             ot.insert(self.owner, name)?;
@@ -670,7 +671,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let rtx = DB.begin_read()?;
         let t = rtx.open_table(SCOPED_VARIABLES)?;
         if let Some(ag) = t.get((self.owner, name))? {
-            data = Some(decompress_and_deserialize(ag.value())?);
+            let mut dt = ag.value().to_vec();
+            forget(ag);
+            data = Some(decompress_and_deserialize(&mut dt)?);
         }
         match data {
             Some(d) => Ok(Some(d)),
@@ -686,7 +689,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let t = rtx.open_table(SCOPED_VARIABLES)?;
         for name in names {
             if let Some(ag) = t.get((self.owner, *name))? {
-                data.push(Some(decompress_and_deserialize(ag.value())?));
+                let mut dt = ag.value().to_vec();
+                forget(ag);
+                data.push(decompress_and_deserialize(&mut dt)?);
             } else {
                 data.push(None);
             }
@@ -702,9 +707,10 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let old_data = t.remove((self.owner, name))?;
             ot.remove(self.owner, name)?;
             if let Some(ag) = old_data {
-                let v = decompress_and_deserialize::<T>(ag.value())?;
+                let mut dt = ag.value().to_vec();
+                forget(ag);
+                data = Some(decompress_and_deserialize(&mut dt)?);
                 self.s.send((Arc::from(name), false))?;
-                data = Some(v);
             }
             let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
             let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
@@ -734,9 +740,10 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             for name in names {
                 if let Some(ag) = t.remove((self.owner, *name))? {
-                    let v = decompress_and_deserialize::<T>(ag.value())?;
+                    let mut dt = ag.value().to_vec();
+                    forget(ag);
+                    data.push(Some(decompress_and_deserialize(&mut dt)?));
                     self.s.send((Arc::from(*name), false))?;
-                    data.push(Some(v));
                 } else {
                     data.push(None);
                 }
@@ -2262,7 +2269,7 @@ impl Resource {
         let mut file = std::fs::File::open(path)?;
         let mut bytes = vec![];
         file.read_to_end(&mut bytes)?;
-        std::mem::forget(file);
+        forget(file);
         let mut r: Resource = decrypt(&bytes, PWD.0.as_slice())?;
         r.reads += 1;
         r.save(false)?;
