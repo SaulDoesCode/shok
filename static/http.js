@@ -18,8 +18,10 @@ const defaultHeaders = {
     'Access-Control-Allow-Origin': '*'
 }
 
-const handleResponse = async (res, ct = res.headers.get('Content-Type')) => {
+const handleResponse = async res => {
     try {
+        if (res instanceof Promise) res = await res
+        const ct = res.headers.get('Content-Type')
         const out = await (
             ct.includes('application/json') ? res.json() :  ct.includes('text') ? res.text() : res.blob()
         )
@@ -53,8 +55,8 @@ const mog = (method, body, ops = {}) => {
     return m
 }
 const fancify = fn => new Proxy(fn, {get: (f, url) => async (...args) => await f(url, ...args)})
-const ppp = method => fancify(async (url, body, ops = {}) => await handleResponse(await fetch(url, mog(method, body, ops))))
-const gl = method => fancify(async (url, ops) => await handleResponse(await fetch(url, mog(method, null, ops))))
+const ppp = method => fancify(async (url, body, ops = {}) => await handleResponse(fetch(url, mog(method, body, ops))))
+const gl = method => fancify(async (url, ops) => await handleResponse(fetch(url, mog(method, null, ops))))
 
 document.body.append(httpOutput)
 
