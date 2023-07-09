@@ -26,10 +26,6 @@
             padding: 0;
             background: hsl(346, 58%, 93%);
         }
-        header > h2 {
-            margin: 1mm 1mm 1mm 1mm;
-            width: fit-content;
-        }
         main {
             box-sizing: border-box;
             display: grid;
@@ -41,14 +37,13 @@
             width: 99.9vw;
             height: 74vh;
             gap: 3.3333mm;
+            padding: 4mm;
             column-gap: 3.3333mm;
-            padding-bottom: 2mm;
             top: 1cm;
             margin: 1mm auto 3mm auto;
             overflow: hidden;
             overflow-y: scroll;
             text-align: center;
-            box-shadow: inset 0 -8px 8px -6px hsla(346, 91%, 48%, .3);
             z-index: 0;
         }
 
@@ -59,7 +54,7 @@
             height: fit-content;
             align-self: center;
             background: #fff;
-            max-width: 90%;
+            max-width: 95%;
             align-content: space-between;
             border-radius: 1mm;
             margin: 0 auto;
@@ -141,54 +136,6 @@
             min-height: 244px;
             min-width: 174px;
         }
-        .controls {
-            position: relative;
-            display: flex;
-            flex-flow: row wrap;
-            margin: 2mm auto;
-            justify-content: space-evenly;
-            width: 3cm;
-            height: 2cm;
-            align-content: center;
-            align-items: center;
-            user-select: none;
-        }
-
-        .controls > span {
-            box-sizing: content-box;
-            display: inline-flex;
-            justify-content: center;
-            align-items: center;
-            flex-flow: row wrap;
-            width: 1.5rem;
-            height: 1.5rem;
-            border-radius: 50%;
-            background: #fff;
-            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
-            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
-            cursor: pointer;
-            user-select: none;
-            font-weight: 600;
-            z-index: 2;
-        }
-
-        .controls > span:first-of-type {
-            z-index: 1;
-        }
-
-        .controls > span:nth-of-type(2) {
-            position: absolute;
-            left: calc(50% - 12px);
-            top: 60%;
-            z-index: 3;
-        }
-
-        .controls > span:last-of-type {
-            position: absolute;
-            left: calc(50% - 12px);
-            bottom: 60%;
-            z-index: 0;
-        }
 
         .soft-edge {
             border-radius: 2mm;
@@ -209,7 +156,7 @@
             justify-content: center;
             align-items: end;
             text-align: center;
-            grid-template-columns: 3cm min-content 1fr 1fr 1fr;
+            grid-template-columns: 3cm min-content 1fr 1fr;
             background: linear-gradient(0deg, hsla(0, 0%, 100%, 0.8), hsla(0, 0%, 100%, 0.8) 1.5mm, hsla(0, 0%, 100%, 0.6) 1.5mm, hsla(0, 0%, 100%, 0.6) 3mm, hsla(0, 0%, 100%, 0.4) 3mm, hsla(0, 0%, 100%, 0.4) 4.5mm, hsla(0, 0%, 100%, 0.2) 4.5mm, hsla(0, 0%, 100%, 0.2) 6mm, hsla(0, 0%, 100%, 0) 6mm);
             z-index: 1;
             user-select: none;
@@ -230,7 +177,7 @@
             background: #fff;
             border-radius: 1mm;
             padding: 0 1mm 0 1mm;
-            margin: 1mm 1mm 1mm 1mm;
+            margin: 2.222mm 1.111mm 2.222mm 1.111mm;
             width: fit-content;
         }
 
@@ -245,7 +192,7 @@
             height: 1.8cm;
             border-radius: 50%;
             margin: 1mm auto;
-            transform: translateY(-1mm);
+            transform: translateY(-8mm) translateX(-1mm);
             background: #fff;
             color:hsl(0, 0%, 8%);
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
@@ -268,17 +215,32 @@
             transform: translate(-50%, -50%);
             font-size: 1.2rem;
             font-weight: 900;
-            color: #fff;
+            color: #765c5c;
             text-shadow: 0 0 1px #281d1d;
             user-select: none;
+            transition: all 130ms ease-out;
+        }
+        .scroll-ball > span:hover {
+            color: #e90b3ff1;
         }
 
-        .scroll-ball > span:first-of-type {
+
+        .scroll-ball > span:nth-of-type(1) {
+            left: 50%;
+            top: -10%;
+        }
+
+        .scroll-ball > span:nth-of-type(4) {
+            top: 104%;
+            left: 50%;
+        }
+
+        .scroll-ball > span:nth-of-type(2) {
             right: 90%;
         }
 
-        .scroll-ball > span:last-of-type {
-            left: 90%;
+        .scroll-ball > span:nth-of-type(3) {
+            left: 116%;
         }
 
         header > h1 {
@@ -483,7 +445,7 @@
             .interaction-ui {
                 display: flex;
             }
-            .interaction-ui > h1 {
+            .interaction-ui > h1:first-of-type {
                 position: fixed;
                 top: 0;
                 left: 0;
@@ -527,16 +489,11 @@
             </span>
             <button class="auth-btn" title="authenticate">🔓</button>
         </section>
-        
-        <section class="controls">
-            <span>←</span>
-            <span>↓</span>
-            <span>→</span>
-            <span>↑</span>
-        </section>
 
         <section class="scroll-ball">
-            <span>←</span>↕<span>→</span>
+            <span class="up">↑</span>
+            <span class="left">←</span>↕<span class="right">→</span>
+            <span class="down">↓</span>
         </section>
     </header>
     <script type="module" async>
@@ -601,11 +558,19 @@
                 main.scrollTop += (e.movementY * height) / 8
             }
         }
-        const handleArrowButtons = e => {
-            if (e.target.tagName === 'SPAN') {
+
+        // on middle mouse in main, perform scrolling, set the scrollTop property
+        main.onwheel = e => {
+            main.scrollTop += e.deltaY
+        }
+
+        const scrollball = query('.scroll-ball')
+
+        ;[...scrollball.children].filter(s => s.tagName == 'SPAN').forEach(s => {
+            s.onpointerdown = e => {
+                rowWidth = getItemsInRow()
                 e.preventDefault()
-                const dir = e.target.textContent
-                switch(dir) {
+                switch(e.target.textContent) {
                     case '←':
                         setActive(active - 1)
                     break
@@ -620,19 +585,13 @@
                     break
                 }
             }
-        }
-        controls.onpointerover = handleArrowButtons
-        controls.onpointerdown = handleArrowButtons
-
-        // on middle mouse in main, perform scrolling, set the scrollTop property
-        main.onwheel = e => {
-            main.scrollTop += e.deltaY
-        }
-
-        const scrollball = query('.scroll-ball')
+        })
         // when the mouse or pointer moves inside of the scroll ball scroll x and y on the main element
         scrollball.onpointermove = e => {
             e.preventDefault()
+            if (e.target.tagName == 'SPAN') {
+                return
+            }
             // get the size of the scrollingElement
             const {width, height} = document.scrollingElement.getBoundingClientRect()
             //console.log(e)
@@ -640,18 +599,14 @@
             main.scrollTop += (e.movementY * height) / 7
         }
 
-
-        let rowWidth = 4
-        // if the screen resizes recalculate the rowwidth
-        window.onresize = () => {
-            rowWidth = getItemsInRow()
-        }
+        let rowWidth = 3
 
         document.onkeydown = async e => {
             if (e.target.tagName == 'INPUT' && e.key != 'Enter') return
             if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
             if (e.key.includes('Arrow')) {
                 e.preventDefault()
+                rowWidth = getItemsInRow()
                 switch(e.key.replace('Arrow', '')) {
                     case 'Left':
                         setActive(active - 1)
@@ -867,7 +822,7 @@
                 if (data.err == null) {
                     ae.innerHTML = `<p>Authenticated</p><p>Info: ${displayObjectText(data)}</p>`
                     setTimeout(() => {
-                        ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr 1fr'
+                        ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr'
                         ae.remove()
                     }, 5000)
                     localStorage.setItem('auth', 'true')
@@ -903,7 +858,7 @@
             }, '🔒 ')
             render(htmlWritMaker, 'body > header')
         } else {
-            ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr 1fr'
+            ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr'
             query('button', ae).onpointerdown = e => authenticate()
             query('[type="password"]', ae).onkeydown = e => {
                 if (e.key === 'Enter') authenticate()
