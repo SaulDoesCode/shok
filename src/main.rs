@@ -241,7 +241,7 @@ fn zstd_decompress(data: &[u8]) -> std::io::Result<U8s> {
 }*/
 
 fn zstd_compress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<()> {
-    let mut encoder = zstd::stream::Encoder::new(output, 21)?;
+    let mut encoder = zstd::stream::Encoder::new(output, 6)?;
     encoder.write_all(data)?;
     encoder.finish()?;
     Ok(())
@@ -255,6 +255,7 @@ fn zstd_decompress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<u
 
 fn serialize_and_compress<T: Serialize>(payload: T) -> anyhow::Result<U8s> {
     let mut serialized = serde_json::to_vec(&payload)?;
+    forget(payload);
     let mut serialized_payload = vec![];
     zstd_compress(&mut serialized, &mut serialized_payload)?;
     Ok(serialized_payload)
@@ -264,6 +265,7 @@ fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(data: &mut Vec
     let mut serialized = vec![];
     zstd_decompress(data, &mut serialized)?;
     let payload: T = serde_json::from_slice(&serialized)?;
+    forget(serialized);
     Ok(payload)
 }
 
@@ -271,6 +273,7 @@ fn encrypt<T: Serialize>(payload: T, pwd: &[u8]) -> anyhow::Result<U8s> {
     let mut serialized = serde_json::to_vec(&payload)?;
     let mut serialized_payload = vec![];
     zstd_compress(&mut serialized, &mut serialized_payload)?;
+    forget(serialized);
     let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.encrypt(&mut serialized_payload) {
         Ok(detached) => {
@@ -487,7 +490,7 @@ const SCOPED_VARIABLE_TAGS: MultimapTableDefinition<(u64, &str), u64> = Multimap
 
 struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
-    s: Sender<MutEvent>, // name, value, is_insert
+    s: Option<Sender<MutEvent>>, // name, value, is_insert
     pd: PhantomData<T>,
 }
 
@@ -548,7 +551,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
     match *req.method() {
         Method::GET => {
-            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
+            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
                 match svs.get(&moniker) {
                     Ok(v) => {
                         if v.is_none() {
@@ -577,17 +580,15 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             };
 
-            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
+            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
                 Ok((svs, _)) => {
                     if let Err(e) = svs.set(&moniker, body) {
                         // println!("error setting variable: {:?}", e);
                         brq(res, &format!("error setting variable: {}", e));
-                        return;
                     } else {
-                        jsn(res, json!({
-                            "ok": true
-                        }));
+                        jsn(res, json!({"ok": true}));
                     }
+                    return;
                 },
                 Err(e) => {
                     brq(res, &format!("error opening scoped variable store: {}", e));
@@ -595,14 +596,12 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             }
         },
-        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
+        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
             if let Err(e) = svs.rm(&moniker) {
                 brq(res, &format!("error deleting variable: {}", e));
                 return;
             } else {
-                jsn(res, json!({
-                    "ok": true
-                }));
+                jsn(res, json!({"ok": true}));
             }
         } else {
             brq(res, "invalid password");
@@ -616,9 +615,13 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
 
 impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
-    fn open(owner: u64) -> anyhow::Result<(Self, Receiver<MutEvent>)> {
-        let (s, r) = channel::<MutEvent>();
-        Ok((Self{owner, s, pd: PhantomData::default()}, r))
+    fn open(owner: u64, with_channel: bool) -> anyhow::Result<(Self, Option<Receiver<MutEvent>>)> {
+        let pd = PhantomData::default();
+        if with_channel {
+            let (s, r) = channel::<MutEvent>();
+            return Ok((Self{owner, s: Some(s), pd}, Some(r)));
+        }
+        Ok((Self{owner, s: None, pd}, None))
     }
     #[allow(dead_code)]
     fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
@@ -640,12 +643,15 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 _od = Some(decompress_and_deserialize(&mut dt)?);
+                forget(dt);
             }
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             ot.insert(self.owner, name)?;
         }
         wrtx.commit()?;
-        self.s.send((Arc::from(name), true))?;
+        if let Some(ref s) = self.s {
+            s.send((Arc::from(name), true))?;
+        }
         Ok(_od)
     }
     #[allow(dead_code)]
@@ -661,8 +667,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         wrtx.commit()?;
         for (name, _value) in values {
-            let arc_name = Arc::from(name.as_ref());
-            self.s.send((arc_name, true))?;
+            if let Some(ref s) = self.s {
+                s.send((name.clone(), true))?;
+            }
         }
         Ok(())
     }
@@ -710,7 +717,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data = Some(decompress_and_deserialize(&mut dt)?);
-                self.s.send((Arc::from(name), false))?;
+                if let Some(ref s) = self.s {
+                    s.send((Arc::from(name), false))?;
+                }
             }
             let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
             let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
@@ -743,7 +752,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                     let mut dt = ag.value().to_vec();
                     forget(ag);
                     data.push(Some(decompress_and_deserialize(&mut dt)?));
-                    self.s.send((Arc::from(*name), false))?;
+                    if let Some(ref s) = self.s {
+                        s.send((Arc::from(*name), true))?;
+                    }
                 } else {
                     data.push(None);
                 }
@@ -1165,6 +1176,45 @@ fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<U
     Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Token not found.")))
 }
 
+#[allow(dead_code)]
+fn update_token_state_field<F>(tkh: &[u8], db: &Database, closure: F) -> Result<(), redb::Error> where F: Fn(Option<&[u8]>) -> Option<U8s> {
+    let wtx = db.begin_write()?;
+    let mut was_none = true;
+    let mut _tk = None;
+    {
+        let mut t = wtx.open_table(TOKENS)?;
+        if let Some(ag) = t.get(tkh)? {
+            let tk = ag.value();
+            _tk = Some((
+                tk.0,
+                tk.1,
+                tk.2,
+                tk.3,
+                closure(tk.4)
+            ));
+        }
+        if let Some(tk) = _tk {
+            t.insert(tkh, (
+                tk.0,
+                tk.1,
+                tk.2,
+                tk.3,
+                match &tk.4 {
+                    Some(v) => Some(v.as_slice()),
+                    _ => None
+                }
+            ))?;
+            was_none = false;
+        }
+    }
+    if was_none {
+        wtx.abort()?;
+    } else {
+        wtx.commit()?;
+    }
+    Ok(())
+}
+
 async fn validate_token_under_permision_schema(
     tk: &str,
     pms: &[u32],
@@ -1197,6 +1247,12 @@ async fn validate_token_under_permision_schema(
             let data = d.4.unwrap_or(vec![]);
             let d_o = match data.len() {
                 0 => None,
+                // match case for above 20kb
+                20480.. => {
+                    // return an error saying it is too much
+                    remove_tokens(&[tk], &DB).await?;
+                    return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Token state field data is too large.")));
+                },
                 _ => Some(data.as_slice())
             };
 
@@ -1417,7 +1473,7 @@ async fn main() {
             Router::with_hoop(static_files_cache)
                 .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                 .hoop(CachingHeaders::new())
-                .path("/<file>")
+                .path("/<**file_path>")
                 .get(static_file_route_rewriter)
         )
         .push(
@@ -1594,10 +1650,10 @@ impl Session {
     }
 
     pub fn save(&self, db: &Database) -> Result<(), redb::Error> {
+        let tkh = TOKEN_HASHER.hash(self.0.as_bytes());
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_table(SESSIONS)?;
-            let tkh = TOKEN_HASHER.hash(self.0.as_bytes());
             t.insert(tkh.as_slice(), (self.1, self.2))?;
             let mut et = wrtx.open_table(SESSION_EXPIRIES)?;
             et.insert(self.2, tkh.as_slice())?;
@@ -1776,52 +1832,71 @@ async fn fuzzy_static_deliver(input: &str, req: &mut Request, depot: &mut Depot,
 
 #[handler]
 async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
-    match req.param::<String>("file") {
-        Some(file) => {
-            // check if a version of file + ".html" exists first and if it does, serve that
-            
-            let mut path = PathBuf::new().join(STATIC_DIR).join(file.clone());
-            if path.extension().is_none() {
-                path.set_extension("html");
-                if path.exists() {
-                    StaticFile::new(path).handle(req, depot, res, ctrl).await;
-                    return;
-                }
-            }
+    let mut file = req.uri().path().trim().trim_end_matches("/").trim_start_matches("/").to_string();
+    if file == "" {
+        // serve space.html
+        file = "space.html".to_string();
+    }
+    // check if a version of file + ".html" exists first and if it does, serve that    
+    let mut path = PathBuf::new().join(STATIC_DIR).join(file.clone());
+    if path.extension().is_none() {
+        path.set_extension("html");
+        if path.exists() {
+            StaticFile::new(path).handle(req, depot, res, ctrl).await;
+            return;
+        } else {
+            path.set_extension("js");
             if path.exists() {
-                StaticFile::new(&format!("{}{}", STATIC_DIR, file)).handle(req, depot, res, ctrl).await;
+                StaticFile::new(path).handle(req, depot, res, ctrl).await;
+                return;
             } else {
-                path = PathBuf::new().join("./uploaded/").join(file.clone());
+                path.set_extension("css");
                 if path.exists() {
-                    // query param token 
-                    match req.query::<String>("tk") {
-                        Some(tk) => {
-                            // check if token is valid
-                            if !validate_token_under_permision_schema(&tk, &[0, 1], &DB).await.is_ok() {
-                                brq(res, "invalid token");
-                                return;
-                            }
-                        },
-                        None => {
-                            if session_check(req, Some(ADMIN_ID)).await.is_none() {
-                                // return a 404
-                                nfr(res);
-                                return;
-                            }
-                        }
-                    }
-
                     StaticFile::new(path).handle(req, depot, res, ctrl).await;
                     return;
-                } else {
-                    fuzzy_static_deliver(&file, req, depot, res, ctrl).await;
                 }
+                path.set_extension("");
             }
-        },
-        None => if !ctrl.call_next(req, depot, res).await {
-            res.render(StatusError::bad_request().brief("missing file param, or invalid url"));
         }
     }
+    if path.exists() {
+        StaticFile::new(&format!("{}{}", STATIC_DIR, file)).handle(req, depot, res, ctrl).await;
+    } else {
+        path = PathBuf::new().join("./uploaded/").join(file.clone());
+        if !path.exists() {
+            path = PathBuf::new().join("./uploaded/ImageAssets/").join(file.clone());
+        }
+        if path.exists() {
+            // query param token 
+            match req.query::<String>("tk") {
+                Some(tk) => {
+                    // check if token is valid
+                    if !validate_token_under_permision_schema(&tk, &[0, 1], &DB).await.is_ok() {
+                        brq(res, "invalid token");
+                        return;
+                    }
+                },
+                None => {
+                    if session_check(req, Some(ADMIN_ID)).await.is_none() {
+                        // return a 404
+                        nfr(res);
+                        return;
+                    }
+                }
+            }
+
+            StaticFile::new(path).handle(req, depot, res, ctrl).await;
+            return;
+        } else {
+            fuzzy_static_deliver(&file, req, depot, res, ctrl).await;
+        }
+    }
+}
+
+const UPLOAD_FORM_HTML: &'static str = "<section class=\"upload\"><form action=\"/api/upload\" method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\" /><input type=\"submit\" value=\"Upload\" /></form></section>";
+
+lazy_static!{
+    static ref IA: RwLock<Vec<PathBuf>> = RwLock::new(read_all_file_names_in_dir("./uploaded/ImageAssets/").expect("could not read image assets directory's paths all the way through.. too heavy perhaps, perhaps it is not there anymore"));
 }
 
 #[handler]
@@ -1845,16 +1920,21 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
     
     paths.sort();
     let mut html = String::new();
-    html.push_str("<html><head><title>Uploaded Files</title><link rel=\"stylesheet\" href=\"/marx.css\"></head><body><h1>Uploaded Files</h1><ul>");
+    html.push_str("<html><head><title>Uploaded Files</title><link rel=\"stylesheet\" href=\"/marx.css\"><script type=\"module\" src=\"/uploads.js\"></script></head><body><h1>Uploaded Files</h1><ul>");
     for path in paths {
+        if let Some(file_name) = path.file_name() {
+            let file_name = file_name.to_string_lossy();
+            html.push_str(&format!("<li><a target=\"_blank\" href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
+        }
+    }
+    for path in IA.read().iter() {
         if let Some(file_name) = path.file_name() {
             let file_name = file_name.to_string_lossy();
             html.push_str(&format!("<li><a href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
         }
     }
-    let uploadform = "<section class=\"upload\"><form action=\"/api/upload\" method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\" /><input type=\"submit\" value=\"Upload\" /></form></section>";
 
-    html.push_str(&format!("</ul><br>{}</body></html>", uploadform));
+    html.push_str(&format!("</ul><br>{}</body></html>", UPLOAD_FORM_HTML));
 
     res.render(Text::Html(html));
 }
@@ -2058,7 +2138,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             Ok(()) => {
                 if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
                     res.status_code(StatusCode::ACCEPTED);
-                    let mut c = cookie::Cookie::new("auth", session_token.clone());
+                    let mut c = cookie::Cookie::new("auth", session_token);
                     let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
                     c.set_expires(exp);
                     c.set_domain(
@@ -2256,6 +2336,7 @@ impl Resource {
         let mut file = File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        forget(file);
         self.set_data(&bytes)?;
         if encrypted_form {
             Ok(bytes)
@@ -2271,6 +2352,7 @@ impl Resource {
         file.read_to_end(&mut bytes)?;
         forget(file);
         let mut r: Resource = decrypt(&bytes, PWD.0.as_slice())?;
+        forget(bytes);
         r.reads += 1;
         r.save(false)?;
         if with_data {
@@ -2284,7 +2366,9 @@ impl Resource {
         let mut file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        forget(file);
         let mut r: Resource = decrypt(&bytes, PWD.0.as_slice())?;
+        forget(bytes);
         r.reads += 1;
         r.save(false)?;
         if with_data {
@@ -2305,10 +2389,11 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
         _is_admin = true;
     } else {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((perm_schema, owner, _, _, _)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
+            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
                 // token session
                 _pm = Some(perm_schema);
                 _owner = Some(owner);
+                // if let Some(state) = _state {}
             } else {
                 brq(res, "not authorized to use the resource_api");
                 return;
@@ -2587,6 +2672,7 @@ fn run_stored_commands() -> anyhow::Result<()> {
         let mut t = wrtx.open_table(CMD_ORDERS)?;
         let mut _df = t.drain_filter(..now(), |_when, raw| {
             if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
+                forget(raw);
                 tokio::spawn(async move {
                     let res = cmd.run().await;
                     match res {
@@ -2621,10 +2707,12 @@ struct CMDRequest{
 
 impl CMDRequest {
     async fn save_to_run_later(&self, db: &Database) -> anyhow::Result<()> {
+        let data = serde_json::to_vec(self)?;
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_table(CMD_ORDERS)?;
-            t.insert( &self.when.unwrap_or_else(|| now() + 60), serde_json::to_vec(self)?.as_slice())?;
+            t.insert( &self.when.unwrap_or_else(|| now() + 60), data.as_slice())?;
+            forget(data);
         }
         wrtx.commit()?;
         Ok(())
@@ -2723,13 +2811,22 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
     }
 }
 
+fn validate_tags_string(tags: &str) -> Option<String> {
+    let mut tags = tags.split(',').map(|t| t.trim().to_lowercase());
+    if tags.all(|tag| tag.len() < 64) {
+        Some(tags.collect::<Vec<_>>().join(","))
+    } else {
+        None
+    }
+}
+
 const SEARCH_INDEX_PATH: &str = "./search-index";
 
 #[derive(Deserialize, Serialize)]
 struct PutWrit{
     ts: Option<u64>,
     public: bool,
-    title: String,
+    title: Option<String>,
     kind: String,
     content: String,
     state: Option<String>,
@@ -2747,7 +2844,7 @@ struct Writ{
     kind: String,
     owner: u64,
     public: bool,
-    title: String,
+    title: Option<String>,
     content: String,
     state: Option<String>,
     tags: String // comma separated
@@ -2758,7 +2855,9 @@ impl Writ {
         let mut doc = Document::new();
         doc.add_date(schema.get_field("ts").unwrap(), DateTime::from_timestamp_secs(self.ts as i64));
         doc.add_u64(schema.get_field("owner").unwrap(), self.owner);
-        doc.add_text(schema.get_field("title").unwrap(), &self.title);
+        if self.title.is_some() {
+            doc.add_text(schema.get_field("title").unwrap(), &self.title.as_ref().unwrap());
+        }
         doc.add_text(schema.get_field("content").unwrap(), &self.content);
         doc.add_text(schema.get_field("kind").unwrap(), &self.kind);
         doc.add_text(schema.get_field("tags").unwrap(), &self.tags);
@@ -2893,7 +2992,7 @@ impl Search{
                 let mut writs = vec![];
                 for (_s, d) in results {
                     let mut ts: u64 = 0;
-                    let mut title = String::new();
+                    let mut title = None;
                     let mut content = String::new();
                     let mut kind = String::new();
                     let mut tags: String = String::new();
@@ -2910,7 +3009,7 @@ impl Search{
                                 ts = val.into_timestamp_secs() as u64;
                             },
                             "title" => {
-                                title = val.as_text().unwrap().to_string();
+                                title = val.as_text().map(|s| s.to_string());
                             },
                             "kind" => {
                                 if let Some(k) = val.as_text() {
@@ -2986,7 +3085,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((_pm, o, _, _, _)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
+            if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
                 // token session
                 _owner = Some(o);
             } else if req.method() != Method::GET {
@@ -3034,11 +3133,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             Ok(search_request) => {
                 // search for the query
                 match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind) {
-                    Ok(writs) => {
-                        res.render(Json(serde_json::json!({
-                            "writs": writs,
-                        })));
-                    },
+                    Ok(writs) => res.render(Json(serde_json::json!({"writs": writs}))),
                     Err(e) => brqe(res, &e.to_string(), "failed to search"),
                 }
             },
@@ -3055,7 +3150,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     title: pw.title,
                     content: pw.content,
                     state: pw.state,
-                    tags: pw.tags,
+                    tags: if let Some(tags) = validate_tags_string(&pw.tags) {
+                        tags
+                    } else {
+                        brq(res, "failed to add to index, tags are invalid");
+                        return;
+                    },
                 };
 
                 if writ.owner != _owner.unwrap() {
@@ -3090,17 +3190,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     };
                     // try to update existing documet
                     match SEARCH.update_doc(&writ) {
-                        Ok(()) => res.render(Json(serde_json::json!({
-                            "success": true,
-                        }))),
+                        Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to update index"),
                     }
                 } else {
                     // add the writ to the index
                     match SEARCH.add_doc(&writ) {
-                        Ok(()) => res.render(Json(serde_json::json!({
-                            "success": true,
-                        }))),
+                        Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
                     }
                 }
@@ -3163,7 +3259,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     kind: pw.kind,
                     content: pw.content,
                     state: pw.state,
-                    tags: pw.tags,
+                    tags: if let Some(tags) = validate_tags_string(&pw.tags) {
+                        tags
+                    } else {
+                        brq(res, "failed to add to index, tags are invalid");
+                        return;
+                    },
                 };
                 // update the writ in the index
                 match SEARCH.update_doc(&writ) {
