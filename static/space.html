@@ -24,7 +24,7 @@
             height: 100vh;
             margin: 0;
             padding: 0;
-            background: #ffdddd;
+            background: hsl(346, 58%, 93%);
         }
         header > h2 {
             margin: 1mm 1mm 1mm 1mm;
@@ -32,36 +32,43 @@
         }
         main {
             box-sizing: border-box;
-            position: sticky;
-            display: block;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            width: 97vw;
-            height: 82%;
-            padding: 3mm;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            grid-template-rows: auto;
+            justify-content: space-evenly;
+            align-content: space-between;
+            align-items: flex-start;
+            width: 99.9vw;
+            height: 74vh;
+            gap: 3.3333mm;
+            column-gap: 3.3333mm;
+            padding-bottom: 2mm;
+            top: 1cm;
             margin: 1mm auto 3mm auto;
-            overflow: scroll;
-            overflow-x: visible;
-            background: #fff;
+            overflow: hidden;
+            overflow-y: scroll;
             text-align: center;
+            box-shadow: inset 0 -8px 8px -6px hsla(346, 91%, 48%, .3);
             z-index: 0;
         }
 
         .item {
+            box-sizing: border-box;
             position: relative;
-            display: inline-block;
-            width: 6.6cm;
+            display: inline-grid;
             height: fit-content;
+            align-self: center;
             background: #fff;
+            max-width: 90%;
+            align-content: space-between;
             border-radius: 1mm;
-            margin: 1.11mm;
+            margin: 0 auto;
+            margin-bottom: 6mm;
             padding: 1mm;
             line-height: 1;
             border: 1px dashed #e90b3ff1;
         }
-        .item.active {
+        .item.active, .item:hover {
             background: #000;
             color: #fff;
             border: 1px solid #e90b3ff1;
@@ -138,12 +145,12 @@
             position: relative;
             display: flex;
             flex-flow: row wrap;
+            margin: 2mm auto;
             justify-content: space-evenly;
-            min-width: 140px;
+            width: 3cm;
+            height: 2cm;
             align-content: center;
             align-items: center;
-            gap: 1mm;
-            margin: 1mm;
             user-select: none;
         }
 
@@ -153,10 +160,8 @@
             justify-content: center;
             align-items: center;
             flex-flow: row wrap;
-            margin-bottom: .4mm;
             width: 1.5rem;
             height: 1.5rem;
-            transform: translateY(-2rem);
             border-radius: 50%;
             background: #fff;
             box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
@@ -174,39 +179,40 @@
         .controls > span:nth-of-type(2) {
             position: absolute;
             left: calc(50% - 12px);
-            top: 97%;
+            top: 60%;
             z-index: 3;
         }
 
         .controls > span:last-of-type {
             position: absolute;
             left: calc(50% - 12px);
-            bottom: 97%;
+            bottom: 60%;
             z-index: 0;
         }
 
         .soft-edge {
-            border-radius: 4mm;
-            box-shadow: 0 0 1rem .99rem hsl(0, 0%, 100%);
+            border-radius: 2mm;
+            box-shadow: 0 0 1mm 2.222mm #fff;
         }
 
         .interaction-ui {
             box-sizing: border-box;
             overscroll-behavior: none; 
-            margin-top: 4mm;
+            margin-top: 2mm;
             position: fixed;
-            bottom: 1.54mm;
-            padding: 1mm;
+            bottom: 0;
             display: grid;
-            align-content: flex-start;
-            justify-content: space-around;
-            align-items: flex-end;
-            flex-flow: row wrap;
-            grid-template-columns: 3cm 1fr 1fr 1fr 1fr;
-            gap: 1mm;
+            min-width: 75%;
+            overflow: visible;
+            max-height: min-content;
+            align-content: center;
+            justify-content: center;
+            align-items: end;
+            text-align: center;
+            grid-template-columns: 3cm min-content 1fr 1fr 1fr;
+            background: linear-gradient(0deg, hsla(0, 0%, 100%, 0.8), hsla(0, 0%, 100%, 0.8) 1.5mm, hsla(0, 0%, 100%, 0.6) 1.5mm, hsla(0, 0%, 100%, 0.6) 3mm, hsla(0, 0%, 100%, 0.4) 3mm, hsla(0, 0%, 100%, 0.4) 4.5mm, hsla(0, 0%, 100%, 0.2) 4.5mm, hsla(0, 0%, 100%, 0.2) 6mm, hsla(0, 0%, 100%, 0) 6mm);
             z-index: 1;
             user-select: none;
-            text-align: center;
         }
 
         .divider {
@@ -214,10 +220,18 @@
             margin: 0 1mm 0 1mm;
         }
 
-        header > b:first-of-type {
-            font-size: 1.5rem;
+        header > h1:first-of-type {
+            display: inline-block;
+            font-size: 1.44rem;
             font-weight: 900;            
-            filter: drop-shadow(0 1px .333rem hsl(0, 0%, 100%));
+            filter: drop-shadow(0 .5px 2mm hsla(0, 45%, 20%, .6));
+            user-select: none;
+            text-shadow: 0 0 1px #281d1d;
+            background: #fff;
+            border-radius: 1mm;
+            padding: 0 1mm 0 1mm;
+            margin: 1mm 1mm 1mm 1mm;
+            width: fit-content;
         }
 
         .scroll-ball {
@@ -227,19 +241,56 @@
             display: inline-flex;
             justify-content: center;
             align-items: center;
-            width: 2.4cm;
-            height: 2.4cm;
-            border-radius: 49%;
+            width: 1.8cm;
+            height: 1.8cm;
+            border-radius: 50%;
+            margin: 1mm auto;
+            transform: translateY(-1mm);
             background: #fff;
+            color:hsl(0, 0%, 8%);
             box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
-            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
+            filter: drop-shadow(0 1px .15rem hsla(346, 91%, 48%, .34));
             cursor: pointer;
             user-select: none;
             font-weight: 600;
             z-index: 1;
+            transition: all 300ms ease-out;
+        }
+
+        .scroll-ball > span {
+            position: absolute;
+            display: inline-flex;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            align-content: center;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2rem;
+            font-weight: 900;
+            color: #fff;
+            text-shadow: 0 0 1px #281d1d;
+            user-select: none;
+        }
+
+        .scroll-ball > span:first-of-type {
+            right: 90%;
+        }
+
+        .scroll-ball > span:last-of-type {
+            left: 90%;
+        }
+
+        header > h1 {
+            color: #e90b3ff1;
+            margin: 2mm auto;
+        }
+        header > h1 > .kur {
+            color: #000;
         }
         .kur {
             color: #e90b3ff1;
+            transition: all 300ms ease-out;
         }
 
         nav {
@@ -292,10 +343,10 @@
             justify-content: center;
             align-items: center;
             flex-flow: row wrap;
-            margin: .666mm;
+            margin: 1mm;
             width: min-content;
-            height: 1.4rem;
-            transform: translateY(1.1rem);
+            height: 1.222rem;
+            transform: translateY(1rem);
             border-radius: 50% 2px;
             background: #fff;
             color: #000 !important;
@@ -304,7 +355,15 @@
             cursor: pointer;
             user-select: none;
             font-weight: 600;
+            font-size: .8rem;
             z-index: 2;
+        }
+
+        .tag:hover {
+            background: #fff;
+            color: #000 !important;
+            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 72%, 56%, 0.1633);
+            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
         }
 
         /*
@@ -312,18 +371,6 @@
         */
         .scroll-ball::selection, .control::selection {
             background: transparent;
-        }
-        /* media query for mobile */
-        @media (max-width: 1111px) {
-            main {
-                width: fit-content;
-                height: 100%;
-                margin: 0;
-            }
-            .item {
-                max-width: 47%;
-                margin: 1mm;
-            }
         }
 
         button, input[type="submit"] {
@@ -338,6 +385,14 @@
             box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213);
         }
 
+        textarea {
+            padding: .5rem .5rem;
+            border-radius: .333rem;
+            margin: .333rem;
+            box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213), inset 0 0 0.1rem rgba(82, 27, 27, 0.213);
+            border: none;
+        }
+
         button:hover, input[type="submit"]:hover {
             filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
             background-color: var(--selected-color);
@@ -345,7 +400,7 @@
         }
 
         input {
-            padding: 0.25rem .75rem;
+            padding: 0.25rem .25rem;
             border-radius: .333rem;
             margin: .111rem;
             border: 1px solid #00000020;
@@ -356,16 +411,18 @@
         }
 
         .auth {
-            display: flex;
-            flex-flow: row wrap;
+            box-sizing: border-box;
+            display: inline-grid;
             justify-content: center;
             align-content: center;
             align-items: center;
+            grid-template-columns: 1fr min-content;
             border-radius: 1.5px;
             background: #fff;
-            max-width: 5cm;
+            max-width: min-content;
+            margin: 3mm auto;
             width: min-content;
-            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
+            box-shadow: 0 0 2px 2px hsl(0, 0%, 100%);
             filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
             z-index: 1;
         }
@@ -374,19 +431,94 @@
             margin: .12rem;
             padding: .12rem;
         }
+
+        .search {
+            position: relative;
+        }
+
+        .search > .nothing-found:nth-of-type(2) {
+            top: 1.5rem;
+        }
+
+        .search > .nothing-found:nth-of-type(3) {
+            top: 3rem;
+        }
+
+        .search > .nothing-found:nth-of-type(4) {
+            top: 4.5rem;
+        }
+
+        .search > .nothing-found:nth-of-type(4)::before {
+            content: "yeah no, this isn't working ";
+        }
+
+        .nothing-found {
+            position: absolute;
+            left: calc(100% + .5rem);
+            top: 0;
+            font-weight: 600;
+            color: #e53e3e;
+            background: #fff;
+            border-radius: 2mm;
+            padding: .1mm 1mm;
+            filter: drop-shadow(0 0 .5rem #00000020);
+        }
+
+        @media screen and (min-width: 1600px) {
+            main {
+                grid-template-columns: repeat(5, 1fr);
+            }
+        }
+
+        @media screen and (max-width: 1140px) {
+            main {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media screen and (max-width: 900px) {
+            main {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .interaction-ui {
+                display: flex;
+            }
+            .interaction-ui > h1 {
+                position: fixed;
+                top: 0;
+                left: 0;
+                scale: .9;
+            }
+            .auth {
+                position: fixed;
+                left: 2mm;
+                bottom: 0;
+            }
+        }
+
+        @media screen and (max-width: 642px) {
+            main {
+                display: block;
+            }
+        }
+
+        @media screen and (max-width: 444px) {
+            nav {
+                margin: 1mm auto;
+                transform: translateX(12mm);
+            }
+        }
     </style>
 </head>
 <body>
     <nav>
         <section class="search">
-            <input type="text" name="search" placeholder="search" value="test OR meta"/>
+            <input type="text" name="search" placeholder="search" value="post"/>
         </section>
     </nav>
-    <main class="soft-edge">
-        
-    </main>
+    <main></main>
     <header class="interaction-ui">
-        <b><span class="kur">kur</span>shok</b>
+        <h1><span class="kur">kur</span>shok</h1>
 
         <section class="auth">
             <span class="inputs">
@@ -403,7 +535,9 @@
             <span>↑</span>
         </section>
 
-        <section class="scroll-ball">↕</section>
+        <section class="scroll-ball">
+            <span>←</span>↕<span>→</span>
+        </section>
     </header>
     <script type="module" async>
         import d from './domlib.js'
@@ -418,6 +552,9 @@
         let active = 0
         let lastActive
         const setActive = (a, scroll) => {
+            if (a > items.length - 1 || a == NaN) return setActive(0, scroll)
+            if (a == -Infinity) return setActive(items.length - 1, scroll)
+            if (a == Infinity) return setActive(active = 0 ? items.length - 1 : 0, scroll)
             if (typeof a == 'number') {
                 active = a
                 if (scroll === undefined) scroll = true
@@ -446,8 +583,8 @@
         }
         const makeItem = (text, i) => {
             const item = article.item(text)
+            item.onpointerover = e => setActive(i)
             item.classList.add('item')
-            item.getAttribute('name', i)
             items.push(item)
             return item
         }
@@ -511,8 +648,8 @@
         }
 
         document.onkeydown = async e => {
+            if (e.target.tagName == 'INPUT' && e.key != 'Enter') return
             if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
-            if (e.target.tagName == 'INPUT' && !e.target == search) return
             if (e.key.includes('Arrow')) {
                 e.preventDefault()
                 switch(e.key.replace('Arrow', '')) {
@@ -533,14 +670,14 @@
                 await searchForWrits(search.value)
             }
         }
-        main.onpointermove = (e) => {
+        main.addEventListener('pointermove', e => {
             if (e.target.classList && e.target.classList.contains('item') && !e.shiftKey) {
                 if (lastActive) lastActive.classList.remove('active')
                 e.target.classList.add('active')
                 ;(lastActive = e.target).scrollIntoViewIfNeeded()
                 active = items.indexOf(e.target)
             }
-        }
+        })
 
         main.onpointerdown = async e => {
             let item = e.target
@@ -604,7 +741,11 @@
             const div = document.createElement('div')
             for (const key in obj) {
                 const p = document.createElement('p')
-                p.textContent = `${key}: ${obj[key]}`
+                if (d.isObj(obj[key])) {
+                    p.textContent = `${key}: ${displayObject(obj[key])}` 
+                } else {
+                    p.textContent = `${key}: ${obj[key]}`
+                }
                 div.appendChild(p)
             }
             return div
@@ -633,20 +774,22 @@
                 let i = -1
                 for (const writ of writs) {
                     const item = makeItem(d.html`<header>
-                            <h2>${writ.title}</h2>
+                            ${writ.title != '' ? `<h2>${writ.title}</h2>` : ''}
                             <time>${niceTime(writ.ts)}</time>${divider}
                             ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
                             <span class="owner">${monikers[++i]}</span>${divider}
                         </header>
                         <section class="content">${writ.content}</section>
                         <div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>
-                        <div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`,
-                     writ.id)
+                        <div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`, i)
                     item.writ = writ
                     item.ts = writ.ts
                     main.appendChild(item)
                 }
                 console.log(writs)
+            } else {
+                const nf = span.nothing_found({$:search.parentNode}, 404)
+                setTimeout(() => nf.remove(), 3500)
             }
         }
 
@@ -665,9 +808,9 @@
         }
 
         const htmlWritMaker = d.html`<section class="composer">
-<input type="text" name="title" placeholder="Title" />
 <textarea name="content" placeholder="Content" ></textarea>
-<input type="text" name="tags" placeholder="Tags" />
+<input type="text" name="tags" placeholder="tags" />
+<input type="text" name="title" placeholder="title (optional)" />
 <input type="text" name="state" placeholder="optional json state field" />
 <div>
     <input type="checkbox" name="public" checked/>
@@ -676,9 +819,9 @@
 </section>`[0][0]
 
         const [
-            titleIn,
             contentIn,
             tagsIn,
+            titleIn,
             stateIn,
             pbbdiv
         ] = htmlWritMaker.children
@@ -697,7 +840,7 @@
             const res = await composeWrit(
                 titleIn.value,
                 contentIn.value,
-                tagsIn.value,
+                tagsIn.value.replace(',', ' ').replace('  ', ' '),
                 stateIn.value.length ? JSON.parse(stateIn.value) : '',
                 pbIn.checked
             )
@@ -724,7 +867,7 @@
                 if (data.err == null) {
                     ae.innerHTML = `<p>Authenticated</p><p>Info: ${displayObjectText(data)}</p>`
                     setTimeout(() => {
-                        ae.parentNode.style.gridTemplateRows = '3cm 1fr 1fr'
+                        ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr 1fr'
                         ae.remove()
                     }, 5000)
                     localStorage.setItem('auth', 'true')
@@ -760,12 +903,35 @@
             }, '🔒 ')
             render(htmlWritMaker, 'body > header')
         } else {
-            ae.parentNode.style.gridTemplateRows = '3cm 1fr 1fr'
+            ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr 1fr'
             query('button', ae).onpointerdown = e => authenticate()
             query('[type="password"]', ae).onkeydown = e => {
                 if (e.key === 'Enter') authenticate()
             }
         }
+
+        window.svs = new Proxy({
+            async get(m) {
+                return await http.get(`/api/svs/${m}`)
+            },
+            async set(m, v) {
+                return await http.post(`/api/svs/${m}`, v)
+            },
+            async delete(m) {
+                return await http.delete(`/api/svs/${m}`)
+            }
+        }, {
+            async get(m, k) {
+                if (k in m) return m[k]
+                return (await m.get(k)).value
+            },
+            async set(m, k, v) {
+                return await m.set(k, v)
+            },
+            async deleteProperty(m, k) {
+                return await m.delete(k)
+            }
+        })
     </script>
 </body>
 </html>
