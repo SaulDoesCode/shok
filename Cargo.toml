@@ -9,11 +9,14 @@ edition = "2021"
 anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
 cocoon = "*"
-salvo = { version= "0.45", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
+dashmap = { version = "*", features = ["rayon", "serde"]}
+salvo = { version= "0.45", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "sse", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
 serde = { version = "^1", features = ["derive"] }
 serde_json = "*"
 # surrealdb = { version = "1.0.0-beta.9+20230402", features = ["scripting", "http"]}
 tokio = { version = "^1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures-util = { version = "0.3", default-features = false }
 mimalloc = {version = "*", default-features = false, features = ["secure", "local_dynamic_tls"]}
 parking_lot = "*"
 tracing = "*"

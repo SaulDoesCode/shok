@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>SSE Chat</title>
+        <link rel="stylesheet" href="/marx.css">
+        <style>
+            *, * *, * * * {
+                box-sizing: border-box;
+                position: relative;
+            } 
+            body > header {
+                text-align: center;
+            }
+            main {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                overflow-x: visible;
+            }
+            #chat {
+                width: 80vw;
+                min-height: 50vh;
+                height: 74%;
+                overflow-y: scroll;
+                border: 1px solid #ccc;
+                padding: 1mm;
+                overflow-x: visible;
+            }
+            #chat > article {
+                display: grid;
+                justify-content: center;
+                align-content: center;
+                align-items: center;
+                grid-template-columns: min-content 1fr;
+                border: 1px solid #ccc;
+                border-top: none;
+                padding: .8mm 1mm;
+                gap: 1mm;
+                margin: 0 0;
+                overflow: visible;
+            }
+            #chat > article.me {
+                grid-template-columns: 1fr min-content;
+            }
+            #chat > article:first-of-type {
+                border-top: 1px solid #ccc;
+            }
+            .who {
+                display: inline-flex;
+                justify-content: center;
+                align-content: center;
+                align-items: center;
+                flex-flow: row nowrap;
+                width: 2.4cm;
+                word-wrap: break-word;
+                word-break: break-all;
+                margin: 0 .5mm;
+                padding: 0 .5mm;
+                padding-right: 1mm;
+                font-weight: bold;
+                font-size: .91rem;
+                border-right: 1px solid hsla(343, 76%, 42%, 0.607);
+            }
+            .me .who {
+                border-right: none;
+                border-left: 1px solid hsla(343, 76%, 42%, 0.607);
+            }
+            .msg {
+                margin: 0;
+                width: 100%;
+            }
+            nav {
+                display: flex;
+                justify-content: center;
+                align-content: center;
+                align-items: center;
+                flex-flow: row nowrap;
+                max-width: 85vw;
+                margin: 1mm auto;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Chat</h1>
+            <p><em id="connnection-status">Connecting...</em></p>
+        </header>
+        <main>
+            <div id="chat">
+            </div>
+        </main>
+        <nav>
+            <input type="text" id="msg" />
+            <button type="button" id="submit">Send</button>
+        </nav>
+        <script type="module">
+            // import d from '/domlib.js'; import http from "/http.js"
+        const ml = {}
+        const chat = document.getElementById('chat')
+        const msg = document.getElementById('msg')
+        const submit = document.getElementById('submit')
+        const status = document.getElementById('connnection-status')
+        msg.addEventListener("keydown", e => e.key == 'Enter' && submit.click())
+        let sse = new EventSource(`/api/chat`), sid
+        sse.addEventListener("open", () => status.textContent = "Connected!")
+        sse.addEventListener("user", e => sid = e.data)
+        sse.addEventListener("message", async e => await showMessage(e.data))
+        sse.addEventListener("error", async e => {
+            sse.close()
+            status.textContent = "Disconnected!"
+            await showMessage(`error: ${e}`)
+        })
+        document.getElementById('submit').addEventListener("click", async e => {
+            const body = msg.value
+            if (body == '' || body == ' ') return
+            if (sid == null) return alert("You are not connected!")
+            await fetch(`/api/chat/${sid}`, {method: "POST", body})
+            msg.value = ''
+            await showMessage('me', body)
+        })
+        async function showMessage(who, data) {
+            if (data == null && who.includes(":")) {
+                [who, data] = who.split(":").map(s => s.trim()).filter(s => s != "")
+                who = ml[who] || (ml[who] = (await (await fetch(`/api/moniker-lookup/` + who)).json()).moniker)
+            }
+            const message = document.createElement('article')
+            if (who == 'me') {
+                message.classList.add('me')
+                message.innerHTML = `<p class="msg">${data}</p> <header class="who">${who}</header>`
+            } else {
+                message.innerHTML = `<header class="who">${who}</header><p class="msg">${data}</p>`
+            }
+            chat.appendChild(message)
+        }
+        </script>
+    </body>
+</html>

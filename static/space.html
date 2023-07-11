@@ -8,10 +8,11 @@
         :root {
             --highlight-color: #e90b3ff1;
             --selected-color: #f12260;
+            --body-color: #fee4e4;
         }
         html {
             font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
-            background: #ffdddd;
+            background: var(--body-color);
         }
         body {
             display: flex;
@@ -24,8 +25,9 @@
             height: 100vh;
             margin: 0;
             padding: 0;
-            background: hsl(346, 58%, 93%);
+            background: var(--body-color);
         }
+    
         main {
             box-sizing: border-box;
             display: grid;
@@ -37,7 +39,7 @@
             width: 99.9vw;
             height: 74vh;
             gap: 3.3333mm;
-            padding: 4mm;
+            padding: 3.8mm;
             column-gap: 3.3333mm;
             top: 1cm;
             margin: 1mm auto 3mm auto;
@@ -67,7 +69,7 @@
             background: #000;
             color: #fff;
             border: 1px solid #e90b3ff1;
-            box-shadow: 0 0 .98rem 0.3rem #00000020, 0 0 .8rem 0.3rem hsla(346, 91%, 48%, .4);
+            box-shadow: 0 0 .9rem .16rem #00000020, 0 0 .66rem .16rem hsla(346, 91%, 48%, .4);
             user-select: text;
         }
         .item > header {
@@ -523,7 +525,15 @@
             const ia = items[active]
             if (ia) {
                 ia.classList.add('active')
-                scroll && ia.scrollIntoViewIfNeeded()
+                if (scroll) {
+                    if (ia.scrollIntoViewIfNeeded) ia.scrollIntoViewIfNeeded()
+                    else ia.scrollIntoView()
+                    if (lastActive) {
+                        const lai = items.indexOf(lastActive), by = 60
+                        if (lai > active) ia.scrollTop -= by
+                        else if (lai < active) ia.scrollTop += by
+                    }
+                }
                 lastActive = ia
             }
         }
@@ -629,7 +639,7 @@
             if (e.target.classList && e.target.classList.contains('item') && !e.shiftKey) {
                 if (lastActive) lastActive.classList.remove('active')
                 e.target.classList.add('active')
-                ;(lastActive = e.target).scrollIntoViewIfNeeded()
+                ;(lastActive = e.target).scrollIntoView()
                 active = items.indexOf(e.target)
             }
         })

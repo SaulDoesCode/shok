@@ -5,7 +5,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use anyhow::anyhow;
 use base64::{Engine as _};
 use lazy_static::lazy_static;
-use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_limiter::*, logging::Logger};
+use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_limiter::*, logging::Logger, sse::{SseKeepAlive, SseEvent}};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
@@ -21,6 +21,9 @@ use tantivy::{
     // IndexReader, ReloadPolicy,
     IndexWriter, DateTime
 };
+use futures_util::StreamExt;
+use tokio::{sync::mpsc};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use parking_lot::RwLock;
 
 type Astr = Arc<str>;
@@ -40,144 +43,76 @@ type TfCt = (
     U8s // state
 );
 
-/*
-#[allow(dead_code)]
-const SV_MONIKER_TANGLE_LOOKUP: MultimapTableDefinition<&str, u64> = MultimapTableDefinition::new("name_lookup");
-#[allow(dead_code)]
-const SV_MONIKER_TANGLE_LOOKUP_REVERSE: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("name_lookup_reverse");
-
-struct AliasTree{
-    root: Astr,
-    id: u64,
-    degree: usize,
-    nested: bool,
-    children: HashMap<Astr, AliasTree>
+#[derive(Debug)]
+enum Message {
+    UserId(usize),
+    Reply(String),
 }
 
-impl AliasTree{
-    fn new(root: Astr, id: Option<u64>, degree: usize, nested: bool) -> anyhow::Result<AliasTree> {
-        let at = AliasTree{
-            root,
-            id: match id {
-                Some(id) => id,
-                None => {
-                    let mut rng = rand::thread_rng();
-                    let mut id = rng.gen();
-                    let rtx = DB.begin_read()?;
-                    let t = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
-                    let mut mmv = t.get(id)?;
-                    while let Some(Ok(_)) = mmv.next() {
-                        id = rng.gen();
-                        mmv = t.get(id)?;
-                    }
-                    id
-                }
-            },
-            degree,
-            nested,
-            children: HashMap::new()
-        };
-        at.save()?;
-        Ok(at)
-    }
+type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
 
-    fn aliases(&self) -> Vec<Astr>{
-        let mut aliases = vec![];
-        for (_, child) in self.children.iter() {
-            aliases.append(&mut child.aliases());
-        }
-        aliases
-    }
+lazy_static!{
+    static ref ONLINE_USERS: Users = Users::new();
+}
 
-    fn save(&self) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
-        {
-            let mut t = wrtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
-            t.insert(self.root.as_ref(), self.id)?;
-            let mut t = wrtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
-            t.insert(self.id, self.root.as_ref())?;
-        }
-        wrtx.commit()?;
-        Ok(())
-    }
+#[handler]
+async fn chat_send(req: &mut Request, res: &mut Response) {
+    let uid = req.param::<usize>("id").unwrap();
+    let msg = std::str::from_utf8(req.payload().await.unwrap()).unwrap();
+    user_message(uid, msg);
+    res.status_code(StatusCode::OK);
+}
 
-    fn get_id(moniker: &str) -> anyhow::Result<u64> {
-        let rtx = DB.begin_read()?;
-        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
-        let mut mmv = ft.get(moniker)?;
-        while let Some(Ok(ag)) = mmv.next() {
-            return Ok(ag.value());
+#[handler]
+async fn user_connected(req: &mut Request, res: &mut Response) {
+    let uid = match session_check(req, None).await {
+        Some(id) => id,
+        None => {
+            res.status_code(StatusCode::UNAUTHORIZED);
+            return;
         }
-        Err(anyhow!("No id found for moniker: {}", moniker))
-    }
+    } as usize;
 
-    fn get_moniker(id: u64) -> anyhow::Result<Astr> {
-        let rtx = DB.begin_read()?;
-        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
-        let mut mmv = ft.get(id)?;
-        while let Some(Ok(ag)) = mmv.next() {
-            return Ok(Arc::from(ag.value()));
-        }
-        Err(anyhow!("No moniker found for id: {}", id))
-    }
+    tracing::info!("chat user came online: {}, req {:?}", uid, req);
 
-    fn lookup_aliases(moniker: &str, id: Option<u64>, degrees: usize) -> anyhow::Result<Self> {
-        let rtx = DB.begin_read()?;
-        let ft = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP)?;
-        let mut mmv = ft.get(moniker)?;
-        let mut aliases = vec![];
-        while let Some(Ok(ag)) = mmv.next() {
-            aliases.push(ag.value());
-        }
-        let rt = rtx.open_multimap_table(SV_MONIKER_TANGLE_LOOKUP_REVERSE)?;
-        let mut alias_monikers: Vec<Astr> = vec![];
-        for a in aliases.iter() {
-            let mut mmv = rt.get(*a)?;
-            while let Some(Ok(ag)) = mmv.next() {
-                alias_monikers.push(Arc::from(ag.value()));
-            }
-        }
-        if alias_monikers.len() == 0 {
-            Err(anyhow::anyhow!("moniker not found"))
+    // Use an unbounded channel to handle buffering and flushing of messages
+    // to the event source...
+    let (tx, rx) = mpsc::unbounded_channel();
+    let rx = UnboundedReceiverStream::new(rx);
+
+    tx.send(Message::UserId(uid))
+        // rx is right above, so this cannot fail
+        .unwrap();
+
+    // Save the sender in our list of connected users.
+    ONLINE_USERS.insert(uid, tx);
+
+    // Convert messages into Server-Sent Events and returns resulting stream.
+    let stream = rx.map(|msg| match msg {
+        Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("user").text(uid.to_string())),
+        Message::Reply(reply) => Ok(SseEvent::default().text(reply)),
+    });
+    SseKeepAlive::new(stream).streaming(res).ok();
+}
+
+fn user_message(uid: usize, msg: &str) {
+    let new_msg = format!("{uid}:{msg}");
+
+    // New message from this user, send it to everyone else (except same uid)...
+    //
+    // We use `retain` instead of a for loop so that we can reap any user that
+    // appears to have disconnected.
+    ONLINE_USERS.retain(|id, tx| {
+        if uid == *id {
+            // don't send to same user, but do retain
+            true
         } else {
-            if degrees != 0 {
-                let mut alias_results = vec![];
-                for a in alias_monikers {
-                    alias_results.push(Self::lookup_aliases(
-                a.as_ref(), 
-                     match Self::get_id(a.as_ref()) { 
-                            Ok(id) => Some(id),
-                            Err(_) => None 
-                        },
-                        degrees - 1
-                    )?);
-                }
-            }
-            Self::new(
-                Arc::from(moniker),
-                match id {
-                    Some(id) => Some(id),
-                    None => Some(aliases[0])
-                },
-                degrees,
-                degrees != 0
-            )
+            // If not `is_ok`, the SSE stream is gone, and so don't retain
+            tx.send(Message::Reply(new_msg.clone())).is_ok()
         }
-    }
+    });
 }
-*/
-/*
-fn write_string_to_path(path: &str, s: &str) -> std::io::Result<()> {
-    write_bytes_to_path(path, s.as_bytes())
-}
-fn read_string_from_path(path: &str) -> std::io::Result<String> {
-    let s = String::from_utf8(read_bytes_from_path(path)?);
-    match s {
-        Ok(s) => Ok(s),
-        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    }
-}
-*/
+
 fn write_bytes_to_path(path: &str, s: &[u8]) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     file.write_all(s)?;
@@ -518,7 +453,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
         _owner = Some(ADMIN_ID);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((perm_schema, owner, _, uses, _)) = validate_token_under_permision_schema(&tk, &[1], &DB).await {
+            if let Ok((perm_schema, owner, _, uses, _)) = validate_token_under_permision_schema(&tk, &[u32::MAX - 5], &DB).await {
                 // token session
                 _pm = Some(perm_schema);
                 _owner = Some(owner);
@@ -572,10 +507,10 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
             }
         },
         Method::POST => {
-            let body = match req.parse_json_with_max_size::<serde_json::Value>(12000).await {
+            let body = match req.parse_json_with_max_size::<serde_json::Value>(20480).await {
                 Ok(b) => b,
                 Err(e) => {
-                    brq(res, &format!("error parsing json body as bytes: {}", e));
+                    brq(res, &format!("error parsing json body: {}", e));
                     return;
                 }
             };
@@ -1013,14 +948,10 @@ async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
             }
             return brq(res, "ran the contracts, side effects should be applied.");
         },
-        Method::POST => if let Ok(tr) = req.parse_json_with_max_size::<TransferRequest>(16890).await {
+        Method::POST => if let Ok(tr) = req.parse_json_with_max_size::<TransferRequest>(20480).await {
             match tr.lodge(_owner.unwrap()).await {
-                Ok(_) => {
-                    brq(res, "transfer contract lodged successfully");
-                },
-                Err(e) => {
-                    brq(res, &format!("failed to lodge transfer contract: {}", e));
-                }
+                Ok(()) => brq(res, "transfer contract lodged successfully"),
+                Err(e) => brq(res, &format!("failed to lodge transfer contract: {}", e))
             }
         } else {
             brq(res, "invalid transfer request");
@@ -1036,15 +967,26 @@ const PERM_SCHEMAS : MultimapTableDefinition<u32, &str> = MultimapTableDefinitio
 #[derive(Serialize, Deserialize)]
 struct PermSchema(u32, Strings);
 
+const DEFAULT_PERM_SCHEMAS: &[&str] = &[
+    "r",
+    "rw",
+    "rwx",
+    "transact",
+    "svs",
+    "list-uploads",
+    "upload"
+];
+
 impl PermSchema {
     fn ensure_basic_defaults(db: &Database) {
         let wrtx = db.begin_write().expect("db write failed");
         {
             let mut t = wrtx.open_multimap_table(PERM_SCHEMAS).expect("db write failed");
-            t.insert(0, "r").expect("db read permision default insert failed");
-            t.insert(1, "rw").expect("db read/write permision default insert failed");
-            t.insert(2, "rwx").expect("db read/write/execute permision default insert failed");
-            t.insert(3, "t").expect("db transact default insert failed");
+            let mut pm = u32::MAX;
+            for code in DEFAULT_PERM_SCHEMAS {
+                t.insert(pm, code).expect("db default permission schema insert failed");
+                pm -= 1;
+            }
         }
         wrtx.commit().expect("failed to insert basic default perm schemas");
     }
@@ -1058,7 +1000,7 @@ impl PermSchema {
                 let mut rng = thread_rng();
                 loop {
                     let i = rng.gen::<u32>();
-                    if i > 3 {
+                    if i < u32::MAX - DEFAULT_PERM_SCHEMAS.len() as u32 {
                         break i;
                     }
                 }
@@ -1100,24 +1042,24 @@ impl PermSchema {
         Ok(all_there == 0)
     }
     #[allow(dead_code)]
-    fn add_perms(pm: u32, db: &Database, perms: &[&str]) -> Result<(), redb::Error> {
+    fn add_perms(pm: u32, db: &Database, perms: &Strings) -> Result<(), redb::Error> {
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
             for p in perms.iter() {
-                t.insert(pm, p)?;
+                t.insert(pm, p.as_str())?;
             }
         }
         wrtx.commit()?;
         Ok(())
     }
     #[allow(dead_code)]
-    fn remove_perms(pm: u32, db: &Database, perms: &[&str]) -> Result<(), redb::Error> {
+    fn remove_perms(pm: u32, db: &Database, perms: &Strings) -> Result<(), redb::Error> {
         let wrtx = db.begin_write()?;
         {
             let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
             for p in perms.iter() {
-                t.remove(pm, p)?;
+                t.remove(pm, p.as_str())?;
             }
             // TODO: cleanup perm schema if it is empty
         }
@@ -1127,7 +1069,15 @@ impl PermSchema {
 }
 
 
-async fn make_tokens(pm: u32, id: u64, mut count: u16, exp: u64, uses: u64, data: Option<&[u8]>, db: &Database) -> Result<Strings, redb::Error> {
+async fn make_tokens(
+    pm: u32,
+    id: u64,
+    mut count: u16,
+    exp: u64,
+    uses: u64,
+    data: Option<&[u8]>,
+    db: &Database
+) -> Result<Strings, redb::Error> {
     let mut tkns = vec![];
     let mut tk: String;
     let wtx = db.begin_write()?;
@@ -1285,7 +1235,7 @@ async fn action_token_handler(req: &mut Request, _depot: &mut Depot, res: &mut R
         if let Some(tk) = req.param::<&str>("tk") {
             if let Ok((pm, id, exp, _, state)) = validate_token_under_permision_schema(tk, &[], &DB).await { // (u32, u64, u64, u64, Option<U8s>)
                 match action {
-                    "/create-resource" => if req.method() == Method::POST && [1].contains(&pm) && state.is_some() {
+                    "/create-resource" => if req.method() == Method::POST && [u32::MAX - 1].contains(&pm) && state.is_some() {
                         let mut r = Resource::from_blob(&state.unwrap(), Some(id), "application/octet-stream".to_string());
                         r.until = Some(exp);
                         if r.save(false).is_ok() {
@@ -1416,7 +1366,11 @@ async fn main() {
             Router::with_path("/api").hoop(api_limiter)
                 .push(
                     Router::with_path("/cmd")
-                                .post(cmd_request)
+                            .post(cmd_request)
+                )
+                .push(
+                    Router::with_path("/moniker-lookup/<id>")
+                            .handle(moniker_lookup)
                 )
                 .push(
                     Router::with_path("/speak")
@@ -1427,6 +1381,15 @@ async fn main() {
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
                     .handle(search_api)
+                )
+                .push(
+                    Router::with_path("chat")
+                        .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                        .get(user_connected)
+                        .push(
+                            Router::with_path("<id>")
+                                        .post(chat_send)
+                        )
                 )
                 .push(
                     Router::with_path("/search/<ts>")
@@ -1489,11 +1452,8 @@ async fn main() {
         );
 
     let listener = TcpListener::new(addr.clone()).rustls(config.clone());
+    let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
 
-    let acceptor = QuinnListener::new(config, addr)
-        .join(listener)
-        .bind().await;
-    
     Server::new(acceptor).serve(router).await;
 }
 
@@ -1871,7 +1831,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
             match req.query::<String>("tk") {
                 Some(tk) => {
                     // check if token is valid
-                    if !validate_token_under_permision_schema(&tk, &[0, 1], &DB).await.is_ok() {
+                    if !validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await.is_ok() {
                         brq(res, "invalid token");
                         return;
                     }
@@ -1904,12 +1864,13 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
     let mut tkn = String::new();
     match req.param::<String>("tk") {
         // check if token is valid
-        Some(tk) => match validate_token_under_permision_schema(&tk, &[1], &DB).await {
+        Some(tk) => match validate_token_under_permision_schema(&tk, &[u32::MAX - 6], &DB).await {
             Ok((_, _, _, _, _)) => tkn = format!("?tk={tk}"),
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
         None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
-            return brq(res, "unauthorized");
+            uares(res);
+            return;
         }
     };
 
@@ -1941,15 +1902,17 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
 
 #[handler]
 async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // query param token 
+    let mut is_admin = false;
     match req.param::<String>("tk") {
         // check if token is valid
-        Some(tk) => match validate_token_under_permision_schema(&tk, &[1], &DB).await {
-            Ok(_) => {},
+        Some(tk) => match validate_token_under_permision_schema(&tk, &[u32::MAX - 7], &DB).await {
+            Ok((_, owner, _, _, _)) => {
+                is_admin = owner == ADMIN_ID;
+            },
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
         None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
-            return brq(res, "unauthorized");
+            uares(res);
         }
     }
 
@@ -1960,7 +1923,13 @@ async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Res
             .take(16)
             .map(char::from)
             .collect::<String>())));
-        let info = if let Err(e) = std::fs::copy(&file.path(), Path::new(&dest)) {
+        let dp = Path::new(&dest);
+        if dp.exists() && !is_admin {
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Text::Plain("file already exists and only the admin can overwrite files"));
+            return;
+        }
+        let info = if let Err(e) = std::fs::copy(&file.path(), dp) {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             format!("file not found in request: {}", e)
         } else {
@@ -1980,8 +1949,33 @@ async fn health(res: &mut Response){
     })));
 }
 
-async fn auth_check(pwd: &str) -> bool {
-    check_admin_password(pwd.as_bytes())
+#[handler]
+async fn moniker_lookup(req: &mut Request, res: &mut Response) {
+    if let Some(_) = session_check(req, None).await {
+        if let Some(id) = req.param::<u64>("id") {
+            if let Ok(acc) = Account::from_id(id, &DB) {
+                jsn(res, serde_json::json!({
+                    "status": "ok",
+                    "moniker": acc.moniker
+                }));
+            } else {
+                brq(res, "not found");
+            }
+        } else if let Some(moniker) = req.param::<String>("id") {
+            if let Ok(acc) = Account::from_moniker(&moniker, &DB) {
+                jsn(res, serde_json::json!({
+                    "status": "ok",
+                    "id": acc.id
+                }));
+            } else {
+                brq(res, "not found");
+            }
+        } else {
+            brq(res, "no moniker or id provided to lookup \\_(0_0)_/");
+        }
+        return;
+    }
+    uares(res);
 }
 
 async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
@@ -2378,7 +2372,6 @@ impl Resource {
     }
 }
 
-
 #[handler]
 pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut _pm: Option<u32> = None;
@@ -2389,7 +2382,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
         _is_admin = true;
     } else {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
+            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
                 // token session
                 _pm = Some(perm_schema);
                 _owner = Some(owner);
@@ -2406,7 +2399,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
 
     match *req.method() {
         Method::GET => match req.param::<String>("hash") {
-            Some(hash) => if _is_admin || _pm.is_some_and(|pm| [0, 1].contains(&pm)) {
+            Some(hash) => if _is_admin || _pm.is_some_and(|pm| [u32::MAX, u32::MAX - 1].contains(&pm)) {
                 match Resource::from_b64_straight(&hash, true) {
                     Ok(r) => if r.public || _is_admin || _owner.is_some_and(|owner| r.owner.is_some_and(|o| o == owner)) {
                         jsn(res, r.json())
@@ -2422,7 +2415,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                 brq(res, "No such resource found this time");
             }
         },
-        Method::POST if _is_admin || _pm.is_some_and(|pm| [1].contains(&pm)) => {
+        Method::POST if _is_admin || _pm.is_some_and(|pm| [u32::MAX - 1].contains(&pm)) => {
             if let Ok(r) = req.parse_json::<ResourcePostRequest>().await {
                 let mut resource = Resource::from_blob(&r.data, _owner, r.mime.clone());
                 if let Some(oh) = r.old_hash.clone() {
@@ -2471,7 +2464,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                 brq(res, "failed to parse resource");
             }
         },
-        Method::DELETE if _is_admin || _pm.is_some_and(|pm| [1].contains(&pm)) => match req.param::<String>("hash") {
+        Method::DELETE if _is_admin || _pm.is_some_and(|pm| [u32::MAX - 1].contains(&pm)) => match req.param::<String>("hash") {
             Some(hash) => {
                 match Resource::from_b64_straight(&hash, true) {
                     Ok(r) => {
@@ -2527,10 +2520,7 @@ pub fn nfr(res: &mut Response) {
 
 fn brqe(res: &mut Response, err: &str, msg: &str) {
     res.status_code(StatusCode::BAD_REQUEST);
-    res.render(Json(serde_json::json!({
-        "msg": msg,
-        "err": err
-    })));
+    res.render(Json(serde_json::json!({"msg": msg, "err": err})));
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2572,34 +2562,30 @@ async fn make_token_request(req: &mut Request, _depot: &mut Depot, res: &mut Res
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PermSchemaCreationRequest{
+struct PermSchemaRequest{
     pwd: Option<String>,
-    id: Option<u32>,
+    pm: Option<u32>,
     add: Option<Strings>,
     rm: Option<Strings>
 }
 
 #[handler]
 async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // get a string from the post body, and set it as a variable called text
-    if let Ok(pm) = req.parse_json_with_max_size::<PermSchemaCreationRequest>(1024).await {
-        if pm.pwd.is_some() || !auth_check(&pm.pwd.unwrap()).await {
-            if session_check(req, Some(ADMIN_ID)).await.is_some() {
-                // admin session
-            } else {
+    if let Ok(pm) = req.parse_json_with_max_size::<PermSchemaRequest>(1024).await {
+        if pm.pwd.is_some() || !check_admin_password(pm.pwd.unwrap().as_bytes()) {
+            if session_check(req, Some(ADMIN_ID)).await.is_none() {
                 res.status_code(StatusCode::BAD_REQUEST);
                 res.render(Text::Plain("bad password and/or invalid session"));
                 return;
             }
         }
-
-        match PermSchema::modify(pm.add, pm.rm, pm.id, &DB) {
+        match PermSchema::modify(pm.add, pm.rm, pm.pm, &DB) {
             Ok(ps) => jsn(res, ps),
             Err(e) => brqe(res, &e.to_string(), "failed to save perm schema")
         }
-    } else {
-        brq(res, "failed to setup perm schema, bad PermSchema details");
+        return;
     }
+    brq(res, "failed to setup perm schema, bad PermSchema details");
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2613,7 +2599,7 @@ struct SpeakRequest {
 async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<SpeakRequest>(1024).await {
-        if sr.pwd.is_none() || !auth_check(&sr.pwd.clone().unwrap()).await {
+        if sr.pwd.is_none() || !check_admin_password(sr.pwd.clone().unwrap().as_bytes()) {
             if session_check(req, Some(ADMIN_ID)).await.is_some() {
                 // admin session
             } else {
@@ -2677,11 +2663,11 @@ fn run_stored_commands() -> anyhow::Result<()> {
                     let res = cmd.run().await;
                     match res {
                         Ok(out) => {
-                            println!("ran command: {:?}", cmd);
+                            println!("ran command: {:?}", &cmd);
                             println!("output: {:?}", out);
                         },
                         Err(e) => {
-                            println!("failed to run command: {:?}", cmd);
+                            println!("failed to run command: {:?}", &cmd);
                             println!("error: {:?}", e);
                         }
                     }
@@ -2702,7 +2688,8 @@ struct CMDRequest{
     cd: Option<String>,
     args: Strings,
     stream: Option<bool>,
-    when: Option<u64>
+    when: Option<u64>,
+    again: Option<u64>
 }
 
 impl CMDRequest {
@@ -2728,6 +2715,7 @@ impl CMDRequest {
             )
             .output().await
     }
+
     async fn stream_output(&self, _req: &mut Request, res: &mut Response) -> anyhow::Result<()> {
         // spawn a child process and have it run the command in a tokio task, use a channel to stream its outputs to the client
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(2048 * 2);
@@ -2777,8 +2765,7 @@ impl CMDRequest {
 async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) {
     if !session_check(req, Some(ADMIN_ID)).await.is_some() {
         // unauthorized
-        res.status_code(StatusCode::UNAUTHORIZED);
-        res.render(Json(serde_json::json!({"err": "unauthorized"})));
+        uares(res);
         return;
     }
     // get a string from the post body, and set it as a variable called text
@@ -2787,9 +2774,7 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
             if let Err(e) = sr.save_to_run_later(&DB).await {
                 brqe(res, &e.to_string(), "failed to save command to run later");
             } else {
-                res.render(Json(serde_json::json!({
-                    "msg": "command saved to run later",
-                })));
+                jsn(res, serde_json::json!({"ok": true, "msg": "command saved to run later"}));
             }
             return;
         }
@@ -2834,9 +2819,7 @@ struct PutWrit{
 }
 
 #[derive(Deserialize, Serialize)]
-struct DeleteWrit {
-    ts: u64
-}
+struct DeleteWrit {ts: u64}
 
 #[derive(Deserialize, Serialize)]
 struct Writ{
@@ -3085,7 +3068,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[0, 1], &DB).await {
+            if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
                 // token session
                 _owner = Some(o);
             } else if req.method() != Method::GET {
@@ -3190,13 +3173,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     };
                     // try to update existing documet
                     match SEARCH.update_doc(&writ) {
-                        Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
+                        Ok(()) => res.render(Json(serde_json::json!({"ok": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to update index"),
                     }
                 } else {
                     // add the writ to the index
                     match SEARCH.add_doc(&writ) {
-                        Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
+                        Ok(()) => res.render(Json(serde_json::json!({"ok": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
                     }
                 }
@@ -3237,16 +3220,11 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 };
                 // remove the writ from the index
                 match SEARCH.remove_doc(ts) {
-                    Ok(op_stamp) => res.render(Json(serde_json::json!({
-                        "success": true,
-                        "ops": op_stamp,
-                    }))),
+                    Ok(op_stamp) => jsn(res, json!({"ok": true, "ops": op_stamp})),
                     Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
                 }
             },
-            None => {
-                brq(res, "failed to remove from index, invalid timestamp param")
-            },
+            None => brq(res, "failed to remove from index, invalid timestamp param")
         }
     } else if req.method() == Method::PATCH {
         match req.parse_json_with_max_size::<PutWrit>(100_002).await {
@@ -3264,17 +3242,17 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     } else {
                         brq(res, "failed to add to index, tags are invalid");
                         return;
-                    },
+                    }
                 };
                 // update the writ in the index
                 match SEARCH.update_doc(&writ) {
-                    Ok(()) => res.render(Json(serde_json::json!({"success": true}))),
+                    Ok(()) => jsn(res, json!({"ok": true})),
                     Err(e) => brqe(res, &e.to_string(), "failed to update index"),
                 }
             },
             Err(e) => brqe(res, &e.to_string(), "failed to update index, bad body"),
         }
     } else {
-        return brqe(res, "method not allowed", "method not allowed");
+        brqe(res, "method not allowed", "method not allowed");
     }
 }

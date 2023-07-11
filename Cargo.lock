@@ -482,6 +482,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "907076dfda823b0b36d2a1bb5f90c96660a5bbcd7729e10727f07858f22c4edc"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.12.3",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+ "rayon",
+ "serde",
+]
+
+[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2525,6 +2540,8 @@ dependencies = [
  "anyhow",
  "base64 0.21.2",
  "cocoon",
+ "dashmap",
+ "futures-util",
  "lazy_static",
  "mimalloc",
  "parking_lot",
@@ -2536,6 +2553,7 @@ dependencies = [
  "sthash",
  "tantivy",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "zstd",
