@@ -759,6 +759,7 @@
         }
 
         const composeWrit = async (title, content, tags = '', state = {}, p) => {
+            tags.replace(',', ' ').replace('  ', ' ')
             const writ = {
                 public: !!p,
                 title,
@@ -805,7 +806,7 @@
             const res = await composeWrit(
                 titleIn.value,
                 contentIn.value,
-                tagsIn.value.replace(',', ' ').replace('  ', ' '),
+                tagsIn.value,
                 stateIn.value.length ? JSON.parse(stateIn.value) : '',
                 pbIn.checked
             )

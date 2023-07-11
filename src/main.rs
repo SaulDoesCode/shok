@@ -2797,12 +2797,12 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
 }
 
 fn validate_tags_string(tags: &str) -> Option<String> {
-    let mut tags = tags.split(',').map(|t| t.trim().to_lowercase());
-    if tags.all(|tag| tag.len() < 64) {
-        Some(tags.collect::<Vec<_>>().join(","))
-    } else {
-        None
+    let mut tags = tags.to_string();
+    tags.retain(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
+    if tags.len() > 0 {
+        return Some(tags);
     }
+    None
 }
 
 const SEARCH_INDEX_PATH: &str = "./search-index";
@@ -2815,13 +2815,13 @@ struct PutWrit{
     kind: String,
     content: String,
     state: Option<String>,
-    tags: String // comma separated
+    tags: String
 }
 
 #[derive(Deserialize, Serialize)]
 struct DeleteWrit {ts: u64}
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug)]
 struct Writ{
     ts: u64,
     kind: String,
@@ -2830,7 +2830,7 @@ struct Writ{
     title: Option<String>,
     content: String,
     state: Option<String>,
-    tags: String // comma separated
+    tags: String
 }
 
 impl Writ {
@@ -2848,6 +2848,13 @@ impl Writ {
         if let Some(state) = &self.state {
             if let Ok(state) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(state) {
                 doc.add_json_object(schema.get_field("state").unwrap(), state);
+            } else {
+                // if state can work as a plain serde_json::Value then make a map and add it as the first entry
+                if let Ok(state) = serde_json::from_str::<serde_json::Value>(state) {
+                    let mut state_map = serde_json::Map::new();
+                    state_map.insert("0".to_string(), state);
+                    doc.add_json_object(schema.get_field("state").unwrap(), state_map);
+                }
             }
         }
         doc
@@ -3062,7 +3069,6 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         // admin session
         _is_admin = true;
         _owner = Some(ADMIN_ID);
-        println!("the admin is searching...");
     } else if let Some(id) = session_check(req, None).await { 
         // user session
         _owner = Some(id);
@@ -3133,14 +3139,14 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     title: pw.title,
                     content: pw.content,
                     state: pw.state,
-                    tags: if let Some(tags) = validate_tags_string(&pw.tags) {
+                    tags: if let Some(tags) = validate_tags_string(pw.tags.as_str()) {
                         tags
                     } else {
-                        brq(res, "failed to add to index, tags are invalid");
+                        brq(res, "invalid tags");
                         return;
                     },
                 };
-
+                // println!("adding writ to index: {:?}", writ);
                 if writ.owner != _owner.unwrap() {
                     brq(res, "not authorized to add posts to the index without the right credentials");
                     return;
