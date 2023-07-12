@@ -3,13 +3,13 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use anyhow::anyhow;
-use base64::{Engine as _};
+use base64::Engine as _;
 use lazy_static::lazy_static;
 use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_limiter::*, logging::Logger, sse::{SseKeepAlive, SseEvent}};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::{PhantomData}, collections::HashMap, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::{Duration}, mem::forget};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::Duration, mem::forget};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
 use tantivy::{
@@ -22,7 +22,7 @@ use tantivy::{
     IndexWriter, DateTime
 };
 use futures_util::StreamExt;
-use tokio::{sync::mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use parking_lot::RwLock;
 
@@ -34,19 +34,10 @@ type MutEvent = (Astr, IsInsert); // name, value, is_insert
 type U8s = Vec<u8>;
 type Strings = Vec<String>;
 
-type TF = (u64, u64); // to, from
-type TfCt = (
-    u64, // kind
-    u64, // amount
-    u64, // expiry
-    (u64, U8s), // (when, &state)
-    U8s // state
-);
-
 #[derive(Debug)]
 enum Message {
     UserId(usize),
-    Reply(String),
+    Reply(String)
 }
 
 type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
@@ -57,10 +48,187 @@ lazy_static!{
 
 #[handler]
 async fn chat_send(req: &mut Request, res: &mut Response) {
-    let uid = req.param::<usize>("id").unwrap();
-    let msg = std::str::from_utf8(req.payload().await.unwrap()).unwrap();
-    user_message(uid, msg);
-    res.status_code(StatusCode::OK);
+    let uid = match session_check(req, None).await {
+        Some(id) => id,
+        None => {
+            uares(res);
+            return;
+        }
+    } as usize;
+    if let Ok(b) = req.payload().await {
+        if let Ok(mut msg) = std::str::from_utf8(b) {
+            if msg.len() > 2048 {
+                brq(res, "message too long");
+                return;
+            }
+            if msg.starts_with("@") {
+                msg = msg.trim_start_matches("@");
+                let mut args = msg.split_whitespace();
+                if let Some(moniker) = args.next() {
+                    if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                        let mut msg = String::new();
+                        while let Some(arg) = args.next() {
+                            msg.push_str(arg);
+                            msg.push(' ');
+                        }
+                        str_msg(acc.id, &msg).i(uid as u64);
+                    } else {
+                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid as u64);
+                    }
+                }
+            } else if msg.starts_with("/") {
+                // command
+                msg = msg.trim_start_matches("/");
+                let mut args = msg.split_whitespace();
+                if let Some(cmd) = args.next() {
+                    match cmd {
+                        "help" => {
+                            auto_msg(format!("commands: /help, /transfer to:u64 amount:u64 ?when:u64, /broadcast msg:str, /msg id:u64 msg:str")).i(uid as u64);
+                        }
+                        "whois" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                    auto_msg(format!("{} is {}", moniker, acc.id)).i(uid as u64);
+                                } else {
+                                    str_auto_msg("No such identity found").i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("missing name")).i(uid as u64);
+                            }
+                        }
+                        "transfer" => {
+                            if let Some(to) = args.next() {
+                                if let Ok(acc) = Account::from_moniker(to, &DB) {
+                                    if let Some(amount) = args.next() {
+                                        if let Ok(amount) = amount.parse::<u64>() {
+                                            let when = args.next().map(|s| s.parse::<u64>().ok()).flatten();
+                                            auto_msg(format!("transfer {} to {} at {:?}", amount, to, when)).i(uid as u64);
+                                            interaction(uid as u64, Interaction::Transfer(acc.id, amount, when));
+                                        } else {
+                                            auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("missing amount")).i(uid as u64);
+                                    }
+                                } else {
+                                    if let Ok(to) = to.parse::<u64>() {
+                                        if let Some(amount) = args.next() {
+                                            if let Ok(amount) = amount.parse::<u64>() {
+                                                let when = args.next().map(|s| s.parse::<u64>().ok()).flatten();
+                                                auto_msg(format!("transfer {} to {} at {:?}", amount, to, when.unwrap_or_else(|| now()))).i(uid as u64);
+                                                interaction(uid as u64, Interaction::Transfer(to, amount, when));
+                                            } else {
+                                                auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                            }
+                                        } else {
+                                            auto_msg(format!("missing amount")).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to parse to")).i(uid as u64);
+                                    }
+                                }
+                            } else {
+                                auto_msg(format!("missing to")).i(uid as u64);
+                            }
+                        }
+                        "balance" | "b" => {
+                            // if there is a next arg that can be read as a u64 ammount then if the user is admin add balance
+                            if let Some(amount) = args.next() {
+                                if let Ok(amount) = amount.parse::<u64>() {
+                                    if let Ok(mut acc) = Account::from_id(uid as u64, &DB) {
+                                        if acc.id == ADMIN_ID {
+                                            auto_msg(format!("adding {} to balance", amount)).i(uid as u64);
+                                            acc.balance += amount;
+                                            match acc.save(&DB, false) {
+                                                Ok(_) => {
+                                                    auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
+                                                }
+                                                Err(e) => {
+                                                    auto_msg(format!("failed to save balance: {}", e)).i(uid as u64);
+                                                }
+                                            }
+                                        } else {
+                                            auto_msg(format!("not admin")).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to get balance")).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                }
+                            }
+                            // check own balance using id to get account
+                            if let Ok(acc) = Account::from_id(uid as u64, &DB) {
+                                auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
+                            } else {
+                                auto_msg(format!("failed to get balance")).i(uid as u64);
+                            }
+                        }
+                        "broadcast" | "bc" => {
+                            if let Some(msg) = args.next() {
+                                let mut msg = msg.to_string();
+                                msg.push(' ');
+                                while let Some(arg) = args.next() {
+                                    msg.push_str(arg);
+                                    msg.push(' ');
+                                }
+                                auto_msg(format!("broadcasted: {}", msg)).i(uid as u64);
+                                Interaction::Broadcast(msg).i(uid as u64);
+                            } else {
+                                auto_msg(format!("missing message")).i(uid as u64);
+                            }
+                        }
+                        "msg" | "m" => {
+                            if let Some(to) = args.next() {
+                                if let Ok(to) = to.parse::<u64>() {
+                                    // collect all the arguments into a message
+                                    let mut msg = String::new();
+                                    while let Some(arg) = args.next() {
+                                        msg.push_str(arg);
+                                        msg.push(' ');
+                                    }
+                                    if msg == "" {
+                                        auto_msg(format!("missing message")).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("sending message to {}: {}", to, msg)).i(uid as u64);
+                                        Interaction::Message(to, msg.to_string()).i(uid as u64);
+                                    }
+                                } else {
+                                    // handle moniker use instead of id
+                                    if let Ok(acc) = Account::from_moniker(to, &DB) {
+                                        println!("moniker: {}", to);
+                                        let mut msg = String::new();
+                                        while let Some(arg) = args.next() {
+                                            msg.push_str(arg);
+                                            msg.push(' ');
+                                        }
+                                        str_msg(acc.id, &msg).i(uid as u64);
+                                    } else {
+                                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid as u64);
+                                    }
+                                }
+                            } else {
+                                auto_msg(format!("missing to")).i(uid as u64);
+                            }
+                        }
+                        _ => {
+                            auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid as u64);
+                        }
+                    }
+                } else {
+                    auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid as u64);
+                }
+
+            } else {
+                interaction(uid as u64, Interaction::Broadcast(msg.to_string()));
+            }
+            jsn(res, json!({"status": "ok"}));
+        } else {
+            brq(res, "failed to parse message");
+        }
+    } else {
+        brq(res, "failed to read message");
+    }
 }
 
 #[handler]
@@ -68,7 +236,7 @@ async fn user_connected(req: &mut Request, res: &mut Response) {
     let uid = match session_check(req, None).await {
         Some(id) => id,
         None => {
-            res.status_code(StatusCode::UNAUTHORIZED);
+            uares(res);
             return;
         }
     } as usize;
@@ -88,29 +256,105 @@ async fn user_connected(req: &mut Request, res: &mut Response) {
     ONLINE_USERS.insert(uid, tx);
 
     // Convert messages into Server-Sent Events and returns resulting stream.
-    let stream = rx.map(|msg| match msg {
+    let stream = rx.map(move |msg| match msg {
         Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("user").text(uid.to_string())),
-        Message::Reply(reply) => Ok(SseEvent::default().text(reply)),
+        Message::Reply(reply) => Ok(SseEvent::default().text(reply))
     });
     SseKeepAlive::new(stream).streaming(res).ok();
 }
 
-fn user_message(uid: usize, msg: &str) {
-    let new_msg = format!("{uid}:{msg}");
+enum Interaction{
+    Transfer(u64, u64, Option<u64>),
+    Broadcast(String),
+    Message(u64, String),
+    AutoMessage(String),
+}
 
-    // New message from this user, send it to everyone else (except same uid)...
-    //
-    // We use `retain` instead of a for loop so that we can reap any user that
-    // appears to have disconnected.
-    ONLINE_USERS.retain(|id, tx| {
-        if uid == *id {
-            // don't send to same user, but do retain
-            true
-        } else {
-            // If not `is_ok`, the SSE stream is gone, and so don't retain
-            tx.send(Message::Reply(new_msg.clone())).is_ok()
+impl Interaction{
+    pub fn i(self, id: u64) {
+        interaction(id, self);
+    }
+}
+
+fn msg(id: u64, msg: String) -> Interaction {
+    Interaction::Message(id, msg)
+}
+
+fn str_msg(id: u64, message: &str) -> Interaction {
+    msg(id, message.to_string())
+}
+
+fn auto_msg(msg: String) -> Interaction {
+    Interaction::AutoMessage(msg)
+}
+
+fn str_auto_msg(msg: &str) -> Interaction {
+    auto_msg(msg.to_string())
+}
+
+fn interaction(id: u64, i: Interaction) {
+    match i {
+        Interaction::Transfer(to, amount, when) => {
+            tracing::info!("user {} transfer: {} to {} at {:?}", id, amount, to, when);
+            // find the to account and transfer
+            if let Ok(mut acc) = Account::from_id(id as u64, &DB) {
+                if let Ok(mut recipient_acc) = Account::from_id(to as u64, &DB) {
+                    if let Some(when) = when {
+                        if when < now() {
+                            auto_msg(format!("cannot transfer to the past")).i(id);
+                        } else {
+                            if let Err(e) = create_transfer_contract(when, id as u64, to as u64, amount) {
+                                auto_msg(format!("failed to lodge transfer contract: {}", e)).i(id);
+                            } else {
+                                auto_msg(format!("transfer contract from {} to {} setup to happen on {}", amount, to, when)).i(id);
+                                msg(to, format!("{} will be transfered to You ({}) from {}, at {}", amount, to, id, when)).i(id);                            
+                            }
+                        }
+                    } else if let Err(e) = acc.transfer(&mut recipient_acc, amount, &DB) {
+                        auto_msg(format!("failed to transfer: {}", e)).i(id);
+                    } else {
+                        auto_msg(format!("transfered {} to {}", amount, to)).i(id);
+                        msg(to, format!("{} transfered to You ({}) from {}, at {}", amount, to, id, now())).i(id);
+                    }
+                } else {
+                    str_auto_msg("failed to find recipient account").i(id);
+                }
+            } else {
+                str_auto_msg("failed to find account").i(id);
+            }
+        },
+        Interaction::Broadcast(msg) => {
+            tracing::info!("user {} broadcast: {}", id, msg);
+            ONLINE_USERS.retain(|i, tx| {
+                if id as usize == *i {
+                    // don't send to same user, but do retain
+                    true
+                } else {
+                    // If not `is_ok`, the SSE stream is gone, and so don't retain
+                    tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
+                }
+            });
+        },
+        Interaction::Message(uid, msg) => {
+            let uid = uid as usize;
+            tracing::info!("user {} message: {}", id, msg);
+            if let Some(s) = ONLINE_USERS.get(&uid) {
+                if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
+                    tracing::info!("failed to send message to user {}", id);
+                    ONLINE_USERS.remove(&uid);
+                }
+            }
+        },
+        Interaction::AutoMessage(msg) => {
+            tracing::info!("user {} auto message: {}", id, msg);
+            if let Some(s) = ONLINE_USERS.get(&(id as usize)) {
+                if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
+                    tracing::info!("failed to send auto message to user {}", id);
+                    ONLINE_USERS.remove(&(id as usize));
+                }
+            }
         }
-    });
+    }
 }
 
 fn write_bytes_to_path(path: &str, s: &[u8]) -> std::io::Result<()> {
@@ -320,6 +564,12 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to run scoped variable exps: {:?}", e);
+                }
+            }
+            match run_contracts() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to run contracts: {:?}", e);
                 }
             }
         }
@@ -728,187 +978,141 @@ fn run_scoped_variable_exps() -> anyhow::Result<()> {
     Ok(())
 }
 
-const STAKED_TRANSFER_CONTRACTS: MultimapTableDefinition<
-    (u64, u64), // from, to
-    (
-        u64, // kind
-        u64, // amount
-        u64, // expiry
-        (u64, &[u8]), // (when, &state)
-        &[u8] // state
-    )
-> = MultimapTableDefinition::new("staked_transfer_contracts");
+//                                      when, from, to, amount
+const STAKED_TRANSFERS: TableDefinition<u64, (u64, u64, u64)> = TableDefinition::new("staked-transfers");
 
-#[allow(dead_code)]
-async fn lodge_transfer_contract(
-    db: &Database,
+fn create_transfer_contract(
+    when: u64,
     from: u64,
     to: u64,
-    kind: u64,
-    amount: u64,
-    expiry: u64,
-    when_state: (u64, &[u8]),
-    state: &[u8]
+    amount: u64
 ) -> anyhow::Result<()> {
-    let mut from_acc: Account = Account::from_id(from, &DB)?;
-    // let mut to_acc: Account = Account::from_id(to, &DB)?;
-    if from_acc.balance < amount {
-        return Err(anyhow::Error::msg("insufficient funds"));
-    }
-    from_acc.balance -= amount;
-    from_acc.save(&DB, false)?;
-
-    let contract = (
-        kind,
-        amount,
-        expiry,
-        when_state,
-        state
-    );
-
-    let wrtx = db.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
-        t.insert((from, to), contract)?;
-    }
-    wrtx.commit()?;
-    Ok(())
-}
-
-
-
-#[allow(dead_code)]
-fn effectuate_contracts_between(
-    db: &Database,
-    from: u64,
-    to: u64,
-) -> anyhow::Result<()> {
-    let wrtx = db.begin_write()?;
-    {
-        let mut to_remove: HashMap<TF, TfCt> = HashMap::new();
-        let mut to_transfer: HashMap<u64, TfCt> = HashMap::new();
-        // let rtx = db.begin_read()?;
-        let t = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
-        let mut mmv = t.get((from, to))?;
-        while let Some(Ok(ag)) = mmv.next() {
-            let contract = ag.value();
-            let (kind, amount, expiry, (when, wstate), state) = contract;
-            // handle logic to effectuate contract
-
-            // check expiry
-            let n = now();
-            if expiry > n {
-                to_remove.insert(
-                    (from, to),
-                    (kind, amount, expiry, (when, wstate.to_vec()), state.to_vec())
-                );
-            } else {
-                if when < n {
-                    continue;
-                } else {
-                    // TODO: handle statefulness
-                }
-            }
-
-            match kind {
-                0 => {
-                    // transfer
-                    to_transfer.insert(
-                        to,
-                        (kind, amount, expiry, (when, wstate.to_vec()), state.to_vec())
-                    );
-                },
-                _ => {
-                    return Err(
-                        anyhow::Error::msg(format!("unknown contract kind: {}", kind))
-                    );
-                }
-            }
-        }
-    //} {
-        let mut to_restore: Vec<u64> = vec![];
-        let mut sct = wrtx.open_multimap_table(STAKED_TRANSFER_CONTRACTS)?;
-        for ((from, to), (kind, amount, expiry, (when, wstate), state)) in to_remove {
-            sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
-            to_restore.push(amount);
-        }
-        let mut t = wrtx.open_table(ACCOUNTS)?;
-        let mut _to_acc: Option<Account> = None;
-        let mut _from_acc = if let Some(ag) = t.get(from)? {
-            let (moniker, since, xp, balance, pwd_hash) = ag.value();
-            Account{
+        let mut _from_acc = None;
+        let mut st = wtx.open_table(STAKED_TRANSFERS)?;
+        let mut at = wtx.open_table(ACCOUNTS)?;
+        if let Some(ag) = at.get(from)? {
+            let (m, since, xp, balance, pwh) = ag.value();
+            _from_acc = Some(Account{
                 id: from,
-                moniker: moniker.to_string(),
+                moniker: m.to_string(),
+                balance: balance - amount,
                 since,
                 xp,
-                balance: balance + to_restore.iter().sum::<u64>(),
-                pwd_hash: pwd_hash.to_vec(),
-            }
+                pwd_hash: pwh.to_vec()
+            });
         } else {
             return Err(anyhow::Error::msg("from account not found"));
-        };
-        let mut from_balance_now = _from_acc.balance;
-        for (to, (
-            kind,
-            amount,
-            expiry,
-            (when, wstate),
-            state
-        )) in to_transfer {
-            if let Some(ag) = t.get(to)? {
-                let (moniker, since, xp, balance, pwd_hash) = ag.value();
-                _to_acc = Some(Account{
-                    id: to,
-                    moniker: moniker.to_string(),
-                    since,
-                    xp,
-                    balance: balance + amount,
-                    pwd_hash: pwd_hash.to_vec(),
-                });
-            } else {
-                _to_acc = None;
-                from_balance_now += amount;
-                sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
-            }
-            if let Some(to_acc) = _to_acc {
-                t.insert(
-                    to_acc.id,
-                    (to_acc.moniker.as_str(), to_acc.since, to_acc.xp, to_acc.balance, to_acc.pwd_hash.as_slice())
-                )?;
-                sct.remove((from, to), (kind, amount, expiry, (when, wstate.as_slice()), state.as_slice()))?;
-            }
         }
-        t.insert(
-            _from_acc.id, 
-            (_from_acc.moniker.as_str(), _from_acc.since, _from_acc.xp, _from_acc.balance + from_balance_now, _from_acc.pwd_hash.as_slice())
-        )?;
+
+        if _from_acc.is_none() {
+            return Err(anyhow::Error::msg("from account not found"));
+        }
+
+        if at.get(to)?.is_none() {
+            return Err(anyhow::Error::msg("to account not found"));
+        }
+
+        let from_acc = _from_acc.unwrap();
+
+        if from_acc.balance < amount {
+            return Err(anyhow::Error::msg("insufficient funds"));
+        }
+
+        at.insert(from, (
+            from_acc.moniker.as_str(),
+            from_acc.since,
+            from_acc.xp,
+            from_acc.balance,
+            from_acc.pwd_hash.as_slice()
+        ))?;
+
+        // let mut t = at.get(to)?.ok_or_else(|| anyhow::Error::msg("to account not found"))?.value();
+        st.insert(when, (from, to, amount))?;
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
+fn run_contracts() -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut st = wtx.open_table(STAKED_TRANSFERS)?;
+        st.drain_filter(now().., |_when, (from, to, amount)| {
+            if let Ok(mut at) = wtx.open_table(ACCOUNTS) {
+                let mut _to_acc = None;
+                let mut _from_acc = None;
+                if let Ok(res) = at.get(to) {
+                    if res.is_none() {
+                        if let Ok(Some(ag)) = at.get(from) {
+                            let (m, since, xp, balance, pwh) = ag.value();
+                            _from_acc = Some(Account{
+                                id: from,
+                                moniker: m.to_string(),
+                                balance: balance + amount,
+                                since,
+                                xp,
+                                pwd_hash: pwh.to_vec()
+                            });
+                        }
+                    } else {
+                        let ag = res.unwrap();
+                        let (m, since, xp, balance, pwh) = ag.value();
+                        _to_acc = Some(Account{
+                            id: to,
+                            moniker: m.to_string(),
+                            balance: balance + amount,
+                            since,
+                            xp,
+                            pwd_hash: pwh.to_vec()
+                        });
+                    }
+                }
+                if let Some(to_acc) = _to_acc {
+                    if at.insert(to, (
+                        to_acc.moniker.as_str(),
+                        to_acc.since,
+                        to_acc.xp,
+                        to_acc.balance,
+                        to_acc.pwd_hash.as_slice()
+                    )).is_ok() {
+                        return true;
+                    }
+                } else if let Some(from_acc) = _from_acc {
+                    if at.insert(from, (
+                        from_acc.moniker.as_str(),
+                        from_acc.since,
+                        from_acc.xp,
+                        from_acc.balance,
+                        from_acc.pwd_hash.as_slice()
+                    )).is_ok() {
+                        return true;
+                    }
+                }
+            }
+            false
+        })?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TransferRequest{
+    when: u64,
     to: u64,
-    amount: u64,
-    exp: u64,
-    ws: (u64, Option<U8s>),
-    state: Option<U8s>,
+    amount: u64
 }
 
 impl TransferRequest{
     async fn lodge(&self, from: u64) -> anyhow::Result<()> {
-        lodge_transfer_contract(
-            &DB,
+        create_transfer_contract(
+            self.when,
             from,
             self.to,
-            0,
-            self.amount,
-            self.exp,
-            (self.ws.0, &self.ws.1.clone().unwrap_or_else(|| vec![])),
-            &self.state.clone().unwrap_or(vec![])
-        ).await
+            self.amount
+        )
     }
 }
 
@@ -942,12 +1146,6 @@ async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
     }
 
     match *req.method() {
-        Method::GET => if let Some(to) = req.param("to") {
-            if let Err(e) = effectuate_contracts_between(&DB, _owner.unwrap(), to) {
-                brq(res, &format!("failed to effectuate contracts, might be that there aren't any: {}", e));
-            }
-            return brq(res, "ran the contracts, side effects should be applied.");
-        },
         Method::POST => if let Ok(tr) = req.parse_json_with_max_size::<TransferRequest>(20480).await {
             match tr.lodge(_owner.unwrap()).await {
                 Ok(()) => brq(res, "transfer contract lodged successfully"),
@@ -1386,10 +1584,8 @@ async fn main() {
                     Router::with_path("chat")
                         .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                         .get(user_connected)
-                        .push(
-                            Router::with_path("<id>")
-                                        .post(chat_send)
-                        )
+                        .post(chat_send)
+                        //.push(Router::with_path("<id>"))
                 )
                 .push(
                     Router::with_path("/search/<ts>")

@@ -116,13 +116,15 @@
             const body = msg.value
             if (body == '' || body == ' ') return
             if (sid == null) return alert("You are not connected!")
-            await fetch(`/api/chat/${sid}`, {method: "POST", body})
+            await fetch(`/api/chat`, {method: "POST", body})
             msg.value = ''
             await showMessage('me', body)
         })
         async function showMessage(who, data) {
             if (data == null && who.includes(":")) {
-                [who, data] = who.split(":").map(s => s.trim()).filter(s => s != "")
+                let wd = who.split(":")
+                who = wd.shift()
+                data = wd.join(':')
                 who = ml[who] || (ml[who] = (await (await fetch(`/api/moniker-lookup/` + who)).json()).moniker)
             }
             const message = document.createElement('article')
