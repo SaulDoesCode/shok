@@ -196,7 +196,6 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 } else {
                                     // handle moniker use instead of id
                                     if let Ok(acc) = Account::from_moniker(to, &DB) {
-                                        println!("moniker: {}", to);
                                         let mut msg = String::new();
                                         while let Some(arg) = args.next() {
                                             msg.push_str(arg);
@@ -324,7 +323,7 @@ fn interaction(id: u64, i: Interaction) {
             }
         },
         Interaction::Broadcast(msg) => {
-            tracing::info!("user {} broadcast: {}", id, msg);
+            // tracing::info!("user {} broadcast: {}", id, msg);
             ONLINE_USERS.retain(|i, tx| {
                 if id as usize == *i {
                     // don't send to same user, but do retain
@@ -337,7 +336,7 @@ fn interaction(id: u64, i: Interaction) {
         },
         Interaction::Message(uid, msg) => {
             let uid = uid as usize;
-            tracing::info!("user {} message: {}", id, msg);
+            // tracing::info!("user {} message: {}", id, msg);
             if let Some(s) = ONLINE_USERS.get(&uid) {
                 if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
                     tracing::info!("failed to send message to user {}", id);
@@ -532,7 +531,7 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
     std::thread::spawn(|| {
         loop {
-            std::thread::sleep(Duration::from_secs(40));
+            std::thread::sleep(Duration::from_secs(30));
             match expire_sessions() {
                 Ok(()) => {},
                 Err(e) => {
@@ -551,25 +550,23 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                     println!("failed to expire resources: {:?}", e);
                 }
             }
-            std::thread::spawn(|| {
-                update_static_dir_paths();
-                match run_stored_commands() {
-                    Ok(()) => {},
-                    Err(e) => {
-                        println!("failed to run stored commands: {:?}", e);
-                    }
-                }
-            });
-            match run_scoped_variable_exps() {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to run scoped variable exps: {:?}", e);
-                }
-            }
+            update_static_dir_paths();
             match run_contracts() {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to run contracts: {:?}", e);
+                }
+            }
+            match run_stored_commands() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to run stored commands: {:?}", e);
+                }
+            }
+            match run_scoped_variable_exps() {
+                Ok(()) => {},
+                Err(e) => {
+                    println!("failed to run scoped variable exps: {:?}", e);
                 }
             }
         }
