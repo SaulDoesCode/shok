@@ -9,9 +9,9 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, mpsc::{channel, Sender, Receiver}}, time::Duration, mem::forget};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, atomic::AtomicBool}, time::Duration, mem::forget};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
-use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable};
+use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
 use tantivy::{
     doc,
     collector::TopDocs,
@@ -26,11 +26,6 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use parking_lot::RwLock;
 
-type Astr = Arc<str>;
-//type Astrs = Vec<Astr>;
-type IsInsert = bool;
-type MutEvent = (Astr, IsInsert); // name, value, is_insert
-
 type U8s = Vec<u8>;
 type Strings = Vec<String>;
 
@@ -44,6 +39,7 @@ type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
 
 lazy_static!{
     static ref ONLINE_USERS: Users = Users::new();
+    static ref SVS_CHANGE_OBSERVERS: dashmap::DashMap<u64, Vec<Arc<str>>> = dashmap::DashMap::new();
 }
 
 #[handler]
@@ -87,7 +83,9 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         }
                         "whois" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                if moniker == "me" || moniker == "I" {
+                                    auto_msg(format!("{} is {}", moniker, uid)).i(uid as u64);
+                                } else if let Ok(acc) = Account::from_moniker(moniker, &DB) {
                                     auto_msg(format!("{} is {}", moniker, acc.id)).i(uid as u64);
                                 } else {
                                     str_auto_msg("No such identity found").i(uid as u64);
@@ -208,6 +206,107 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 }
                             } else {
                                 auto_msg(format!("missing to")).i(uid as u64);
+                            }
+                        }
+                        "set" => {
+                            if let Some(key) = args.next() {
+                                let mut msg = String::new();
+                                while let Some(arg) = args.next() {
+                                    msg.push_str(arg);
+                                    msg.push(' ');
+                                }
+                                if msg == "" {
+                                    auto_msg(format!("missing message")).i(uid as u64);
+                                } else if  let Ok(val) = serde_json::from_str::<serde_json::Value>(&msg) {
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        match svs.set(key, val) {
+                                            Ok(_) => {
+                                                auto_msg(format!("set {} to {}", key, msg)).i(uid as u64);
+                                            },
+                                            Err(e) => {
+                                                auto_msg(format!("failed to set {} to {}, error: {}", key, msg, e.to_string())).i(uid as u64);
+                                            }
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    }
+                                }
+                            }
+                        }
+                        "get" => {
+                            if let Some(key) = args.next() {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(val) = svs.get(key) {
+                                        auto_msg(format!("{}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("failed to get {}", key)).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                }
+                            }
+                        }
+                        "rm" => {
+                            if let Some(key) = args.next() {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(val) = svs.rm(key) {
+                                        auto_msg(format!("removed {}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("failed to remove {}", key)).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                }
+                            }
+                        }
+                        "watch" => {
+                            if let Some(key) = args.next() {
+                                if let Some(mut keys) = SVS_CHANGE_OBSERVERS.get_mut(&(uid as u64)) {
+                                    keys.push(key.to_string().into());
+                                } else {
+                                    SVS_CHANGE_OBSERVERS.insert(uid as u64, vec![key.to_string().into()]);
+                                }
+                            }
+                        }
+                        // set tags on a svs variable, the command should work like /set-tags svs-var-moniker tag tag tag tag tag
+                        // svs.set_tags() should be used
+                        "set-tags" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(val) = svs.set_tags(moniker, args.collect::<Vec<&str>>().as_slice()) {
+                                        auto_msg(format!("set tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("failed to set tags on {}", moniker)).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                }
+                            }
+                        }
+                        "get-tags" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(val) = svs.get_tags(moniker) {
+                                        auto_msg(format!("tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("failed to get tags on {}", moniker)).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                }
+                            }
+                        }
+                        "unset-tags" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(val) = svs.unset_tags(moniker, args.collect::<Vec<&str>>().as_slice()) {
+                                        auto_msg(format!("unset tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("failed to unset tags on {}", moniker)).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                }
                             }
                         }
                         _ => {
@@ -494,19 +593,6 @@ const SESSIONS: TableDefinition<&[u8], (u64, u64)> = TableDefinition::new("sessi
 
 const SESSION_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("session_expiries");
 
-fn expire_sessions() -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
-    {
-        let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
-        t.drain_filter(..now(), |_, v| {
-            let st = wrtx.open_table(SESSIONS);
-            let tkh = TOKEN_HASHER.hash(v);
-            st.is_ok() && st.unwrap().remove(tkh.as_slice()).is_ok()
-        })?;
-    }
-    wrtx.commit()?;
-    Ok(())
-}
 #[allow(dead_code)]
 fn expire_session(token: &str) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
@@ -528,26 +614,20 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn expiry_checker() -> std::thread::JoinHandle<()> {
-    std::thread::spawn(|| {
+lazy_static!{
+    static ref CAN_WRITE: AtomicBool = AtomicBool::new(true);
+}
+
+pub fn expiry_checker() -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(|| {
         loop {
             std::thread::sleep(Duration::from_secs(30));
-            match expire_sessions() {
+            CAN_WRITE.store(false, std::sync::atomic::Ordering::Relaxed);
+            println!("expiry checker doing a sweep");
+            match db_expiry_handler() {
                 Ok(()) => {},
                 Err(e) => {
-                    println!("failed to expire sessions: {:?}", e);
-                }
-            }
-            match expire_tokens() {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to expire tokens: {:?}", e);
-                }
-            }
-            match expire_resources() {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to expire resources: {:?}", e);
+                    println!("failed to carry out the db expiry process: {:?}", e);
                 }
             }
             update_static_dir_paths();
@@ -563,12 +643,7 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                     println!("failed to run stored commands: {:?}", e);
                 }
             }
-            match run_scoped_variable_exps() {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to run scoped variable exps: {:?}", e);
-                }
-            }
+            CAN_WRITE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     })
 }
@@ -579,18 +654,37 @@ const ACCOUNT_MONIKER_LOOKUP: TableDefinition<&str, u64> = TableDefinition::new(
 // Tokens                            perm_schema, account_id, expiry, uses, state
 const TOKENS: TableDefinition<&[u8], (u32, u64, u64, u64, Option<&[u8]>)> = TableDefinition::new("tokens");
 
-const TOKEN_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("token_expiries");
+const TOKEN_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("token_expiries");
 const RESOURCE_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("resource_expiries");
 
-fn expire_resources() -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+fn db_expiry_handler() -> anyhow::Result<()> {
     {
-        let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
-        t.drain_filter(..now(), |_, v| {
-            Resource::delete(v).is_ok()
-        })?;
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
+            t.drain_filter(..now(), |_, v| Resource::delete(v).is_ok())?;
+            let mut exp_t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
+            exp_t.drain_filter(..now(), |_, (_owner, _moniker)| true)?;
+
+        // session & token expiry 
+    
+            let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
+            let mut df = t.drain_filter(..now(), |_, _v| true)?;
+            let mut st = wrtx.open_table(SESSIONS)?;
+            while let Some(r) = df.next() {
+                let (_, ag) = r?;
+                st.remove(ag.value())?;
+            }
+            let mut t = wrtx.open_table(TOKEN_EXPIRIES)?;
+            let mut df = t.drain_filter(..now(), |_, _v| true)?;
+            let mut st = wrtx.open_table(TOKENS)?;
+            while let Some(r) = df.next() {
+                let (_, ag) = r?;
+                st.remove(ag.value())?;
+            }
+        }
+        wrtx.commit()?;
     }
-    wrtx.commit()?;
     Ok(())
 }
 
@@ -603,24 +697,11 @@ fn register_resource_expiry(resource: &[u8], expiry: u64) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn expire_tokens() -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
-    {
-        let mut t = wrtx.open_table(TOKEN_EXPIERIES)?;
-        t.drain_filter(..now(), |_, v| {
-            let st = wrtx.open_table(TOKENS);
-            st.is_ok() && st.unwrap().remove(v).is_ok()
-        })?;
-    }
-    wrtx.commit()?;
-    Ok(())
-}
-
 #[allow(dead_code)]
 fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(TOKEN_EXPIERIES)?;
+        let mut t = wrtx.open_table(TOKEN_EXPIRIES)?;
         t.insert(expiry, token)?;
     }
     wrtx.commit()?;
@@ -664,15 +745,14 @@ const SCOPED_VARIABLE_OWNERSHIP_INDEX: MultimapTableDefinition<u64, &str> = Mult
 const SCOPED_VARIABLE_EXPIRIES: TableDefinition<u64, (u64, &str)> = TableDefinition::new("SCOPED_VARIABLE_EXPIRIES");
 
 // tag system for variables with reverse lookup
-const SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP: MultimapTableDefinition<(u64, &str), u64> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP");
-const SCOPED_VARIABLE_TAGS: MultimapTableDefinition<(u64, &str), u64> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAGS");
+const SV_TAGS: MultimapTableDefinition<&str, (u64, &str)> = MultimapTableDefinition::new("tags");
+const SV_TAGS_INDEX: MultimapTableDefinition<(u64, &str), &str> = MultimapTableDefinition::new("tags_lookup");
 // const SCOPED_VARIABLE_TAG_INDEX: MultimapTableDefinition<u64, (u64, &str)> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAG_INDEX");
 
 // const SCOPED_PW_HASH_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("SCOPED_PW_HASH_INDEX");
 
 struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
-    s: Option<Sender<MutEvent>>, // name, value, is_insert
     pd: PhantomData<T>,
 }
 
@@ -694,10 +774,10 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
-    if session_check(req, Some(ADMIN_ID)).await.is_some() {
+    if let Some(id) = session_check(req, None).await {
         // admin session
-        _is_admin = true;
-        _owner = Some(ADMIN_ID);
+        _is_admin = id == ADMIN_ID;
+        _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
             if let Ok((perm_schema, owner, _, uses, _)) = validate_token_under_permision_schema(&tk, &[u32::MAX - 5], &DB).await {
@@ -733,7 +813,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
     match *req.method() {
         Method::GET => {
-            if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
+            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
                 match svs.get(&moniker) {
                     Ok(v) => {
                         if v.is_none() {
@@ -762,9 +842,9 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             };
 
-            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
-                Ok((svs, _)) => {
-                    if let Err(e) = svs.set(&moniker, body) {
+            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
+                Ok(svs) => {
+                    if let Err(e) = svs.set(moniker.as_str(), body) {
                         // println!("error setting variable: {:?}", e);
                         brq(res, &format!("error setting variable: {}", e));
                     } else {
@@ -778,7 +858,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                 }
             }
         },
-        Method::DELETE => if let Ok((svs, _)) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap(), false) {
+        Method::DELETE => if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
             if let Err(e) = svs.rm(&moniker) {
                 brq(res, &format!("error deleting variable: {}", e));
                 return;
@@ -797,13 +877,9 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
 
 
 impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
-    fn open(owner: u64, with_channel: bool) -> anyhow::Result<(Self, Option<Receiver<MutEvent>>)> {
+    fn open(owner: u64) -> anyhow::Result<Self> {
         let pd = PhantomData::default();
-        if with_channel {
-            let (s, r) = channel::<MutEvent>();
-            return Ok((Self{owner, s: Some(s), pd}, Some(r)));
-        }
-        Ok((Self{owner, s: None, pd}, None))
+        Ok(Self{owner, pd})
     }
     #[allow(dead_code)]
     fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
@@ -815,26 +891,83 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         wrtx.commit()?;
         Ok(())
     }
-    fn set(&self, name: &str, value: T) -> anyhow::Result<Option<T>> {
-        let mut _od = None;
+    fn set_tags(&self, key: &str, tags: &[&str]) -> anyhow::Result<()> {
         let wrtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let old_data = t.insert((self.owner, name), serialize_and_compress(value)?.as_slice())?;
-            if let Some(ag) = old_data {
-                let mut dt = ag.value().to_vec();
-                forget(ag);
-                _od = Some(decompress_and_deserialize(&mut dt)?);
-                forget(dt);
+            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
+            for tag in tags {
+                t.insert(tag, (self.owner, key))?;
+                t2.insert((self.owner, key), tag)?;
             }
-            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            ot.insert(self.owner, name)?;
         }
         wrtx.commit()?;
-        if let Some(ref s) = self.s {
-            s.send((Arc::from(name), true))?;
+        Ok(())
+    }
+    fn unset_tags(&self, key: &str, tags: &[&str]) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
+            for tag in tags {
+                t.remove(tag, (self.owner, key))?;
+                t2.remove((self.owner, key), tag)?;
+            }
         }
-        Ok(_od)
+        wrtx.commit()?;
+        Ok(())
+    }
+    fn get_tags(&self, key: &str) -> anyhow::Result<Vec<String>> {
+        let mut tags = vec![];
+        let rtx = DB.begin_read()?;
+        {
+            let t = rtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let mut mmv = t.get((self.owner, key))?;
+            while let Some(r) = mmv.next() {
+                let ag = r?;
+                tags.push(ag.value().to_string());
+            }
+        }
+        Ok(tags)
+    }
+    fn unset_all_tags_internal(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
+        {
+            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let mut mmv = t2.remove_all((self.owner, key))?;
+            while let Some(r) = mmv.next() {
+                let ag = r?;
+                t.remove(ag.value(), (self.owner, key))?;
+            }
+        }
+        Ok(())
+    }
+    fn set(&self, name: &str, value: T) -> anyhow::Result<()> {
+        if !CAN_WRITE.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(
+                anyhow::Error::msg("cannot write to db right now")
+            );
+        }
+        let owner = self.owner;
+        if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&owner) {
+            keys.iter().for_each(|k| {
+                if k.as_ref() == name {
+                    auto_msg(format!("{} {}", "inserting", name)).i(owner);
+                }
+            });
+        }
+        let wrtx = DB.begin_write()?;
+        {
+            wrtx.open_table(SCOPED_VARIABLES)?
+                .insert(
+                    (owner, name),
+                    serialize_and_compress(value)?.as_slice()
+                )?;
+            wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
+                .insert(owner, name)?;
+        }
+        wrtx.commit()?; // std::thread::spawn(move || {});
+        Ok(())
     }
     #[allow(dead_code)]
     fn set_many(&self, values: &[(Arc<str>, T)]) -> anyhow::Result<()> {
@@ -842,15 +975,19 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            for (name, value) in values {
-                t.insert((self.owner, name.as_ref()), serialize_and_compress(value)?.as_slice())?;
-                ot.insert(self.owner, name.as_ref())?;
+            for (k, value) in values {
+                t.insert((self.owner, k.as_ref()), serialize_and_compress(value)?.as_slice())?;
+                ot.insert(self.owner, k.as_ref())?;
             }
         }
         wrtx.commit()?;
-        for (name, _value) in values {
-            if let Some(ref s) = self.s {
-                s.send((name.clone(), true))?;
+        for (k, _value) in values {
+            if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
+                keys.iter().for_each(|key| {
+                    if k.as_ref() == key.as_ref() {
+                        auto_msg(format!("{} {}", "inserted", k.as_ref())).i(self.owner);
+                    }
+                });
             }
         }
         Ok(())
@@ -858,11 +995,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
     fn get(&self, name: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
         let rtx = DB.begin_read()?;
-        let t = rtx.open_table(SCOPED_VARIABLES)?;
-        if let Some(ag) = t.get((self.owner, name))? {
-            let mut dt = ag.value().to_vec();
-            forget(ag);
-            data = Some(decompress_and_deserialize(&mut dt)?);
+        {
+            if let Some(ag) = rtx.open_table(SCOPED_VARIABLES)?.get((self.owner, name))? {
+                let mut dt = ag.value().to_vec();
+                data = Some(decompress_and_deserialize(&mut dt)?);
+            }
         }
         match data {
             Some(d) => Ok(Some(d)),
@@ -899,25 +1036,15 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data = Some(decompress_and_deserialize(&mut dt)?);
-                if let Some(ref s) = self.s {
-                    s.send((Arc::from(name), false))?;
+                if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
+                    keys.iter().for_each(|k| {
+                        if k.as_ref() == name {
+                            auto_msg(format!("{} {}", "removed", name)).i(self.owner);
+                        }
+                    });
                 }
             }
-            let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
-            let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
-            // get tags
-            let mut tags = Vec::new();
-            {
-                let mut mmv = st.get((self.owner, name))?;
-                while let Some(Ok(ag)) = mmv.next() {
-                    tags.push(ag.value());
-                }
-            }
-            // remove tags
-            for tag in tags {
-                st.remove((self.owner, name), tag)?;
-                stl.remove((tag, name), self.owner)?;
-            }
+            self.unset_all_tags_internal(name, &wrtx)?;
         }
         wrtx.commit()?;
         Ok(data)
@@ -934,45 +1061,23 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                     let mut dt = ag.value().to_vec();
                     forget(ag);
                     data.push(Some(decompress_and_deserialize(&mut dt)?));
-                    if let Some(ref s) = self.s {
-                        s.send((Arc::from(*name), true))?;
+                    if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
+                        keys.iter().for_each(|k| {
+                            if k.as_ref() == *name {
+                                auto_msg(format!("{} {}", "removed", *name)).i(self.owner);
+                            }
+                        });
                     }
                 } else {
                     data.push(None);
                 }
                 ot.remove(self.owner, name)?;
-                let mut st = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS)?;
-                let mut stl = wrtx.open_multimap_table(SCOPED_VARIABLE_TAGS_MONIKER_LOOKUP)?;
-                // get tags
-                let mut tags = Vec::new();
-                {
-                    let mut mmv = st.get((self.owner, *name))?;
-                    while let Some(Ok(ag)) = mmv.next() {
-                        tags.push(ag.value());
-                    }
-                }
-                // remove tags
-                for tag in tags {
-                    st.remove((self.owner, *name), tag)?;
-                    stl.remove((tag, *name), self.owner)?;
-                }
+                self.unset_all_tags_internal(name, &wrtx)?;
             }
         }
         wrtx.commit()?;
         Ok(data)
     }
-}
-
-fn run_scoped_variable_exps() -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
-    {
-        let mut exp_t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
-        exp_t.drain_filter(..now(), |_, (_owner, _moniker)| {
-            true
-        })?;
-    }
-    wrtx.commit()?;
-    Ok(())
 }
 
 //                                      when, from, to, amount
@@ -1278,7 +1383,7 @@ async fn make_tokens(
     let wtx = db.begin_write()?;
     {
         let mut t = wtx.open_table(TOKENS)?;
-        let mut te_t = wtx.open_table(TOKEN_EXPIERIES)?;
+        let mut te_t = wtx.open_table(TOKEN_EXPIRIES)?;
         while count > 0 {
             tk = thread_rng().sample_iter(&Alphanumeric).take(32).map(char::from).collect();
             let token_hash = TOKEN_HASHER.hash(tk.as_bytes());
@@ -1307,16 +1412,17 @@ async fn remove_tokens(tkns: &[&str], db: &Database) -> Result<(), redb::Error> 
 
 fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<U8s>), redb::Error> {
     let rtx = db.begin_read()?;
-    let t = rtx.open_table(TOKENS)?;
-    if let Some(ag) = t.get(tkh)? {
-        let tk = ag.value();
-        return Ok((
-            tk.0,
-            tk.1,
-            tk.2,
-            tk.3,
-            tk.4.map(|v| v.to_vec())
-        ));
+    {
+        if let Some(ag) = rtx.open_table(TOKENS)?.get(tkh)? {
+            let tk = ag.value();
+            return Ok((
+                tk.0,
+                tk.1,
+                tk.2,
+                tk.3,
+                tk.4.map(|v| v.to_vec())
+            ));
+        }
     }
     Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Token not found.")))
 }
@@ -1646,8 +1752,10 @@ async fn main() {
 
     let listener = TcpListener::new(addr.clone()).rustls(config.clone());
     let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
-
     Server::new(acceptor).serve(router).await;
+    if let Err(e) = _expiry_checker.await {
+        println!("Expiry checker failed: {}", e);
+    }
 }
 
 
