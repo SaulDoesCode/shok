@@ -884,7 +884,7 @@
                 return await http.post(`/api/svs/${m}`, v)
             },
             async delete(m) {
-                return await http.delete(`/api/svs/${m}`)
+                return await http.del(`/api/svs/${m}`)
             }
         }, {
             async get(m, k) {
