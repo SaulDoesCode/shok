@@ -1,6 +1,5 @@
 use mimalloc::MiMalloc;
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+#[global_allocator] static GLOBAL: MiMalloc = MiMalloc;
 
 use anyhow::anyhow;
 use base64::Engine as _;
@@ -17,9 +16,7 @@ use tantivy::{
     collector::TopDocs,
     query::{QueryParser, TermQuery},
     schema::*,
-    Index,
-    // IndexReader, ReloadPolicy,
-    IndexWriter, DateTime
+    Index, IndexWriter, DateTime//, IndexReader, ReloadPolicy,
 };
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -36,10 +33,45 @@ enum Message {
 }
 
 type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
-
 lazy_static!{
     static ref ONLINE_USERS: Users = Users::new();
-    static ref SVS_CHANGE_OBSERVERS: dashmap::DashMap<u64, Vec<Arc<str>>> = dashmap::DashMap::new();
+}
+
+const SV_CHANGE_WATCHERS: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("sv_change_watchers");
+
+fn watch_changes(id: u64, key: &str) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+        t.insert(id, key)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn unwatch_changes(id: u64, key: &str) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+        t.remove(id, key)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn internal_notify_changes(t: &redb::MultimapTable<u64, &str>, id: u64, key: &str, inserted: bool) -> anyhow::Result<()> {
+    // check if there's a watcher
+    let mut mmv = t.get(id)?;
+    while let Some(r) = mmv.next() {
+        if r?.value() == key {
+            auto_msg(if inserted {
+                format!("inserted: {key}")
+            } else {
+                format!("removed: {key}")
+            }).i(id);
+        }
+    }
+    Ok(())
 }
 
 #[handler]
@@ -261,15 +293,118 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         }
                         "watch" => {
                             if let Some(key) = args.next() {
-                                if let Some(mut keys) = SVS_CHANGE_OBSERVERS.get_mut(&(uid as u64)) {
-                                    keys.push(key.to_string().into());
-                                } else {
-                                    SVS_CHANGE_OBSERVERS.insert(uid as u64, vec![key.to_string().into()]);
+                                if let Err(e) = watch_changes(uid as u64, key) {
+                                    auto_msg(format!("failed to add a watcher for {}; error: {}", key, e)).i(uid as u64);
                                 }
                             }
                         }
-                        // set tags on a svs variable, the command should work like /set-tags svs-var-moniker tag tag tag tag tag
-                        // svs.set_tags() should be used
+                        "unwatch" => {
+                            if let Some(key) = args.next() {
+                                if let Err(e) = unwatch_changes(uid as u64, key) {
+                                    auto_msg(format!("failed to remove a watcher for {}; error: {}", key, e)).i(uid as u64);
+                                }
+                            }
+                        }
+                        "collection" | "cl" => if let Some(op) = args.next() {
+                            match op {
+                                "add" => {
+                                    // make a new svs collection if there isn't one, the next arg will be the name of the collection, the one after that is the name of the variable, if there's a value after that set the variable to that value
+                                    // use svs.add_vars_to_collection
+                                    if let Some(name) = args.next() {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            if let Ok(val) = svs.add_vars_to_collection(name, args.collect::<Vec<&str>>().as_slice()) {
+                                                auto_msg(format!("added to collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            } else {
+                                                auto_msg(format!("failed to add to collection {}", name)).i(uid as u64);
+                                            }
+                                        } else {
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                "rm" => {
+                                    // remove a variable from a collection
+                                    // use svs.rm_var_from_collection
+                                    if let Some(name) = args.next() {
+                                        // if there are no more args, just remove the collection using svs.rm_collection
+                                        // use svs.rm_collection
+                                        let first_var = args.next();
+                                        if first_var.is_none() {
+                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                                if let Ok(val) = svs.rm_collection(name) {
+                                                    auto_msg(format!("removed collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                                } else {
+                                                    auto_msg(format!("failed to remove collection {}", name)).i(uid as u64);
+                                                }
+                                            } else {
+                                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            }
+                                        } else {
+                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                                let mut vars = args.collect::<Vec<&str>>();
+                                                // add the first_var back in
+                                                vars.insert(0, first_var.unwrap());
+                                                if let Err(e) = svs.rm_vars_from_collection(name, vars.as_slice()) {
+                                                    auto_msg(format!("failed to remove vars from collection {}, error: {}", name, e.to_string())).i(uid as u64);
+                                                } else {
+                                                    auto_msg(format!("removed vars from collection {}: {}", name, vars.join(", "))).i(uid as u64);
+                                                }
+                                            } else {
+                                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            }
+                                        }
+                                    }
+                                }
+                                "get" => {
+                                    // get a collection
+                                    // use svs.get_collection
+                                    if let Some(name) = args.next() {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            if let Ok(val) = svs.get_collection(name) {
+                                                auto_msg(format!("collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            } else {
+                                                auto_msg(format!("failed to get collection {}", name)).i(uid as u64);
+                                            }
+                                        } else {
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                "has" => {
+                                    // check if a collection has a variable
+                                    // use svs.check_collection_membership
+                                    if let Some(name) = args.next() {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            let vars = args.collect::<Vec<&str>>();
+                                            if let Ok(val) = svs.check_collection_membership(name, vars.as_slice()) {
+                                                if val {
+                                                    auto_msg(format!("collection {} has {}", name, vars.join(", "))).i(uid as u64);
+                                                } else {
+                                                    auto_msg(format!("collection {} does not have {}", name, vars.join(", "))).i(uid as u64);
+                                                }
+                                            } else {
+                                                auto_msg(format!("failed to check collection membership {}", name)).i(uid as u64);
+                                            }
+                                        } else {
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // get the collection with usign op as its name
+                                    // use svs.get_collection
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        if let Ok(val) = svs.get_collection(op) {
+                                            auto_msg(format!("collection {}: {}", op, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        } else {
+                                            auto_msg(format!("failed to get collection {}", op)).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    }
+                                }
+                            }
+                        }
                         "set-tags" => {
                             if let Some(moniker) = args.next() {
                                 if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
@@ -307,6 +442,19 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 } else {
                                     auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
                                 }
+                            }
+                        }
+                        "vars-with-tags" => {
+                            // the next args are tags, use svs.get_vars_with_tags to find them
+                            let tags = args.collect::<Vec<&str>>();
+                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(val) = svs.get_vars_with_tags(tags.as_slice(), if uid as u64 == ADMIN_ID { 2048 } else { 256 }) {
+                                    auto_msg(format!("vars with tags {}: {}", tags.join(", "), serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                } else {
+                                    auto_msg(format!("failed to get vars with tags {}", tags.join(", "))).i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
                             }
                         }
                         _ => {
@@ -503,20 +651,6 @@ fn check_admin_password(pwd: &[u8]) -> bool {
     &PWD.1.hash(pwd) == PWD.0.as_slice()
 }
 
-/*
-fn zstd_compress(data: &[u8]) -> std::io::Result<U8s> {
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 21)?;
-    encoder.write_all(data)?;
-    Ok(encoder.finish()?)
-}
-
-fn zstd_decompress(data: &[u8]) -> std::io::Result<U8s> {
-    let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
-    let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf)?;
-    Ok(buf)
-}*/
-
 fn zstd_compress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<()> {
     let mut encoder = zstd::stream::Encoder::new(output, 6)?;
     encoder.write_all(data)?;
@@ -623,7 +757,7 @@ pub fn expiry_checker() -> tokio::task::JoinHandle<()> {
         loop {
             std::thread::sleep(Duration::from_secs(30));
             CAN_WRITE.store(false, std::sync::atomic::Ordering::Relaxed);
-            println!("expiry checker doing a sweep");
+//            println!("expiry checker doing a sweep");
             match db_expiry_handler() {
                 Ok(()) => {},
                 Err(e) => {
@@ -707,67 +841,20 @@ fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
     wrtx.commit()?;
     Ok(())
 }
-// const OWNERSHIP_INDEX: MultimapTableDefinition<&str, &[u8]> = MultimapTableDefinition::new("OI");
-/*
-#[derive(Serialize, Deserialize)]
-struct Item{
-    shop: u64,
-    id: u64,
-    created: u64,
-    owner: u64,
-    unique: bool,
-    dupable: bool,
-    categories: Strings,
-    tags: Strings,
-    kind: Option<String>,
-    meta_data: Option<U8s>,
-    mime_type: Option<String>,
-    owners: HashMap<u64, u64>, // account_id, shares
-    sellable: bool,
-    price: u64,
-    coupons: HashMap<String, (u64, bool, Option<U8s>)>, // code, (discount, once, more_data)
-    expiry: u64,
-    description: Option<String>,
-    state: Option<U8s>
-}
- */
-/*
-    Permision Schemas should be determinative of the state deserialization type of token's Option<&[u8]> state field
-    0: read
-    1: read/write
-    2: read/write/execute
-    3: read/write/execute/transact
-
-*/
 
 const SCOPED_VARIABLES: TableDefinition<(u64, &str), &[u8]> = TableDefinition::new("SCOPED_VARIABLES");
 const SCOPED_VARIABLE_OWNERSHIP_INDEX: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("SCOPED_VARIABLE_OWNERSHIP_INDEX");
 const SCOPED_VARIABLE_EXPIRIES: TableDefinition<u64, (u64, &str)> = TableDefinition::new("SCOPED_VARIABLE_EXPIRIES");
 
-// tag system for variables with reverse lookup
-const SV_TAGS: MultimapTableDefinition<&str, (u64, &str)> = MultimapTableDefinition::new("tags");
-const SV_TAGS_INDEX: MultimapTableDefinition<(u64, &str), &str> = MultimapTableDefinition::new("tags_lookup");
-// const SCOPED_VARIABLE_TAG_INDEX: MultimapTableDefinition<u64, (u64, &str)> = MultimapTableDefinition::new("SCOPED_VARIABLE_TAG_INDEX");
+const SV_TAGS: MultimapTableDefinition<&str, (u64, &str)> = MultimapTableDefinition::new("sv_tags");
+const SV_TAGS_INDEX: MultimapTableDefinition<(u64, &str), &str> = MultimapTableDefinition::new("sv_tags_lookup");
 
-// const SCOPED_PW_HASH_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("SCOPED_PW_HASH_INDEX");
-
+const SV_COLLECTIONS: MultimapTableDefinition<(u64, &str), &str> = MultimapTableDefinition::new("sv_collections");
+const SV_COLLECTIONS_LOOKUP: MultimapTableDefinition<&str, (u64, &str)> = MultimapTableDefinition::new("sv_collections_lookup");
 struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
     pd: PhantomData<T>,
 }
-
-/*
-
-Welcome, tis an experiment at blogging
-
-Handrolled tech stack, and auth lol. oop. 
-
-anyway, it seems to work, not really finished but for a doodle it is functional.. somewhat, now and again.. eh. lemme know. 
-
-meta update
- */
-
-// todo: encryption, serialization, generics for value type [done :D, 30 June, but not tested yet]
 
 #[handler]
 async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
@@ -891,6 +978,74 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         wrtx.commit()?;
         Ok(())
     }
+
+    fn rm_collection(&self, name: &str) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            t.remove((self.owner, name), name)?;
+            t2.remove(name, (self.owner, name))?;
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
+    fn get_collection(&self, name: &str) -> anyhow::Result<Vec<String>> {
+        let mut vars = vec![];
+        let rtx = DB.begin_read()?;
+        {
+            let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut mmv = t.get((self.owner, name))?;
+            while let Some(r) = mmv.next() {
+                let ag = r?;
+                vars.push(ag.value().to_string());
+            }
+        }
+        Ok(vars)
+    }
+    fn check_collection_membership(&self, name: &str, vars: &[&str]) -> anyhow::Result<bool> {
+        let rtx = DB.begin_read()?;
+        {
+            let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut mmv = t.get((self.owner, name))?;
+            while let Some(r) = mmv.next() {
+                let ag = r?;
+                if !vars.contains(&ag.value()) {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+    fn add_vars_to_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            for var in vars {
+                t.insert((self.owner, name), var)?;
+                t2.insert(var, (self.owner, name))?;
+            }
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
+    fn rm_vars_from_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
+        let wrtx = DB.begin_write()?;
+        {
+            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            for var in vars {
+                t.remove((self.owner, name), var)?;
+                t2.remove(var, (self.owner, name))?;
+            }
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
     fn set_tags(&self, key: &str, tags: &[&str]) -> anyhow::Result<()> {
         let wrtx = DB.begin_write()?;
         {
@@ -930,6 +1085,31 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(tags)
     }
+    fn get_vars_with_tags(&self, tags: &[&str], limit: usize) -> anyhow::Result<Vec<(u64, String)>> {
+        let mut vars = vec![];
+        let rtx = DB.begin_read()?;
+        {
+            let t = rtx.open_multimap_table(SV_TAGS)?;
+            for tag in tags {
+                let mut mmv = t.get(tag)?;
+                while let Some(r) = mmv.next() {
+                    let ag = r?;
+                    let (owner, key) = ag.value();
+                    if owner == self.owner {
+                        let var = (owner, key.to_string());
+                        if !vars.contains(&var) {
+                            vars.push(var);
+                        }
+                    }
+                    vars.sort();
+                    if vars.len() >= limit {
+                        break;
+                    } 
+                }
+            }
+        }
+        Ok(vars)
+    }
     fn unset_all_tags_internal(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
         {
             let mut t = wrtx.open_multimap_table(SV_TAGS)?;
@@ -942,6 +1122,19 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(())
     }
+
+    fn cleanup_collections_when_var_is_removed(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
+        {
+            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            let mut mmv = t2.remove_all(key)?;
+            while let Some(r) = mmv.next() {
+                let ag = r?;
+                t.remove(ag.value(), key)?;
+            }
+        }
+        Ok(())
+    }
     fn set(&self, name: &str, value: T) -> anyhow::Result<()> {
         if !CAN_WRITE.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(
@@ -949,13 +1142,6 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             );
         }
         let owner = self.owner;
-        if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&owner) {
-            keys.iter().for_each(|k| {
-                if k.as_ref() == name {
-                    auto_msg(format!("{} {}", "inserting", name)).i(owner);
-                }
-            });
-        }
         let wrtx = DB.begin_write()?;
         {
             wrtx.open_table(SCOPED_VARIABLES)?
@@ -965,31 +1151,27 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 )?;
             wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
                 .insert(owner, name)?;
+
+            internal_notify_changes(&wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, name, true)?;
         }
         wrtx.commit()?; // std::thread::spawn(move || {});
         Ok(())
     }
     #[allow(dead_code)]
     fn set_many(&self, values: &[(Arc<str>, T)]) -> anyhow::Result<()> {
+        let owner = self.owner;
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             for (k, value) in values {
-                t.insert((self.owner, k.as_ref()), serialize_and_compress(value)?.as_slice())?;
-                ot.insert(self.owner, k.as_ref())?;
+                t.insert((owner, k.as_ref()), serialize_and_compress(value)?.as_slice())?;
+                ot.insert(owner, k.as_ref())?;
+                internal_notify_changes(&wt, owner, k.as_ref(), true)?;
             }
         }
         wrtx.commit()?;
-        for (k, _value) in values {
-            if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
-                keys.iter().for_each(|key| {
-                    if k.as_ref() == key.as_ref() {
-                        auto_msg(format!("{} {}", "inserted", k.as_ref())).i(self.owner);
-                    }
-                });
-            }
-        }
         Ok(())
     }
     fn get(&self, name: &str) -> anyhow::Result<Option<T>> {
@@ -1030,21 +1212,17 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             let old_data = t.remove((self.owner, name))?;
             ot.remove(self.owner, name)?;
             if let Some(ag) = old_data {
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data = Some(decompress_and_deserialize(&mut dt)?);
-                if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
-                    keys.iter().for_each(|k| {
-                        if k.as_ref() == name {
-                            auto_msg(format!("{} {}", "removed", name)).i(self.owner);
-                        }
-                    });
-                }
+                internal_notify_changes(&wt, self.owner, name, false)?;
             }
             self.unset_all_tags_internal(name, &wrtx)?;
+            self.cleanup_collections_when_var_is_removed(name, &wrtx)?;
         }
         wrtx.commit()?;
         Ok(data)
@@ -1056,23 +1234,19 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             for name in names {
                 if let Some(ag) = t.remove((self.owner, *name))? {
                     let mut dt = ag.value().to_vec();
                     forget(ag);
                     data.push(Some(decompress_and_deserialize(&mut dt)?));
-                    if let Some(keys) = SVS_CHANGE_OBSERVERS.get(&self.owner) {
-                        keys.iter().for_each(|k| {
-                            if k.as_ref() == *name {
-                                auto_msg(format!("{} {}", "removed", *name)).i(self.owner);
-                            }
-                        });
-                    }
+                    internal_notify_changes(&wt, self.owner, *name, false)?;
                 } else {
                     data.push(None);
                 }
                 ot.remove(self.owner, name)?;
                 self.unset_all_tags_internal(name, &wrtx)?;
+                self.cleanup_collections_when_var_is_removed(name, &wrtx)?;
             }
         }
         wrtx.commit()?;
@@ -1580,40 +1754,6 @@ lazy_static! {
     };
     static ref SEARCH: Search = Search::build_150mb().expect("Failed to build search.");
 }
-
-#[allow(dead_code)]
-struct ScopedScopelessHasher(Vec<sthash::Hasher>);
-
-#[allow(dead_code)]
-impl ScopedScopelessHasher {
-    fn new(key: &[u8], scopes: Vec<U8s>, extra_scopedness: Option<U8s>) -> Self {
-        let mut hashers: Vec<sthash::Hasher> = vec![];
-        for s in scopes {
-            let h = sthash::Hasher::new(sthash::Key::from_seed(key, Some(&s)), match extra_scopedness {
-                Some(ref v) => Some(v.as_slice()),
-                None => None
-            });
-            hashers.push(h);
-        }
-        Self(hashers)
-    }
-
-    fn hash_with_scope(&self, data: &[u8], scope: usize) -> U8s {
-        self.0[scope].hash(data)
-    }
-
-    fn check(&self, data: &[u8], hash: &[u8]) -> Option<usize> {
-        let mut which = 0_usize;
-        for h in &self.0 {
-            if h.hash(data) == hash {
-                return Some(which);
-            }
-            which += 1;
-        }
-        None
-    }
-}
-
 
 #[tokio::main]
 async fn main() {
