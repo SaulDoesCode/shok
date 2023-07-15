@@ -502,14 +502,14 @@
         import d from './domlib.js'
         import http from './http.js'
         await d.ready
-        const {query, render, domfn} = d
+        const {query, queryEach, render, domfn} = d
         const {section, div, button, span, p, header, article, textarea} = domfn
         const main = query('main')
         const controls = query('.controls')
         const search = query('input[name="search"]')
+        const scrollball = query('.scroll-ball')
         const items = []
-        let active = 0
-        let lastActive
+        let lastActive, active = 0
         const setActive = (a, scroll) => {
             if (a > items.length - 1 || a == NaN) return setActive(0, scroll)
             if (a == -Infinity) return setActive(items.length - 1, scroll)
@@ -574,34 +574,28 @@
             main.scrollTop += e.deltaY
         }
 
-        const scrollball = query('.scroll-ball')
-
-        ;[...scrollball.children].filter(s => s.tagName == 'SPAN').forEach(s => {
-            s.onpointerdown = e => {
-                rowWidth = getItemsInRow()
-                e.preventDefault()
-                switch(e.target.textContent) {
-                    case '←':
-                        setActive(active - 1)
-                    break
-                    case '→':
-                        setActive(active + 1)
-                    break
-                    case '↑':
-                        setActive(active - rowWidth)
-                    break
-                    case '↓':
-                        setActive(active + rowWidth)
-                    break
-                }
+        queryEach('.scroll-ball > span', s => s.onpointerdown = e => {
+            rowWidth = getItemsInRow()
+            e.preventDefault()
+            switch(e.target.textContent) {
+                case '←':
+                    setActive(active - 1)
+                break
+                case '→':
+                    setActive(active + 1)
+                break
+                case '↑':
+                    setActive(active - rowWidth)
+                break
+                case '↓':
+                    setActive(active + rowWidth)
+                break
             }
         })
         // when the mouse or pointer moves inside of the scroll ball scroll x and y on the main element
         scrollball.onpointermove = e => {
+            if (e.target.tagName == 'SPAN') return
             e.preventDefault()
-            if (e.target.tagName == 'SPAN') {
-                return
-            }
             // get the size of the scrollingElement
             const {width, height} = document.scrollingElement.getBoundingClientRect()
             //console.log(e)
@@ -656,8 +650,7 @@
                     writ.public = !writ.public
                     await http.put('/api/search/', writ)
                 }
-                if (item.parentNode && item.parentNode.classList) 
-                    if (item.parentNode.classList.contains('item')) item = item.parentNode
+                if (item.parentNode && item.parentNode.classList.contains('item')) item = item.parentNode
             }
             if (!item.classList.contains('item')) return
             if (e.button === 1) {
@@ -684,9 +677,7 @@
             }
             menu.appendChild(text)
             document.body.appendChild(menu)
-            setTimeout(() => {
-                menu.remove()
-            }, 3000)
+            setTimeout(() => menu.remove(), 3000)
         }
 
         main.oncontextmenu = e => {
@@ -696,21 +687,14 @@
                 customContextMenu(e, lastActive)
             }
         }
-
-        const niceTime = ts => {
-            const date = new Date(ts * 1000)
-            return `${date.getMonth()}/${date.getDate()}/${date.getFullYear()}`
-        }
+        const divider = "<span class=\"divider\"> | </span>"
+        const niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`
 
         const displayObject = obj => {
             const div = document.createElement('div')
             for (const key in obj) {
                 const p = document.createElement('p')
-                if (d.isObj(obj[key])) {
-                    p.textContent = `${key}: ${displayObject(obj[key])}` 
-                } else {
-                    p.textContent = `${key}: ${obj[key]}`
-                }
+                p.textContent = `${key}: ${d.isObj(obj[key]) ? displayObject(obj[key]) : obj[key]}` 
                 div.appendChild(p)
             }
             return div
@@ -722,8 +706,8 @@
             return text
         }
         let lastSearchQuery = ''
-        const searchForWrits = async (q = search.value, p = 0) => {
-            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=post`)
+        const searchForWrits = async (q = search.value, p = 0, k = 'post') => {
+            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
             if (writs.length) {
                 if (lastSearchQuery !== q) {
                     // if the search query has changed, reset the page to 0
@@ -734,19 +718,18 @@
                     p += 1
                 }
                 // display them in main as items
-                const divider = "<span class=\"divider\"> | </span>"
                 main.innerHTML = ''
                 let i = -1
                 for (const writ of writs) {
                     const item = makeItem(d.html`<header>
-                            ${writ.title != '' ? `<h2>${writ.title}</h2>` : ''}
-                            <time>${niceTime(writ.ts)}</time>${divider}
-                            ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
-                            <span class="owner">${monikers[++i]}</span>${divider}
-                        </header>
-                        <section class="content">${writ.content}</section>
-                        <div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>
-                        <div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`, i)
+${writ.title != '' ? `<h2>${writ.title}</h2>` : ''}
+<time>${niceTime(writ.ts)}</time>${divider}
+${writ.public ? '' : `<span class="private"> private </span>${divider}`}
+<span class="owner">${monikers[++i]}</span>
+</header>
+<section class="content">${writ.content}</section>
+<div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>
+<div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`, i)
                     item.writ = writ
                     item.ts = writ.ts
                     main.appendChild(item)
@@ -779,8 +762,8 @@
 <input type="text" name="title" placeholder="title (optional)" />
 <input type="text" name="state" placeholder="optional json state field" />
 <div>
-    <input type="checkbox" name="public" checked/>
-    <input type="submit" value="save" />
+<input type="checkbox" name="public" checked/>
+<input type="submit" value="save" />
 </div>
 </section>`[0][0]
 
@@ -835,7 +818,7 @@
                     setTimeout(() => {
                         ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr'
                         ae.remove()
-                    }, 5000)
+                    }, 4200)
                     localStorage.setItem('auth', 'true')
                     render(htmlWritMaker, 'body > header')
                     populateBodywithCards()
@@ -843,7 +826,7 @@
             } catch(e) {
                 const errMsg = d.html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
                 ae.append(errMsg)
-                setTimeout(() => errMsg.remove(), 5000)
+                setTimeout(() => errMsg.remove(), 4200)
             }
         }
 
@@ -862,9 +845,7 @@
                         <p>Unauthenticated</p>
                         <p>Server Response Info: ${displayObjectText(data)}</p>
                     `
-                    setTimeout(() => {
-                        location.reload()
-                    }, 5000)
+                    setTimeout(() => location.reload(), 4200)
                 }
             }, '🔒 ')
             render(htmlWritMaker, 'body > header')
@@ -876,28 +857,27 @@
             }
         }
 
-        window.svs = new Proxy({
-            async get(m) {
-                return await http.get(`/api/svs/${m}`)
-            },
-            async set(m, v) {
-                return await http.post(`/api/svs/${m}`, v)
-            },
-            async delete(m) {
-                return await http.del(`/api/svs/${m}`)
-            }
-        }, {
-            async get(m, k) {
-                if (k in m) return m[k]
-                return (await m.get(k)).value
-            },
-            async set(m, k, v) {
-                return await m.set(k, v)
-            },
-            async deleteProperty(m, k) {
-                return await m.delete(k)
-            }
-        })
+window.svs = new Proxy({
+    async get(m) {
+        return await http.get(`/api/svs/${m}`)
+    },
+    async set(m, v) {
+        return await http.post(`/api/svs/${m}`, v)
+    },
+    async delete(m) {
+        return await http.del(`/api/svs/${m}`)
+    }
+}, {
+    async get(m, k) {
+        return k in m ? m[k] : (await m.get(k)).value
+    },
+    async set(m, k, v) {
+        return await m.set(k, v)
+    },
+    async deleteProperty(m, k) {
+        return await m.delete(k)
+    }
+})
     </script>
 </body>
 </html>
