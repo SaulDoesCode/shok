@@ -3346,6 +3346,8 @@ impl Writ {
                 }
             }
         }
+        doc.add_u64(schema.get_field("price").unwrap(), self.price.unwrap_or(0));
+        doc.add_u64(schema.get_field("sell_price").unwrap(), self.sell_price.unwrap_or(0));
         doc
     }
 
@@ -3733,7 +3735,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     },
                 };
-                // println!("adding writ to index: {:?}", writ);
+                println!("adding writ to index: {:?}", writ);
                 if writ.owner != _owner.unwrap() {
                     brq(res, "not authorized to add posts to the index without the right credentials");
                     return;
