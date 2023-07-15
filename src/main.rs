@@ -616,8 +616,6 @@ fn read_bytes_from_path(path: &str) -> std::io::Result<U8s> {
     Ok(s)
 }
 
-const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
-
 fn get_or_generate_admin_password() -> (U8s, Hasher) {
     match read_bytes_from_path(ADMIN_PWD_FILE_PATH) {
         Ok(s) => {
@@ -638,6 +636,8 @@ fn get_or_generate_admin_password() -> (U8s, Hasher) {
         }
     }
 }
+
+const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
 
 lazy_static!{
     static ref B64: base64::engine::GeneralPurpose = {
@@ -704,7 +704,6 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
     // split whole into encrypted payload and detached prefix, the last 60 bytes are the detached prefix
     let (encrypted_payload, detached) = whole.split_at(whole.len() - 60);
     let mut decrypted_payload = encrypted_payload.to_vec();
-    forget(encrypted_payload);
     let cocoon = cocoon::Cocoon::new(pwd);
     match cocoon.decrypt(decrypted_payload.as_mut_slice(), detached) {
         Ok(()) => {
@@ -1822,6 +1821,11 @@ async fn main() {
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
                     .handle(search_api)
+                )
+                .push(
+                    Router::with_path("/access/<ts>")
+                    .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                    .get(writ_access_purchase_gateway_api)
                 )
                 .push(
                     Router::with_path("chat")
@@ -3099,7 +3103,6 @@ fn run_stored_commands() -> anyhow::Result<()> {
         let mut t = wrtx.open_table(CMD_ORDERS)?;
         let mut _df = t.drain_filter(..now(), |_when, raw| {
             if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
-                forget(raw);
                 tokio::spawn(async move {
                     let res = cmd.run().await;
                     match res {
@@ -3246,6 +3249,47 @@ fn validate_tags_string(tags: &str) -> Option<String> {
     None
 }
 
+const WRIT_ACCESS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("writ_access");
+
+fn add_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(WRIT_ACCESS)?;
+        for writ in writs {
+            t.insert(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn rm_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(WRIT_ACCESS)?;
+        for writ in writs {
+            t.remove(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let rtx = DB.begin_read()?;
+    {
+        let t = rtx.open_multimap_table(WRIT_ACCESS)?;
+        let mut mmv = t.get(id)?;
+        while let Some(r) = mmv.next() {
+            if !writs.contains(&r?.value()) {
+                return Err(anyhow!("access denied"));
+            }
+        }
+    }
+    Ok(())
+}
+
 const SEARCH_INDEX_PATH: &str = "./search-index";
 
 #[derive(Deserialize, Serialize)]
@@ -3256,6 +3300,8 @@ struct PutWrit{
     kind: String,
     content: String,
     state: Option<String>,
+    price: Option<u64>,
+    sell_price: Option<u64>,
     tags: String
 }
 
@@ -3271,6 +3317,8 @@ struct Writ{
     title: Option<String>,
     content: String,
     state: Option<String>,
+    price: Option<u64>,
+    sell_price: Option<u64>,
     tags: String
 }
 
@@ -3301,8 +3349,111 @@ impl Writ {
         doc
     }
 
+    fn from_doc(doc: &Document, prefered_kind: Option<String>) -> anyhow::Result<Self> {
+        let mut ts: u64 = 0;
+        let mut title = None;
+        let mut content = String::new();
+        let mut kind = String::new();
+        let mut tags: String = String::new();
+        let mut public = false;
+        let mut owner: u64 = 1997;
+        let mut state = None;
+        let mut price = None;
+        let mut sell_price = None;
+        for (f, fe) in SEARCH.schema.fields() {
+            let val = match doc.get_first(f) {
+                Some(v) => v,
+                None => continue,
+            };
+            match fe.name() {
+                "ts" => if let Some(val) = val.as_date() {
+                    ts = val.into_timestamp_secs() as u64;
+                }
+                "title" => {
+                    title = val.as_text().map(|s| s.to_string());
+                }
+                "kind" => {
+                    if let Some(k) = val.as_text() {
+                        if let Some(pk) = &prefered_kind {
+                            if pk != k {
+                                continue;
+                            }
+                        }
+                        kind = k.to_string();
+                    }
+                }
+                "content" => {
+                    content = val.as_text().unwrap().to_string();
+                }
+                "tags" => {
+                    tags = val.as_text().unwrap().to_string();
+                }
+                "public" => if let Some(pb) = val.as_bool() {
+                    public = pb;
+                }
+                "owner" => if let Some(o) = val.as_u64() {
+                    owner = o
+                }
+                "state" => if let Some(jsn) = val.as_json() {
+                    // create a nice json object and stringify it so it is easy to consume on the client side
+                    if let Ok(out) = serde_json::to_vec_pretty(&jsn) {
+                        if let Ok(s) = String::from_utf8(out) {
+                            state = Some(s);
+                        }
+                    }
+                }
+                "price" => {
+                    price = val.as_u64();
+                }
+                "sell_price" => {
+                    sell_price = val.as_u64();
+                }
+                _ => {
+                    continue;
+                }
+            }
+        }
+        if kind.len() == 0 {
+            return Err(anyhow!("no kind found"));
+        }
+        if content.len() == 0 {
+            return Err(anyhow!("no content found"));
+        }
+        if tags.len() == 0 {
+            return Err(anyhow!("no tags found"));
+        }
+        Ok(Self{
+            ts,
+            kind,
+            owner,
+            public,
+            title,
+            content,
+            state,
+            price,
+            sell_price,
+            tags
+        })
+    }
+
     fn lookup_owner_moniker(&self) -> anyhow::Result<String> {
         Ok(Account::from_id(self.owner, &DB)?.moniker)
+    }
+
+    fn purchase_access(&self, id: u64) -> anyhow::Result<()> {
+        if self.owner == id {
+            return Err(anyhow!("you already own this writ"));
+        }
+        if self.price.is_none() {
+            return Err(anyhow!("this writ is not for sale"));
+        }
+        let mut acc = Account::from_id(id, &DB)?;
+        if acc.balance < self.price.unwrap() {
+            return Err(anyhow!("you don't have enough money to buy this writ"));
+        }
+        acc.transfer(&mut Account::from_id(self.owner, &DB)?, self.price.unwrap(), &DB)?;
+        add_access_for(id, &[self.ts])?;
+        Ok(())
     }
 
     fn add_to_index(&self, index_writer: &mut IndexWriter, schema: &Schema) -> tantivy::Result<()> {
@@ -3367,6 +3518,8 @@ impl Search{
         schema_builder.add_text_field("kind", text_options.clone());
         schema_builder.add_text_field("tags", text_options);
         schema_builder.add_json_field("state", TEXT | STORED);
+        schema_builder.add_u64_field("price", FAST | INDEXED | STORED);
+        schema_builder.add_u64_field("sell_price", FAST | INDEXED | STORED);
         schema_builder.add_bool_field("public", INDEXED | STORED);
         let schema = schema_builder.build();
 
@@ -3417,73 +3570,29 @@ impl Search{
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
-    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>, prefered_kind: Option<String>) -> tantivy::Result<Vec<Writ>> {
+    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>, prefered_kind: Option<String>, id: Option<u64>) -> anyhow::Result<Vec<Writ>> {
         match Writ::search_for(query, limit, page, self) {
             Ok(results) => {
                 let mut writs = vec![];
                 for (_s, d) in results {
-                    let mut ts: u64 = 0;
-                    let mut title = None;
-                    let mut content = String::new();
-                    let mut kind = String::new();
-                    let mut tags: String = String::new();
-                    let mut public = false;
-                    let mut owner: u64 = 1997;
-                    let mut state = None;
-                    for (f, fe) in self.schema.fields() {
-                        let val = match d.get_first(f) {
-                            Some(v) => v,
-                            None => continue,
-                        };
-                        match fe.name() {
-                            "ts" => if let Some(val) = val.as_date() {
-                                ts = val.into_timestamp_secs() as u64;
-                            },
-                            "title" => {
-                                title = val.as_text().map(|s| s.to_string());
-                            },
-                            "kind" => {
-                                if let Some(k) = val.as_text() {
-                                    if let Some(pk) = &prefered_kind {
-                                        if pk != k {
-                                            continue;
-                                        }
-                                    }
-                                    kind = k.to_string();
+                    let mut writ = Writ::from_doc(&d, prefered_kind.clone())?;
+                    if writ.public || include_public_for_owner.is_some_and(|o| o == writ.owner || o == 1997) {
+                        if writ.price.is_some() {
+                            // check if the owner has access to this writ
+                            if let Some(id) = id {
+                                if let Err(e) = check_access_for(id, &[writ.ts]) {
+                                    writ.content = e.to_string();
                                 }
-                            },
-                            "content" => {
-                                content = val.as_text().unwrap().to_string();
-                            },
-                            "tags" => {
-                                tags = val.as_text().unwrap().to_string();
-                            },
-                            "public" => if let Some(pb) = val.as_bool() {
-                                public = pb;
-                            },
-                            "owner" => if let Some(o) = val.as_u64() {
-                                owner = o
-                            },
-                            "state" => if let Some(jsn) = val.as_json() {
-                                // create a nice json object and stringify it so it is easy to consume on the client side
-                                if let Ok(out) = serde_json::to_vec_pretty(&jsn) {
-                                    if let Ok(s) = String::from_utf8(out) {
-                                        state = Some(s);
-                                    }
-                                }
-                            },
-                            _ => {
-                                return Err(tantivy::TantivyError::InvalidArgument(format!("unknown field {}", fe.name())));
+                            } else {
+                                writ.content = String::new();
                             }
                         }
-                    }
-                    if public || include_public_for_owner.is_some_and(|o| o == owner || o == 1997) {
-                        writs.push(Writ{ts, public, owner, kind, title, content, state, tags});
+                        writs.push(writ);
                     }
                 }
                 Ok(writs)
             },
-            Err(e) => Err(e),
+            Err(e) => Err(anyhow!("failed to search for writs: {}", e.to_string())),
         }
     }
 
@@ -3492,6 +3601,41 @@ impl Search{
     }
 }
 
+
+#[handler]
+pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // authenticate
+    let mut _id: Option<u64> = None;
+    if let Some(id) = session_check(req, None).await { 
+        // user session
+        _id = Some(id);
+    } else if let Some(tk) = req.query::<String>("tk") {
+        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+            // token session
+            _id = Some(o);
+        }
+    }
+
+    if _id.is_none() {
+        brq(res, "not authorized to use the writ access purchase gateway");
+        return;
+    }
+    let id = _id.unwrap();
+    // check for ts param to use as a writ id in lookup
+    match req.param::<u64>("ts") {
+        Some(ts) => match SEARCH.get_doc(ts) {
+            Ok(doc) => match Writ::from_doc(&doc, None) {
+                Ok(writ) => match writ.purchase_access(id) {
+                    Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access purchased"})),
+                    Err(e) => brqe(res, &e.to_string(), "failed to purchase access"),
+                }
+                Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+            }
+            Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+        },
+        None => brq(res, "no ts param provided")
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct SearchRequest{
@@ -3541,7 +3685,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     Some(k) => Some(k),
                     None => None,
                 };
-                match SEARCH.search(&q, 128, page, _owner, kind) {
+                match SEARCH.search(&q, 128, page, _owner, kind, _owner) {
                     Ok(writs) => {
                         let mut monikers = vec![];
                         for w in &writs {
@@ -3562,7 +3706,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => {
                 // search for the query
-                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind) {
+                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
                     Ok(writs) => res.render(Json(serde_json::json!({"writs": writs}))),
                     Err(e) => brqe(res, &e.to_string(), "failed to search"),
                 }
@@ -3580,6 +3724,8 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     title: pw.title,
                     content: pw.content,
                     state: pw.state,
+                    price: pw.price,
+                    sell_price: pw.sell_price,
                     tags: if let Some(tags) = validate_tags_string(pw.tags.as_str()) {
                         tags
                     } else {
@@ -3684,6 +3830,8 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     kind: pw.kind,
                     content: pw.content,
                     state: pw.state,
+                    price: pw.price,
+                    sell_price: pw.sell_price,
                     tags: if let Some(tags) = validate_tags_string(&pw.tags) {
                         tags
                     } else {
