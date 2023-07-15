@@ -741,7 +741,7 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
             }
         }
 
-        const composeWrit = async (title, content, tags = '', state = {}, p) => {
+        const composeWrit = async (title, content, tags = '', state = {}, p, price) => {
             tags.replace(',', ' ').replace('  ', ' ')
             const writ = {
                 public: !!p,
@@ -749,6 +749,7 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
                 kind: 'post',
                 content,
                 state: (state != null && state != '') ? JSON.stringify(state) : '{}',
+                price: price || undefined,
                 tags: 'post experimental ' + tags
             }
             const res = await http.put('/api/search', writ)
@@ -761,6 +762,7 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
 <input type="text" name="tags" placeholder="tags" />
 <input type="text" name="title" placeholder="title (optional)" />
 <input type="text" name="state" placeholder="optional json state field" />
+<input type="number" name="price" placeholder="optional price to access (pays points, no way to get points yet)" />
 <div>
 <input type="checkbox" name="public" checked/>
 <input type="submit" value="save" />
@@ -772,6 +774,7 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
             tagsIn,
             titleIn,
             stateIn,
+            priceIn,
             pbbdiv
         ] = htmlWritMaker.children
         const [pbIn, saveBtn] = pbbdiv.children
@@ -791,7 +794,8 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
                 contentIn.value,
                 tagsIn.value,
                 stateIn.value.length ? JSON.parse(stateIn.value) : '',
-                pbIn.checked
+                pbIn.checked,
+                Number(priceIn.value)
             )
             console.log(res)
             clearComposer()
