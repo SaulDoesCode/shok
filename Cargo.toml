@@ -9,7 +9,8 @@ edition = "2021"
 anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
 cocoon = "*"
-dashmap = { version = "*", features = ["rayon", "serde"]}
+# crossbeam-channel = "*"
+dashmap = {version = "*"}
 salvo = { version= "0.45", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "sse", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
 serde = { version = "^1", features = ["derive"] }
 serde_json = "*"
@@ -22,7 +23,7 @@ parking_lot = "*"
 tracing = "*"
 tracing-subscriber = "*"
 # tempfile = "*"
-redb = { version = "1.0.4"}
+redb = { version = "^1"} #, features = ["logging"]
 rand = "*"
 sthash = { git = "https://github.com/jedisct1/rust-sthash" }
 lazy_static = "*"
