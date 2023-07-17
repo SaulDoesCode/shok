@@ -64,6 +64,7 @@ fn unfollow_account(id: u64, follow_id: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn follow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) -> anyhow::Result<()> {
     let mut t = wtx.open_multimap_table(FOLLOWS)?;
     t.insert(id, follow_id)?;
@@ -82,7 +83,7 @@ fn unfollow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) ->
 
 fn get_followers(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
-    let mut t = rtx.open_multimap_table(FOLLOWED_BY)?;
+    let t = rtx.open_multimap_table(FOLLOWED_BY)?;
     let mut mmv = t.get(id)?;
     let mut followers = Vec::new();
     while let Some(r) = mmv.next() {
@@ -96,7 +97,7 @@ fn get_followers(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
 
 fn get_following(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
-    let mut t = rtx.open_multimap_table(FOLLOWS)?;
+    let t = rtx.open_multimap_table(FOLLOWS)?;
     let mut mmv = t.get(id)?;
     let mut following = Vec::new();
     while let Some(r) = mmv.next() {
@@ -110,7 +111,7 @@ fn get_following(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
 
 fn is_followed_by(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     let rtx = DB.begin_read()?;
-    let mut t = rtx.open_multimap_table(FOLLOWED_BY)?;
+    let t = rtx.open_multimap_table(FOLLOWED_BY)?;
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
         if r?.value() == follow_id {
@@ -122,7 +123,7 @@ fn is_followed_by(id: u64, follow_id: u64) -> anyhow::Result<bool> {
 
 fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     let rtx = DB.begin_read()?;
-    let mut t = rtx.open_multimap_table(FOLLOWS)?;
+    let t = rtx.open_multimap_table(FOLLOWS)?;
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
         if r?.value() == follow_id {
@@ -1862,7 +1863,7 @@ async fn main() {
 
     let _expiry_checker = expiry_checker();
 
-    let addr = ("0.0.0.0", 8000);
+    let addr = ("0.0.0.0", 443);
     let config = load_config();
 
     let api_limiter = RateLimiter::new(
@@ -2137,6 +2138,35 @@ impl Account {
             }
         }
         wrtx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete(&self) -> anyhow::Result<()> {
+        let wtx = DB.begin_write()?;
+        {
+            let mut t = wtx.open_table(ACCOUNTS)?;
+            t.remove(self.id)?;
+        }
+        {
+            let mut t = wtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
+            t.remove(self.moniker.as_str())?;
+        }
+        {
+            let mut t = wtx.open_multimap_table(FOLLOWS)?;
+            let mut tl = wtx.open_multimap_table(FOLLOWED_BY)?;
+            let mut mmv = t.remove_all(self.id)?;
+            while let Some(r) = mmv.next() {
+                let other = r?.value();
+                unfollow_account_internal(&wtx, self.id, other)?;
+                // do the necessary removals from tl (followed_by)
+                tl.remove(other, self.id)?;
+            }
+        }
+        {
+            // TODO: cleanup the svs store of the account if they have one, and resources still
+            
+        }
+        wtx.commit()?;
         Ok(())
     }
 
