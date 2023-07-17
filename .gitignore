@@ -1,6 +1,5 @@
 /target
 /secrets
 *.pem
-/uploaded
 *.db
 /search-index
