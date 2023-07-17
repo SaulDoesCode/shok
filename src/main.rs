@@ -37,6 +37,101 @@ lazy_static!{
     static ref ONLINE_USERS: Users = Users::new();
 }
 
+const FOLLOWS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("follows");
+const FOLLOWED_BY: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("followed_by");
+
+fn follow_account(id: u64, follow_id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(FOLLOWS)?;
+        t.insert(id, follow_id)?;
+        let mut t = wtx.open_multimap_table(FOLLOWED_BY)?;
+        t.insert(follow_id, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn unfollow_account(id: u64, follow_id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(FOLLOWS)?;
+        t.remove(id, follow_id)?;
+        let mut t = wtx.open_multimap_table(FOLLOWED_BY)?;
+        t.remove(follow_id, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn follow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) -> anyhow::Result<()> {
+    let mut t = wtx.open_multimap_table(FOLLOWS)?;
+    t.insert(id, follow_id)?;
+    let mut t = wtx.open_multimap_table(FOLLOWED_BY)?;
+    t.insert(follow_id, id)?;
+    Ok(())
+}
+
+fn unfollow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) -> anyhow::Result<()> {
+    let mut t = wtx.open_multimap_table(FOLLOWS)?;
+    t.remove(id, follow_id)?;
+    let mut t = wtx.open_multimap_table(FOLLOWED_BY)?;
+    t.remove(follow_id, id)?;
+    Ok(())
+}
+
+fn get_followers(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    let mut t = rtx.open_multimap_table(FOLLOWED_BY)?;
+    let mut mmv = t.get(id)?;
+    let mut followers = Vec::new();
+    while let Some(r) = mmv.next() {
+        followers.push(r?.value());
+        if followers.len() >= limit {
+            break;
+        }
+    }
+    Ok(followers)
+}
+
+fn get_following(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    let mut t = rtx.open_multimap_table(FOLLOWS)?;
+    let mut mmv = t.get(id)?;
+    let mut following = Vec::new();
+    while let Some(r) = mmv.next() {
+        following.push(r?.value());
+        if following.len() >= limit {
+            break;
+        }
+    }
+    Ok(following)
+}
+
+fn is_followed_by(id: u64, follow_id: u64) -> anyhow::Result<bool> {
+    let rtx = DB.begin_read()?;
+    let mut t = rtx.open_multimap_table(FOLLOWED_BY)?;
+    let mut mmv = t.get(id)?;
+    while let Some(r) = mmv.next() {
+        if r?.value() == follow_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
+    let rtx = DB.begin_read()?;
+    let mut t = rtx.open_multimap_table(FOLLOWS)?;
+    let mut mmv = t.get(id)?;
+    while let Some(r) = mmv.next() {
+        if r?.value() == follow_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 const SV_CHANGE_WATCHERS: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("sv_change_watchers");
 
 fn watch_changes(id: u64, key: &str) -> anyhow::Result<()> {
@@ -162,7 +257,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             }
                         }
                         "balance" | "b" => {
-                            // if there is a next arg that can be read as a u64 ammount then if the user is admin add balance
+                            // if there is a next arg that can be read as a u64 ammount then if the account is admin add balance
                             if let Some(amount) = args.next() {
                                 if let Ok(amount) = amount.parse::<u64>() {
                                     if let Ok(mut acc) = Account::from_id(uid as u64, &DB) {
@@ -478,7 +573,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
 }
 
 #[handler]
-async fn user_connected(req: &mut Request, res: &mut Response) {
+async fn account_connected(req: &mut Request, res: &mut Response) {
     let uid = match session_check(req, None).await {
         Some(id) => id,
         None => {
@@ -487,7 +582,7 @@ async fn user_connected(req: &mut Request, res: &mut Response) {
         }
     } as usize;
 
-    tracing::info!("chat user came online: {}, req {:?}", uid, req);
+    tracing::info!("chat account came online: {}, req {:?}", uid, req);
 
     // Use an unbounded channel to handle buffering and flushing of messages
     // to the event source...
@@ -498,12 +593,12 @@ async fn user_connected(req: &mut Request, res: &mut Response) {
         // rx is right above, so this cannot fail
         .unwrap();
 
-    // Save the sender in our list of connected users.
+    // Save the sender in our list of connected accounts.
     ONLINE_USERS.insert(uid, tx);
 
     // Convert messages into Server-Sent Events and returns resulting stream.
     let stream = rx.map(move |msg| match msg {
-        Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("user").text(uid.to_string())),
+        Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("account").text(uid.to_string())),
         Message::Reply(reply) => Ok(SseEvent::default().text(reply))
     });
     SseKeepAlive::new(stream).streaming(res).ok();
@@ -541,7 +636,7 @@ fn str_auto_msg(msg: &str) -> Interaction {
 fn interaction(id: u64, i: Interaction) {
     match i {
         Interaction::Transfer(to, amount, when) => {
-            tracing::info!("user {} transfer: {} to {} at {:?}", id, amount, to, when);
+            tracing::info!("account {} transfer: {} to {} at {:?}", id, amount, to, when);
             // find the to account and transfer
             if let Ok(mut acc) = Account::from_id(id as u64, &DB) {
                 if let Ok(mut recipient_acc) = Account::from_id(to as u64, &DB) {
@@ -570,10 +665,10 @@ fn interaction(id: u64, i: Interaction) {
             }
         },
         Interaction::Broadcast(msg) => {
-            // tracing::info!("user {} broadcast: {}", id, msg);
+            // tracing::info!("account {} broadcast: {}", id, msg);
             ONLINE_USERS.retain(|i, tx| {
                 if id as usize == *i {
-                    // don't send to same user, but do retain
+                    // don't send to same account, but do retain
                     true
                 } else {
                     // If not `is_ok`, the SSE stream is gone, and so don't retain
@@ -583,19 +678,19 @@ fn interaction(id: u64, i: Interaction) {
         },
         Interaction::Message(uid, msg) => {
             let uid = uid as usize;
-            // tracing::info!("user {} message: {}", id, msg);
+            // tracing::info!("account {} message: {}", id, msg);
             if let Some(s) = ONLINE_USERS.get(&uid) {
                 if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
-                    tracing::info!("failed to send message to user {}", id);
+                    tracing::info!("failed to send message to account {}", id);
                     ONLINE_USERS.remove(&uid);
                 }
             }
         },
         Interaction::AutoMessage(msg) => {
-            tracing::info!("user {} auto message: {}", id, msg);
+            tracing::info!("account {} auto message: {}", id, msg);
             if let Some(s) = ONLINE_USERS.get(&(id as usize)) {
                 if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
-                    tracing::info!("failed to send auto message to user {}", id);
+                    tracing::info!("failed to send auto message to account {}", id);
                     ONLINE_USERS.remove(&(id as usize));
                 }
             }
@@ -1109,6 +1204,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(vars)
     }
+
     fn unset_all_tags_internal(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
         {
             let mut t = wrtx.open_multimap_table(SV_TAGS)?;
@@ -1830,7 +1926,7 @@ async fn main() {
                 .push(
                     Router::with_path("chat")
                         .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
-                        .get(user_connected)
+                        .get(account_connected)
                         .post(chat_send)
                         //.push(Router::with_path("<id>"))
                 )
@@ -1855,12 +1951,6 @@ async fn main() {
                     .get(list_uploads)
                 )
                 .push(
-                    Router::with_path("/resource")
-                    .post(resource_api)
-                    .path("/<hash>")
-                    .handle(resource_api)
-                )
-                .push(
                     Router::with_path("/tf")
                     .post(transference_api)
                     .path("/<to>").get(transference_api)
@@ -1868,6 +1958,16 @@ async fn main() {
                 .push(
                     Router::with_path("/svs/<moniker>")
                     .handle(scoped_variable_store_api)
+                )
+                .push(
+                    Router::with_path("/resource")
+                    .post(resource_api)
+                    .path("/<hash>")
+                    .handle(resource_api)
+                )
+                .push(
+                    Router::with_path("/<op>/<id>")
+                    .handle(follow_api)
                 )
                 .push(
                     Router::with_path("/<action>/<tk>")
@@ -1951,6 +2051,30 @@ impl Account {
     pub fn check_password(&self, pwd: &[u8]) -> bool {
         let pwh = PWD.1.hash(pwd);
         pwh == PWD.0 || pwh == self.pwd_hash
+    }
+
+    pub fn follow(&self, other: u64) -> anyhow::Result<()> {
+        follow_account(self.id, other)
+    }
+
+    pub fn unfollow(&self, other: u64) -> anyhow::Result<()> {
+        unfollow_account(self.id, other)
+    }
+    
+    pub fn following(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
+        get_following(self.id, limit)
+    }
+
+    pub fn followers(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
+        get_followers(self.id, limit)
+    }
+
+    pub fn is_following(&self, other: u64) -> anyhow::Result<bool> {
+        is_following(self.id, other)
+    }
+
+    pub fn is_followed_by(&self, other: u64) -> anyhow::Result<bool> {
+        is_followed_by(self.id, other)
     }
 
     pub fn transfer(&mut self, other: &mut Self, amount: u64, db: &Database) -> Result<(), redb::Error> {
@@ -2473,11 +2597,11 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
             } else {
-                println!("a new user is trying to join: {}", &ar.moniker);
+                println!("a new account is trying to join: {}", &ar.moniker);
                 _acc = Some(acc);
             },
             Err(e) => {
-                println!("new user not seen before, also moniker lookup error because of this: {:?}", e);
+                println!("new account not seen before, also moniker lookup error because of this: {:?}", e);
                 /*res.status_code(StatusCode::UNAUTHORIZED);
                 res.render(Json(serde_json::json!({"err":"no such account on the system"})));
                 return;*/
@@ -2814,6 +2938,87 @@ impl Resource {
             r.data(true)?;
         }
         Ok(r)
+    }
+}
+
+#[handler]
+async fn follow_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
+    if let Some(id) = session_check(req, None).await {
+        if let Some(other) = req.param::<u64>("id") {
+            if let Ok(acc) = Account::from_id(id, &DB) {
+                // check the req method and the param for the operation we're doing, GET: /api/<op>/<id>
+                if let Some(op) = req.param::<String>("op") {
+                    match *req.method() {
+                        Method::GET => {
+                            match op.as_str() {
+                                "follows" => match acc.following(10000) {
+                                    Ok(follows) => {
+                                        jsn(res, serde_json::json!({
+                                            "status": "ok",
+                                            "follows": follows
+                                        }));
+                                    },
+                                    Err(e) => {
+                                        brqe(res, &e.to_string(), "failed to get follows");
+                                    }
+                                }
+                                "following" => match acc.followers(10000) {
+                                    Ok(followers) => {
+                                        jsn(res, serde_json::json!({
+                                            "status": "ok",
+                                            "followers": followers
+                                        }));
+                                    },
+                                    Err(e) => {
+                                        brqe(res, &e.to_string(), "failed to get followers");
+                                    }
+                                }
+                                "follow" => match acc.follow(other) {
+                                    Ok(()) => {
+                                        jsn(res, serde_json::json!({
+                                            "status": "ok",
+                                            "msg": "followed"
+                                        }));
+                                    },
+                                    Err(e) => {
+                                        brqe(res, &e.to_string(), "failed to follow");
+                                    }
+                                }
+                                "unfollow" => match acc.unfollow(other) {
+                                    Ok(()) => {
+                                        jsn(res, serde_json::json!({
+                                            "status": "ok",
+                                            "msg": "unfollowed"
+                                        }));
+                                    },
+                                    Err(e) => {
+                                        brqe(res, &e.to_string(), "failed to unfollow");
+                                    }
+                                }
+                                _ => {
+                                    if !ctrl.call_next(req, depot, res).await {
+                                        nfr(res);
+                                    }
+                                }
+                            }
+                        }
+                        // Method::POST => {}
+                        // Method::DELETE => {}
+                        _ => {
+                            brq(res, "no such method");
+                        }
+                    }
+                } else {
+                    brq(res, "no operation provided");
+                }
+            } else {
+                brq(res, "no such account");
+            }
+        } else {
+            brq(res, "no followee id provided");
+        }
+    } else {
+        uares(res);
     }
 }
 
@@ -3609,7 +3814,7 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
     // authenticate
     let mut _id: Option<u64> = None;
     if let Some(id) = session_check(req, None).await { 
-        // user session
+        // account session
         _id = Some(id);
     } else if let Some(tk) = req.query::<String>("tk") {
         if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
@@ -3657,7 +3862,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         _is_admin = true;
         _owner = Some(ADMIN_ID);
     } else if let Some(id) = session_check(req, None).await { 
-        // user session
+        // account session
         _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
