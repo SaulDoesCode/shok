@@ -65,17 +65,13 @@ fn unlike_writ(id: u64, like_id: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn remove_all_likes_from_account(id: u64) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    {
-        let mut t = wtx.open_multimap_table(LIKES)?;
-        let mut mmv = t.remove_all(id)?;
-        let mut tlb = wtx.open_multimap_table(LIKED_BY)?;
-        while let Some(r) = mmv.next() {
-            tlb.remove(r?.value(), id)?;
-        }
+fn remove_all_likes_from_account(wtx: &WriteTransaction, id: u64) -> anyhow::Result<()> {
+    let mut t = wtx.open_multimap_table(LIKES)?;
+    let mut mmv = t.remove_all(id)?;
+    let mut tlb = wtx.open_multimap_table(LIKED_BY)?;
+    while let Some(r) = mmv.next() {
+        tlb.remove(r?.value(), id)?;
     }
-    wtx.commit()?;
     Ok(())
 }
 
@@ -2049,6 +2045,10 @@ async fn main() {
                     .handle(resource_api)
                 )
                 .push(
+                    Router::with_path("/writ-likes/<ts>")
+                    .get(see_writ_likes)
+                )
+                .push(
                     Router::with_path("/<op>/<id>")
                     .handle(account_api)
                 )
@@ -2261,8 +2261,8 @@ impl Account {
             }
         }
         {
+            remove_all_likes_from_account(&wtx, self.id)?;
             // TODO: cleanup the svs store of the account if they have one, and resources still
-            
         }
         wtx.commit()?;
         Ok(())
@@ -3824,6 +3824,10 @@ impl Writ {
         Ok(Account::from_id(self.owner, &DB)?.moniker)
     }
 
+    fn likes(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
+        get_liked_by(self.ts, limit)
+    }
+
     fn purchase_access(&self, id: u64) -> anyhow::Result<()> {
         if self.owner == id {
             return Err(anyhow!("you already own this writ"));
@@ -3985,7 +3989,6 @@ impl Search{
     }
 }
 
-
 #[handler]
 pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // authenticate
@@ -4016,6 +4019,44 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
                 Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
             }
             Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+        },
+        None => brq(res, "no ts param provided")
+    }
+}
+
+#[handler]
+pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // authenticate
+    let mut _id: Option<u64> = None;
+    if let Some(id) = session_check(req, None).await { 
+        // account session
+        _id = Some(id);
+    } else if let Some(tk) = req.query::<String>("tk") {
+        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+            // token session
+            _id = Some(o);
+        }
+    }
+
+    if _id.is_none() {
+        brq(res, "not authorized to use the writ access purchase gateway");
+        return;
+    }
+
+    match req.param::<u64>("ts") {
+        Some(ts) => match &get_liked_by(ts, 100) {
+            Ok(likes) => {
+                let mut monikers = vec![];
+                for id in likes {
+                    if let Ok(acc) = Account::from_id(*id, &DB) {
+                        monikers.push(acc.moniker);
+                    } else {
+                        monikers.push("unknown".to_string());
+                    }
+                }
+                res.render(Json((likes, monikers)));
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to get likes"),
         },
         None => brq(res, "no ts param provided")
     }
