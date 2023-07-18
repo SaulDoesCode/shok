@@ -36,6 +36,88 @@ type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
 lazy_static!{
     static ref ONLINE_USERS: Users = Users::new();
 }
+//                                   id, writ.ts
+const LIKES: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("likes");
+//                                   writ.ts, id
+const LIKED_BY: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("liked_by");
+
+fn like_writ(id: u64, like_id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(LIKES)?;
+        t.insert(id, like_id)?;
+        let mut t = wtx.open_multimap_table(LIKED_BY)?;
+        t.insert(like_id, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn unlike_writ(id: u64, like_id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(LIKES)?;
+        t.remove(id, like_id)?;
+        let mut t = wtx.open_multimap_table(LIKED_BY)?;
+        t.remove(like_id, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn remove_all_likes_from_account(id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(LIKES)?;
+        let mut mmv = t.remove_all(id)?;
+        let mut tlb = wtx.open_multimap_table(LIKED_BY)?;
+        while let Some(r) = mmv.next() {
+            tlb.remove(r?.value(), id)?;
+        }
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_multimap_table(LIKED_BY)?;
+    let mut mmv = t.get(id)?;
+    let mut likes = Vec::new();
+    while let Some(r) = mmv.next() {
+        likes.push(r?.value());
+        if likes.len() >= limit {
+            break;
+        }
+    }
+    Ok(likes)
+}
+
+fn get_liked_by(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_multimap_table(LIKES)?;
+    let mut mmv = t.get(id)?;
+    let mut likes = Vec::new();
+    while let Some(r) = mmv.next() {
+        likes.push(r?.value());
+        if likes.len() >= limit {
+            break;
+        }
+    }
+    Ok(likes)
+}
+
+fn is_liked_by(id: u64, like_id: u64) -> anyhow::Result<bool> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_multimap_table(LIKED_BY)?;
+    let mut mmv = t.get(id)?;
+    while let Some(r) = mmv.next() {
+        if r?.value() == like_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 
 const FOLLOWS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("follows");
 const FOLLOWED_BY: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("followed_by");
@@ -1968,7 +2050,7 @@ async fn main() {
                 )
                 .push(
                     Router::with_path("/<op>/<id>")
-                    .handle(follow_api)
+                    .handle(account_api)
                 )
                 .push(
                     Router::with_path("/<action>/<tk>")
@@ -2076,6 +2158,22 @@ impl Account {
 
     pub fn is_followed_by(&self, other: u64) -> anyhow::Result<bool> {
         is_followed_by(self.id, other)
+    }
+
+    pub fn like(&self, writ_id: u64) -> anyhow::Result<()> {
+        like_writ(self.id, writ_id)
+    }
+
+    pub fn unlike(&self, writ_id: u64) -> anyhow::Result<()> {
+        unlike_writ(self.id, writ_id)
+    }
+
+    pub fn likes(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
+        get_liked_by(self.id, limit)
+    }
+
+    pub fn does_like(&self, writ_id: u64) -> anyhow::Result<bool> {
+        is_liked_by(self.id, writ_id)
     }
 
     pub fn transfer(&mut self, other: &mut Self, amount: u64, db: &Database) -> Result<(), redb::Error> {
@@ -2972,83 +3070,115 @@ impl Resource {
 }
 
 #[handler]
-async fn follow_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
-    if let Some(id) = session_check(req, None).await {
-        if let Some(other) = req.param::<u64>("id") {
-            if let Ok(acc) = Account::from_id(id, &DB) {
-                // check the req method and the param for the operation we're doing, GET: /api/<op>/<id>
-                if let Some(op) = req.param::<String>("op") {
-                    match *req.method() {
-                        Method::GET => {
-                            match op.as_str() {
-                                "follows" => match acc.following(10000) {
-                                    Ok(follows) => {
-                                        jsn(res, serde_json::json!({
-                                            "status": "ok",
-                                            "follows": follows
-                                        }));
-                                    },
-                                    Err(e) => {
-                                        brqe(res, &e.to_string(), "failed to get follows");
-                                    }
-                                }
-                                "following" => match acc.followers(10000) {
-                                    Ok(followers) => {
-                                        jsn(res, serde_json::json!({
-                                            "status": "ok",
-                                            "followers": followers
-                                        }));
-                                    },
-                                    Err(e) => {
-                                        brqe(res, &e.to_string(), "failed to get followers");
-                                    }
-                                }
-                                "follow" => match acc.follow(other) {
-                                    Ok(()) => {
-                                        jsn(res, serde_json::json!({
-                                            "status": "ok",
-                                            "msg": "followed"
-                                        }));
-                                    },
-                                    Err(e) => {
-                                        brqe(res, &e.to_string(), "failed to follow");
-                                    }
-                                }
-                                "unfollow" => match acc.unfollow(other) {
-                                    Ok(()) => {
-                                        jsn(res, serde_json::json!({
-                                            "status": "ok",
-                                            "msg": "unfollowed"
-                                        }));
-                                    },
-                                    Err(e) => {
-                                        brqe(res, &e.to_string(), "failed to unfollow");
-                                    }
-                                }
-                                _ => {
-                                    if !ctrl.call_next(req, depot, res).await {
-                                        nfr(res);
-                                    }
-                                }
-                            }
-                        }
-                        // Method::POST => {}
-                        // Method::DELETE => {}
-                        _ => {
-                            brq(res, "no such method");
+async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
+    let other = match req.param::<u64>("id") {
+        Some(o) => o,
+        None => {
+            brq(res, "no <id> provided for op");
+            return;
+        }
+    };
+    let op = match req.param::<String>("op") {
+        Some(o) => o,
+        None => {
+            brq(res, "no <op> provided");
+            return;
+        }
+    };
+    let id = match session_check(req, None).await {
+        Some(id) => id,
+        None => {
+            uares(res);
+            return;
+        }
+    };
+
+    if let Ok(acc) = Account::from_id(id, &DB) {
+        // check the req method and the param for the operation we're doing, GET: /api/<op>/<id>
+        match *req.method() {
+            Method::GET => {
+                match op.as_str() {
+                    "follows" => match acc.following(10000) {
+                        Ok(follows) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "follows": follows
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to get follows");
                         }
                     }
-                } else {
-                    brq(res, "no operation provided");
+                    "following" => match acc.followers(10000) {
+                        Ok(followers) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "followers": followers
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to get followers");
+                        }
+                    }
+                    "follow" => match acc.follow(other) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "followed"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to follow");
+                        }
+                    }
+                    "unfollow" => match acc.unfollow(other) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "unfollowed"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to unfollow");
+                        }
+                    }
+                    "like" => match acc.like(other) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "liked"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to like");
+                        }
+                    }
+                    "unlike" => match acc.unlike(other) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "unliked"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to unlike");
+                        }
+                    }
+                    _ => {
+                        if !ctrl.call_next(req, depot, res).await {
+                            nfr(res);
+                        }
+                    }
                 }
-            } else {
-                brq(res, "no such account");
             }
-        } else {
-            brq(res, "no followee id provided");
+            // Method::POST => {}
+            // Method::DELETE => {}
+            _ => {
+                brq(res, "no such method");
+            }
         }
     } else {
-        uares(res);
+        brq(res, "no such account");
     }
 }
 
