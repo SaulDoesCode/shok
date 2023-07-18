@@ -107,9 +107,9 @@ fn get_liked_by(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
 fn is_liked_by(id: u64, like_id: u64) -> anyhow::Result<bool> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKED_BY)?;
-    let mut mmv = t.get(id)?;
+    let mut mmv = t.get(like_id)?;
     while let Some(r) = mmv.next() {
-        if r?.value() == like_id {
+        if r?.value() == id {
             return Ok(true);
         }
     }
@@ -2058,7 +2058,7 @@ async fn main() {
                     .handle(action_token_handler)
                 )
         )
-        .push(Router::with_path("/paka/<**rest>").handle(Proxy::new(["http://localhost:9797/"])))
+        //.push(Router::with_path("/paka/<**rest>").handle(Proxy::new(["http://localhost:9797/"])))
         .push(
             Router::with_hoop(static_files_cache)
                 .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
@@ -3206,23 +3206,20 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
     if session_check(req, Some(ADMIN_ID)).await.is_some() {
-        // admin session
-        _is_admin = true;
-    } else {
-        if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-                // token session
-                _pm = Some(perm_schema);
-                _owner = Some(owner);
-                // if let Some(state) = _state {}
-            } else {
-                brq(res, "not authorized to use the resource_api");
-                return;
-            }
+        _is_admin = true; // admin session
+    } else if let Some(tk) = req.query::<String>("tk") {
+        if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+            // token session
+            _pm = Some(perm_schema);
+            _owner = Some(owner);
+            // if let Some(state) = _state {}
         } else {
             brq(res, "not authorized to use the resource_api");
             return;
         }
+    } else {
+        brq(res, "not authorized to use the resource_api");
+        return;
     }
 
     match *req.method() {
@@ -4046,7 +4043,7 @@ pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Res
     }
 
     match req.param::<u64>("ts") {
-        Some(ts) => match &get_liked_by(ts, 100) {
+        Some(ts) => match &get_writ_likes(ts, 1000) {
             Ok(likes) => {
                 let mut monikers = vec![];
                 for id in likes {
