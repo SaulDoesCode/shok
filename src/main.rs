@@ -75,6 +75,7 @@ fn remove_all_likes_from_account(wtx: &WriteTransaction, id: u64) -> anyhow::Res
     Ok(())
 }
 
+#[allow(dead_code)]
 fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKED_BY)?;
@@ -3824,6 +3825,7 @@ impl Writ {
         Ok(Account::from_id(self.owner, &DB)?.moniker)
     }
 
+    #[allow(dead_code)]
     fn likes(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
         get_liked_by(self.ts, limit)
     }
