@@ -2353,15 +2353,19 @@ impl Session {
         }
         wrtx.commit()?;
         if expired {
-            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session expired.")));
+            Err(io_err("Session expired"))
         } else if force_remove {
-            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session removed.")));
+            Err(io_err("Session removed"))
+        } else if sid.is_none() {
+            Err(io_err("Session not found"))
+        } else {
+            Ok(Self(auth.to_string(), sid.unwrap(), exiry_timestamp))
         }
-        if sid.is_none() {
-            return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Session not found.")));
-        }
-        return Ok(Self(auth.to_string(), sid.unwrap(), exiry_timestamp));
     }
+}
+
+fn io_err(msg: &str) -> redb::Error {
+    redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, msg))
 }
 
 fn now() -> u64 {
@@ -3162,6 +3166,19 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                         },
                         Err(e) => {
                             brqe(res, &e.to_string(), "failed to unlike");
+                        }
+                    }
+                    "likes" => {
+                        match acc.does_like(other) {
+                            Ok(likes) => {
+                                jsn(res, serde_json::json!({
+                                    "status": "ok",
+                                    "likes": likes
+                                }));
+                            },
+                            Err(e) => {
+                                brqe(res, &e.to_string(), "failed to like status on a writ for this account");
+                            }
                         }
                     }
                     _ => {
