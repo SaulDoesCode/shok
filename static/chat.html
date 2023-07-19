@@ -102,6 +102,10 @@
         const msg = document.getElementById('msg')
         const submit = document.getElementById('submit')
         const status = document.getElementById('connnection-status')
+        try { 
+            const messages = JSON.parse(localStorage.getItem('chat'))
+            chat.innerHTML += messages.join('')
+        } catch(e) {}
         msg.addEventListener("keydown", e => e.key == 'Enter' && submit.click())
         let sse = new EventSource(`/api/chat`), sid
         sse.addEventListener("open", () => status.textContent = "Connected!")
@@ -115,6 +119,11 @@
         document.getElementById('submit').addEventListener("click", async e => {
             const body = msg.value
             if (body == '' || body == ' ') return
+            if (body == '/clear') {
+                localStorage.removeItem('chat')
+                chat.innerHTML = ''
+                return
+            }
             if (sid == null) return alert("You are not connected!")
             await fetch(`/api/chat`, {method: "POST", body})
             msg.value = ''
@@ -134,6 +143,7 @@
             } else {
                 message.innerHTML = `<header class="who">${who}</header><p class="msg">${data}</p>`
             }
+            localStorage.setItem('chat', JSON.stringify([...(JSON.parse(localStorage.getItem('chat')) || []), message.outerHTML]))
             chat.appendChild(message)
         }
         </script>
