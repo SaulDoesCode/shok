@@ -254,7 +254,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
     let uid = match session_check(req, None).await {
         Some(id) => id,
         None => {
-            uares(res);
+            uares(res, "not logged in");
             return;
         }
     } as usize;
@@ -657,7 +657,7 @@ async fn account_connected(req: &mut Request, res: &mut Response) {
     let uid = match session_check(req, None).await {
         Some(id) => id,
         None => {
-            uares(res);
+            uares(res, "failed to get account id");
             return;
         }
     } as usize;
@@ -2605,7 +2605,7 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
         None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
-            uares(res);
+            uares(res, "you need to be logged in as admin to do that");
             return;
         }
     };
@@ -2648,7 +2648,7 @@ async fn upsert_static_file(req: &mut Request, _depot: &mut Depot, res: &mut Res
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
         None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
-            uares(res);
+            uares(res, "you need to be logged in as admin to upsert a static file here");
         }
     }
 
@@ -2711,7 +2711,7 @@ async fn moniker_lookup(req: &mut Request, res: &mut Response) {
         }
         return;
     }
-    uares(res);
+    uares(res, "moniker lookup requires authentication");
 }
 
 async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
@@ -3127,7 +3127,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
     let id = match session_check(req, None).await {
         Some(id) => id,
         None => {
-            uares(res);
+            uares(res, "you must be logged in to use the account api");
             return;
         }
     };
@@ -3409,15 +3409,14 @@ pub fn jsn<T: Serialize>(res: &mut Response, data: T) {
 
 pub fn brq(res: &mut Response, msg: &str) {
     res.status_code(StatusCode::BAD_REQUEST);
-    res.render(Json(serde_json::json!({
-        "err": msg
-    })));
+    res.render(Json(serde_json::json!({"err": msg})));
 }
 
-pub fn uares(res: &mut Response) {
+pub fn uares(res: &mut Response, msg: &str) {
     res.status_code(StatusCode::UNAUTHORIZED);
     res.render(Json(serde_json::json!({
-        "err": "not authorized to use the resource_api"
+        "err": "not authorized to use this route",
+        "msg": msg
     })));
 }
 // not found 404
@@ -3566,25 +3565,23 @@ fn run_stored_commands() -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(CMD_ORDERS)?;
-        let mut _df = t.drain_filter(..now(), |_when, raw| {
-            if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
-                tokio::spawn(async move {
-                    let res = cmd.run().await;
-                    match res {
-                        Ok(out) => {
-                            println!("ran command: {:?}", &cmd);
-                            println!("output: {:?}", out);
-                        },
-                        Err(e) => {
-                            println!("failed to run command: {:?}", &cmd);
-                            println!("error: {:?}", e);
-                        }
+        let mut _df = t.drain_filter(..now(), |_when, raw| if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
+            tokio::spawn(async move {
+                let res = cmd.run().await;
+                match res {
+                    Ok(out) => {
+                        println!("ran command: {:?}", &cmd);
+                        println!("output: {:?}", out);
+                    },
+                    Err(e) => {
+                        println!("failed to run command: {:?}", &cmd);
+                        println!("error: {:?}", e);
                     }
-                });
-                true
-            } else {
-                false
-            }
+                }
+            });
+            true
+        } else {
+            false
         })?;
     }
     wrtx.commit()?;
@@ -3673,9 +3670,7 @@ impl CMDRequest {
 #[handler]
 async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) {
     if !session_check(req, Some(ADMIN_ID)).await.is_some() {
-        // unauthorized
-        uares(res);
-        return;
+        return uares(res, "cmd_request: not admin"); // unauthorized
     }
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<CMDRequest>(168192).await {
@@ -3937,15 +3932,13 @@ impl Writ {
                 "title" => {
                     title = val.as_text().map(|s| s.to_string());
                 }
-                "kind" => {
-                    if let Some(k) = val.as_text() {
-                        if let Some(pk) = &prefered_kind {
-                            if pk != k {
-                                continue;
-                            }
+                "kind" => if let Some(k) = val.as_text() {
+                    if let Some(pk) = &prefered_kind {
+                        if pk != k {
+                            continue;
                         }
-                        kind = k.to_string();
                     }
+                    kind = k.to_string();
                 }
                 "content" => {
                     content = val.as_text().unwrap().to_string();
@@ -3978,27 +3971,10 @@ impl Writ {
                 }
             }
         }
-        if kind.len() == 0 {
-            return Err(anyhow!("no kind found"));
+        if kind.len() == 0 || content.len() == 0 || tags.len() == 0 {
+            return Err(anyhow!("kind, content, and tags must be set"));
         }
-        if content.len() == 0 {
-            return Err(anyhow!("no content found"));
-        }
-        if tags.len() == 0 {
-            return Err(anyhow!("no tags found"));
-        }
-        Ok(Self{
-            ts,
-            kind,
-            owner,
-            public,
-            title,
-            content,
-            state,
-            price,
-            sell_price,
-            tags
-        })
+        Ok(Self{ts, kind, owner, public, title, content, state, price, sell_price, tags})
     }
 
     fn lookup_owner_moniker(&self) -> anyhow::Result<String> {
