@@ -2599,14 +2599,12 @@ lazy_static!{
 async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut tkn = String::new();
     match req.param::<String>("tk") {
-        // check if token is valid
         Some(tk) => match validate_token_under_permision_schema(&tk, &[u32::MAX - 6], &DB).await {
             Ok((_, _, _, _, _)) => tkn = format!("?tk={tk}"),
             Err(e) => return brqe(res, &e.to_string(), "invalid token")
         },
         None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
-            uares(res, "you need to be logged in as admin to do that");
-            return;
+            return uares(res, "you need to be logged in as admin to do that");
         }
     };
 
@@ -2614,8 +2612,7 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
         Ok(paths) => paths,
         Err(e) => return brqe(res, &e.to_string(), "could not read uploaded dir")
     };
-    
-    paths.sort();
+    paths.extend(IA.read().iter().cloned());
     let mut html = String::new();
     html.push_str("<html><head><title>Uploaded Files</title><link rel=\"stylesheet\" href=\"/marx.css\"><script type=\"module\" src=\"/uploads.js\"></script></head><body><h1>Uploaded Files</h1><ul>");
     for path in paths {
@@ -2624,13 +2621,6 @@ async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response,
             html.push_str(&format!("<li><a target=\"_blank\" href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
         }
     }
-    for path in IA.read().iter() {
-        if let Some(file_name) = path.file_name() {
-            let file_name = file_name.to_string_lossy();
-            html.push_str(&format!("<li><a href=\"/{}{}\">{}</a></li>", file_name, tkn, file_name));
-        }
-    }
-
     html.push_str(&format!("</ul><br>{}</body></html>", UPLOAD_FORM_HTML));
 
     res.render(Text::Html(html));
@@ -2709,9 +2699,9 @@ async fn moniker_lookup(req: &mut Request, res: &mut Response) {
         } else {
             brq(res, "no moniker or id provided to lookup \\_(0_0)_/");
         }
-        return;
+    } else {
+        uares(res, "moniker lookup requires authentication");
     }
-    uares(res, "moniker lookup requires authentication");
 }
 
 async fn session_check(req: &mut Request, id: Option<u64>) -> Option<u64> {
@@ -3446,11 +3436,8 @@ struct MakeTokenRequest {
 async fn make_token_request(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // get a string from the post body, and set it as a variable called text
     if let Ok(mtr) = req.parse_json_with_max_size::<MakeTokenRequest>(2048).await {
-        if session_check(req, Some(ADMIN_ID)).await.is_some() {
-            // admin session
-        } else {
-            brq(res, "not authorized to make tokens");
-            return;
+        if session_check(req, Some(ADMIN_ID)).await.is_some() { /* admin session */ } else {
+            return brq(res, "not authorized to make tokens");            
         }
         let data = mtr.state.unwrap_or_else(|| Vec::new());
         match make_tokens(
@@ -3492,9 +3479,9 @@ async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Res
             Ok(ps) => jsn(res, ps),
             Err(e) => brqe(res, &e.to_string(), "failed to save perm schema")
         }
-        return;
+    } else {
+        brq(res, "failed to setup perm schema, bad PermSchema details");
     }
-    brq(res, "failed to setup perm schema, bad PermSchema details");
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3665,7 +3652,6 @@ impl CMDRequest {
         Ok(())       
     }
 }
-
 
 #[handler]
 async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) {
