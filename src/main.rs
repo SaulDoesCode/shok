@@ -3261,7 +3261,21 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     nfr(res);
                 }
             }
-            // Method::DELETE => {}
+            Method::DELETE => match op.as_str() {
+                "delete" => match acc.delete() {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "account deleted"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to delete account");
+                    }
+                }
+                _ => if !ctrl.call_next(req, depot, res).await {
+                    nfr(res);
+                }            }
             _ => {
                 brq(res, "no such method");
             }
@@ -4176,26 +4190,28 @@ impl Search{
     }
 }
 
-#[handler]
-pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // authenticate
-    let mut _id: Option<u64> = None;
+
+pub async fn auth_step(req: &mut Request, res: &mut Response) -> Option<u64> {
+    let mut _id: Option<u64> = None; // authenticate
     if let Some(id) = session_check(req, None).await { 
-        // account session
-        _id = Some(id);
+        _id = Some(id); // account session
     } else if let Some(tk) = req.query::<String>("tk") {
         if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-            // token session
-            _id = Some(o);
+            _id = Some(o); // token session
         }
     }
-
     if _id.is_none() {
-        brq(res, "not authorized to use the writ access purchase gateway");
-        return;
+        brq(res, "not authorized to use to access this route");
     }
-    let id = _id.unwrap();
-    // check for ts param to use as a writ id in lookup
+    _id
+}
+
+#[handler]
+pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    let id = match auth_step(req, res).await {
+        Some(id) => id,
+        None => return
+    };
     match req.param::<u64>("ts") {
         Some(ts) => match SEARCH.get_doc(ts) {
             Ok(doc) => match Writ::from_doc(&doc, None) {
@@ -4213,30 +4229,15 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
 
 #[handler]
 pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // authenticate
-    let mut _id: Option<u64> = None;
-    if let Some(id) = session_check(req, None).await { 
-        // account session
-        _id = Some(id);
-    } else if let Some(tk) = req.query::<String>("tk") {
-        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-            // token session
-            _id = Some(o);
-        }
-    }
-
-    if _id.is_none() {
-        brq(res, "not authorized to use the writ access purchase gateway");
-        return;
-    }
+    if auth_step(req, res).await.is_none() { return; }
 
     let start = match req.query::<u64>("start") {
         Some(s) => s,
-        None => 0,
+        None => 0
     };
     let count = match req.query::<u64>("count") {
         Some(c) => c,
-        None => 1000,
+        None => 1000
     };
 
     match req.param::<u64>("ts") {
@@ -4252,7 +4253,7 @@ pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut R
                 }
                 res.render(Json((reposters, monikers)));
             },
-            Err(e) => brqe(res, &e.to_string(), "failed to get reposters"),
+            Err(e) => brqe(res, &e.to_string(), "failed to get reposters")
         },
         None => brq(res, "no ts param provided")
     }
@@ -4260,23 +4261,7 @@ pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut R
 
 #[handler]
 pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // authenticate
-    let mut _id: Option<u64> = None;
-    if let Some(id) = session_check(req, None).await { 
-        // account session
-        _id = Some(id);
-    } else if let Some(tk) = req.query::<String>("tk") {
-        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-            // token session
-            _id = Some(o);
-        }
-    }
-
-    if _id.is_none() {
-        brq(res, "not authorized to use the writ access purchase gateway");
-        return;
-    }
-
+    if auth_step(req, res).await.is_none() { return; }
     match req.param::<u64>("ts") {
         Some(ts) => match &get_writ_likes(ts, 1000) {
             Ok(likes) => {
