@@ -2177,6 +2177,26 @@ impl Account {
         is_liked_by(self.id, writ_id)
     }
 
+    pub fn add_to_timeline(&self, writs: &[u64]) -> anyhow::Result<()> {
+        add_to_timeline(self.id, writs)
+    }
+
+    pub fn rm_from_timeline(&self, writs: &[u64]) -> anyhow::Result<()> {
+        rm_from_timeline(self.id, writs)
+    }
+
+    pub fn timeline(&self, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
+        get_timeline(self.id, start, count)
+    }
+
+    pub fn repost(&self, writs: &[u64]) -> anyhow::Result<()> {
+        repost(self.id, writs)
+    }
+
+    pub fn unrepost(&self, writs: &[u64]) -> anyhow::Result<()> {
+        unrepost(self.id, writs)
+    }
+
     pub fn transfer(&mut self, other: &mut Self, amount: u64, db: &Database) -> Result<(), redb::Error> {
         if self.balance < amount {
             return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Insufficient funds.")));
@@ -3169,17 +3189,37 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                             brqe(res, &e.to_string(), "failed to unlike");
                         }
                     }
-                    "likes" => {
-                        match acc.does_like(other) {
-                            Ok(likes) => {
-                                jsn(res, serde_json::json!({
-                                    "status": "ok",
-                                    "likes": likes
-                                }));
-                            },
-                            Err(e) => {
-                                brqe(res, &e.to_string(), "failed to like status on a writ for this account");
-                            }
+                    "likes" => match acc.does_like(other) {
+                        Ok(likes) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "likes": likes
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to like status on a writ for this account");
+                        }
+                    }
+                    "repost" => match acc.repost(&[other]) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "reposted"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to repost");
+                        }
+                    }
+                    "unrepost" => match acc.unrepost(&[other]) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "unreposted"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to unrepost");
                         }
                     }
                     _ => {
@@ -3672,6 +3712,104 @@ fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
 
 const SEARCH_INDEX_PATH: &str = "./search-index";
 
+const TIMELINES: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("timelines");
+const REPOSTS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("reposts");
+
+fn repost(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(REPOSTS)?;
+        for writ in writs {
+            t.insert(*writ, id)?;
+        }
+        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        for writ in writs {
+            t.insert(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn unrepost(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(REPOSTS)?;
+        for writ in writs {
+            t.remove(*writ, id)?;
+        }
+        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        for writ in writs {
+            t.remove(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn add_to_timeline(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        for writ in writs {
+            t.insert(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn get_reposters(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    {
+        let t = rtx.open_multimap_table(REPOSTS)?;
+        let mut mmv = t.get(id)?;
+        let mut reposters = Vec::new();
+        let mut i = 0;
+        while let Some(r) = mmv.next() {
+            if i >= start && i < start + count {
+                let reposter_id = r?.value();
+                reposters.push(reposter_id);
+            }
+            i += 1;
+        }
+        Ok(reposters)
+    }
+}
+
+fn rm_from_timeline(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+    let wrtx = DB.begin_write()?;
+    {
+        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        let mut trp = wrtx.open_multimap_table(REPOSTS)?;
+        for writ in writs {
+            // add a handle to remove if it from reposts if it is in there
+            trp.remove(*writ, id)?;
+            t.remove(id, *writ)?;
+        }
+    }
+    wrtx.commit()?;
+    Ok(())
+}
+
+fn get_timeline(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    {
+        let t = rtx.open_multimap_table(TIMELINES)?;
+        let mut mmv = t.get(id)?;
+        let mut writs = Vec::new();
+        let mut i = 0;
+        while let Some(r) = mmv.next() {
+            if i >= start && i < start + count {
+                let writ_id = r?.value();
+                writs.push(writ_id);
+            }
+            i += 1;
+        }
+        Ok(writs)
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct PutWrit{
     ts: Option<u64>,
@@ -3823,6 +3961,11 @@ impl Writ {
     }
 
     #[allow(dead_code)]
+    fn is_owner(&self, id: u64) -> bool {
+        self.owner == id
+    }
+
+    #[allow(dead_code)]
     fn likes(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
         get_liked_by(self.ts, limit)
     }
@@ -3924,6 +4067,13 @@ impl Search{
 
     fn add_doc(&self, writ: &Writ) -> tantivy::Result<()> {
         let mut index_writer = self.index_writer.write();
+        if let Err(e) = add_to_timeline(writ.owner, &[writ.ts]) {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("failed to add writ to timeline: {}", e.to_string())
+                )
+            );
+        }
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
@@ -3938,13 +4088,20 @@ impl Search{
         Ok(doc)
     }
 
-    fn remove_doc(&self, ts: u64) -> tantivy::Result<u64> {
+    fn remove_doc(&self, owner: u64, ts: u64) -> tantivy::Result<u64> {
         let mut index_writer = self.index_writer.write();
         let op_stamp = index_writer.delete_term(Term::from_field_date(
             self.schema.get_field("ts")?,
             DateTime::from_timestamp_secs(ts as i64)
         ));
         index_writer.commit()?;
+        if let Err(e) = rm_from_timeline(owner, &[ts]) {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("failed to remove writ from timeline: {}", e.to_string())
+                )
+            );
+        }
         Ok(op_stamp)
     }
 
@@ -4018,6 +4175,53 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
                 Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
             }
             Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+        },
+        None => brq(res, "no ts param provided")
+    }
+}
+
+#[handler]
+pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // authenticate
+    let mut _id: Option<u64> = None;
+    if let Some(id) = session_check(req, None).await { 
+        // account session
+        _id = Some(id);
+    } else if let Some(tk) = req.query::<String>("tk") {
+        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+            // token session
+            _id = Some(o);
+        }
+    }
+
+    if _id.is_none() {
+        brq(res, "not authorized to use the writ access purchase gateway");
+        return;
+    }
+
+    let start = match req.query::<u64>("start") {
+        Some(s) => s,
+        None => 0,
+    };
+    let count = match req.query::<u64>("count") {
+        Some(c) => c,
+        None => 1000,
+    };
+
+    match req.param::<u64>("ts") {
+        Some(ts) => match &get_reposters(ts, count, start) {
+            Ok(reposters) => {
+                let mut monikers = vec![];
+                for id in reposters {
+                    if let Ok(acc) = Account::from_id(*id, &DB) {
+                        monikers.push(acc.moniker);
+                    } else {
+                        monikers.push("unknown".to_string());
+                    }
+                }
+                res.render(Json((reposters, monikers)));
+            },
+            Err(e) => brqe(res, &e.to_string(), "failed to get reposters"),
         },
         None => brq(res, "no ts param provided")
     }
@@ -4216,7 +4420,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         // get the owner field from the doc
                         if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
                             if let Some(o) = o.as_u64() {
-                                let owner = _owner.unwrap();
+                                let owner = _owner.clone().unwrap();
                                 if o != owner && owner != ADMIN_ID {
                                     brq(res, "not authorized to delete posts from the index without the right credentials");
                                     return;
@@ -4236,7 +4440,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     },
                 };
                 // remove the writ from the index
-                match SEARCH.remove_doc(ts) {
+                match SEARCH.remove_doc(_owner.unwrap(), ts) {
                     Ok(op_stamp) => jsn(res, json!({"ok": true, "ops": op_stamp})),
                     Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
                 }
