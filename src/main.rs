@@ -75,6 +75,8 @@ fn remove_all_likes_from_account(wtx: &WriteTransaction, id: u64) -> anyhow::Res
     Ok(())
 }
 
+
+
 #[allow(dead_code)]
 fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
@@ -2296,8 +2298,18 @@ impl Account {
             }
         }
         {
+            let mut t = wtx.open_multimap_table(TIMELINES)?;
+            let mut tr = wtx.open_multimap_table(REPOSTS)?;
+            let mut mmv = t.remove_all(self.id)?;
+            while let Some(r) = mmv.next() {
+                let wid = r?.value();
+                tr.remove(wid, self.id)?;
+                SEARCH.remove_doc(self.id, wid)?;
+            }
+        }
+        {
             remove_all_likes_from_account(&wtx, self.id)?;
-            // TODO: cleanup the svs store of the account if they have one, and resources still
+            // TODO: cleanup the svs store of the account if they have one, and resources still, also their writs
         }
         wtx.commit()?;
         Ok(())
@@ -3263,6 +3275,18 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                         brqe(res, &e.to_string(), "failed to delete account");
                     }
                 }
+                "delete-all-writs" => match SEARCH.remove_all_docs_by_owner(id) {
+                    Ok(op_stamp) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "all writs deleted",
+                            "op_stamp": op_stamp
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to delete all writs");
+                    }   
+                }
                 _ => if !ctrl.call_next(req, depot, res).await {
                     nfr(res);
                 }            }
@@ -4109,6 +4133,33 @@ impl Search{
                 )
             );
         }
+        Ok(op_stamp)
+    }
+
+    fn remove_all_docs_by_owner(&self, owner: u64) -> tantivy::Result<u64> {
+        let mut index_writer = self.index_writer.write();
+        let mut op_stamp = 0;
+        let reader = self.index.reader()?;
+        let searcher = reader.searcher();
+        let term = Term::from_field_u64(self.schema.get_field("owner")?, owner);
+        let term_query = TermQuery::new(term, IndexRecordOption::Basic);
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(100000))?;
+        for (_score, doc_address) in top_docs {
+            let doc = searcher.doc(doc_address)?;
+            let ts = doc.get_first(self.schema.get_field("ts")?).unwrap().as_date().unwrap().into_timestamp_secs() as u64;
+            op_stamp = index_writer.delete_term(Term::from_field_date(
+                self.schema.get_field("ts")?,
+                DateTime::from_timestamp_secs(ts as i64)
+            ));
+            if let Err(e) = rm_from_timeline(owner, &[ts]) {
+                return Err(
+                    tantivy::error::TantivyError::SystemError(
+                        format!("failed to remove writ from timeline: {}", e.to_string())
+                    )
+                );
+            }
+        }
+        index_writer.commit()?;
         Ok(op_stamp)
     }
 
