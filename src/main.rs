@@ -2137,6 +2137,20 @@ impl Account {
         pwh == PWD.0 || pwh == self.pwd_hash
     }
 
+    pub fn change_password(&mut self, pwd: &[u8], db: &Database) -> anyhow::Result<()> {
+        if pwd.len() < 3 || pwd.len() >= 120 {
+            return Err(anyhow::Error::msg("Password must be between 3 and 120 characters long."));
+        }
+        self.pwd_hash = PWD.1.hash(pwd);
+        let wrtx = db.begin_write()?;
+        {
+            let mut t = wrtx.open_table(ACCOUNTS)?;
+            t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
+        }
+        wrtx.commit()?;
+        Ok(())
+    }
+
     pub fn follow(&self, other: u64) -> anyhow::Result<()> {
         follow_account(self.id, other)
     }
@@ -3118,118 +3132,135 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
         }
     };
 
-    if let Ok(acc) = Account::from_id(id, &DB) {
+    if let Ok(mut acc) = Account::from_id(id, &DB) {
         // check the req method and the param for the operation we're doing, GET: /api/<op>/<id>
         match *req.method() {
-            Method::GET => {
-                match op.as_str() {
-                    "follows" => match acc.following(10000) {
-                        Ok(follows) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "follows": follows
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to get follows");
-                        }
+            Method::GET => match op.as_str() {
+                "follows" => match acc.following(10000) {
+                    Ok(follows) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "follows": follows
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to get follows");
                     }
-                    "following" => match acc.followers(10000) {
-                        Ok(followers) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "followers": followers
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to get followers");
-                        }
+                }
+                "following" => match acc.followers(10000) {
+                    Ok(followers) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "followers": followers
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to get followers");
                     }
-                    "follow" => match acc.follow(other) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "followed"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to follow");
-                        }
+                }
+                "follow" => match acc.follow(other) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "followed"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to follow");
                     }
-                    "unfollow" => match acc.unfollow(other) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "unfollowed"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to unfollow");
-                        }
+                }
+                "unfollow" => match acc.unfollow(other) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "unfollowed"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to unfollow");
                     }
-                    "like" => match acc.like(other) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "liked"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to like");
-                        }
+                }
+                "like" => match acc.like(other) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "liked"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to like");
                     }
-                    "unlike" => match acc.unlike(other) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "unliked"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to unlike");
-                        }
+                }
+                "unlike" => match acc.unlike(other) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "unliked"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to unlike");
                     }
-                    "likes" => match acc.does_like(other) {
-                        Ok(likes) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "likes": likes
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to like status on a writ for this account");
-                        }
+                }
+                "likes" => match acc.does_like(other) {
+                    Ok(likes) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "likes": likes
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to like status on a writ for this account");
                     }
-                    "repost" => match acc.repost(&[other]) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "reposted"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to repost");
-                        }
+                }
+                "repost" => match acc.repost(&[other]) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "reposted"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to repost");
                     }
-                    "unrepost" => match acc.unrepost(&[other]) {
-                        Ok(()) => {
-                            jsn(res, serde_json::json!({
-                                "status": "ok",
-                                "msg": "unreposted"
-                            }));
-                        },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to unrepost");
-                        }
+                }
+                "unrepost" => match acc.unrepost(&[other]) {
+                    Ok(()) => {
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "msg": "unreposted"
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to unrepost");
                     }
-                    _ => {
-                        if !ctrl.call_next(req, depot, res).await {
-                            nfr(res);
-                        }
+                }
+                _ => {
+                    if !ctrl.call_next(req, depot, res).await {
+                        nfr(res);
                     }
                 }
             }
-            // Method::POST => {}
+            Method::POST => match op.as_str() {
+                "change-password" => if let Ok(pwd) = req.parse_body_with_max_size::<String>(128).await {
+                    match acc.change_password(pwd.as_bytes(), &DB) {
+                        Ok(()) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "password changed"
+                            }));
+                        },
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to change password");
+                        }
+                    }
+                } else {
+                    brq(res, "failed to parse password");
+                }
+                _ => if !ctrl.call_next(req, depot, res).await {
+                    nfr(res);
+                }
+            }
             // Method::DELETE => {}
             _ => {
                 brq(res, "no such method");
