@@ -1,6 +1,7 @@
 Shok is a monolithic social server written in rust.
 
 ## Features
+
 - blogging with full text search
 - sse based chat, economy features, redis like commands for variables scoped to your account that can be watched
 - authentication and token based authorization on some routes
@@ -8,10 +9,11 @@ Shok is a monolithic social server written in rust.
 - social features: timelines, reposts, likes, follows
 
 ## How to get it running
+
 - install rust
 - make a ./secrets with cert.pem and priv.pem, the admin password will be generated there
 - cargo run --release
-- go to https://localhost (it binds to 443 by default, still going to add command line args)
+- go to <https://localhost> (it binds to 443 by default, still going to add command line args)
 - use auth on the site and make an account the moniker admin if it is untaken will become the admin account
 
 # HTTP API Documentation
@@ -67,13 +69,6 @@ Below is the documentation for the routes provided by the Rust code:
 - **Method:** GET
 - **Description:** Endpoint to lookup a moniker.
 - **Handler Function:** `moniker_lookup`
-
-### Speak
-
-- **Path:** /api/speak
-- **Method:** POST
-- **Description:** Endpoint to make the service speak.
-- **Handler Function:** `speak`
 
 ### Search API
 
@@ -247,17 +242,22 @@ The Chat API provides endpoints for sending and handling chat messages. Below ar
   - If any errors occur during the process, the API will respond with an appropriate error message.
 
 ### Message Format
+
 - The chat messages can be sent as simple text messages or in the form of commands.
 
 ### Simple Text Message
+
 - If the message does not start with "@" or "/", it will be treated as a regular chat message and will be broadcasted to all users in the chat.
 
 ### Commands
+
 - Commands are special chat messages that start with a "/" and are used to trigger specific actions.
 - Available Commands:
   - `/help`: Display a list of available commands and their usage.
   - `/transfer <to> <amount> ?when`: Transfer a specified amount to another user with an optional timestamp "when" (if not provided, the current timestamp will be used).
   - `/whois <moniker>`: Retrieve information about a user identified by their "moniker".
+  - `/follow <moniker>`: Follow an account identified by their "moniker".
+  - `/unfollow <moniker>`: Unfollow an account identified by their "moniker".
   - `/balance` or `/b`: Check the account balance of the current user.
   - `/balance <amount>`: For administrators, add a specified amount to the account balance.
   - `/broadcast <message>` or `/bc <message>`: Broadcast a message to all users in the chat.
@@ -276,8 +276,11 @@ The Chat API provides endpoints for sending and handling chat messages. Below ar
   - `/get-tags <moniker>`: Get the tags for a user identified by their "moniker".
   - `/unset-tags <moniker> <tag> ...`: Remove tags from a user identified by their "moniker".
   - `/vars-with-tags <tag> ...`: Get variables from the scoped variable store of the current user that have specified tags.
+  - `/server-timestamp`: Get the current server's time as a timestamp number
+  - `/cmd command args args args`: Run a command on the server and get the output if you're the admin
 
 ### Error Responses
+
 - If the user is not logged in (session check fails), the API will respond with an error message indicating "not logged in".
 - If the message length exceeds the maximum limit (2048 characters), the API will respond with an error message indicating "message too long".
 - If any other errors occur during message parsing or processing, the API will respond with an appropriate error message.
@@ -355,7 +358,7 @@ The Search API provides endpoints for searching, adding, updating, and deleting 
   - `owner`: The owner of the item.
   - `title`: The title of the item. (optional)
   - `kind`: The kind of item.
-  - `content`: The content of the item. 
+  - `content`: The content of the item.
   - `state`: The state of the item. (optional)
   - `price`: The price of the item. (optional)
   - `sell_price`: The selling price of the item. (optional)
@@ -365,6 +368,7 @@ The Search API provides endpoints for searching, adding, updating, and deleting 
   - If any errors occur during the update process, the API will respond with an appropriate error message.
 
 ### Error Responses
+
 - If the request method is not allowed, the API will respond with an error message indicating "method not allowed".
 - If any errors occur during the processing of requests (e.g., parsing errors, bad request body, etc.), the API will respond with an error message providing additional information about the error.
 
@@ -391,9 +395,10 @@ The CMDRequest API allows users with administrator privileges to execute command
   - If the command is scheduled for later execution (`when` is provided and the timestamp is in the future), the API will respond with a JSON object indicating that the command has been saved for later execution.
   - If the `stream` parameter is set to `true`, the API will continuously stream the command's output as lines of text in plain text format.
 
-### Examples:
+### Examples
 
-#### Request:
+#### Request
+
 ```json
 {
   "cmd": "ls",
@@ -402,7 +407,8 @@ The CMDRequest API allows users with administrator privileges to execute command
 }
 ```
 
-#### Response (Streaming):
+#### Response (Streaming)
+
 ```
 total 56
 drwxr-xr-x  2 user user 4096 Sep 23 14:05 bin
@@ -411,7 +417,8 @@ drwxr-xr-x  2 user user 4096 Sep 23 14:05 usr
 ...
 ```
 
-#### Request:
+#### Request
+
 ```json
 {
   "cmd": "echo",
@@ -419,7 +426,8 @@ drwxr-xr-x  2 user user 4096 Sep 23 14:05 usr
 }
 ```
 
-#### Response:
+#### Response
+
 ```json
 {
   "output": "Hello, World!\n",
@@ -427,7 +435,8 @@ drwxr-xr-x  2 user user 4096 Sep 23 14:05 usr
 }
 ```
 
-### Error Responses:
+### Error Responses
+
 - If the user does not have administrator privileges, the API will respond with an error message indicating "cmd_request: not admin" (unauthorized).
 - If the request body is not a valid `CMDRequest` object, the API will respond with an error message indicating "failed to run command, bad CMDRequest".
 - If there are any errors during the command execution process, the API will respond with an appropriate error message providing additional details about the error.

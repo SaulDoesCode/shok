@@ -303,6 +303,36 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 auto_msg(format!("missing name")).i(uid as u64);
                             }
                         }
+                        "follow" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                    if let Err(e) = follow_account(uid as u64, acc.id) {
+                                        auto_msg(format!("failed to follow {}: {}", moniker, e)).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("followed {}", moniker)).i(uid as u64);
+                                    }
+                                } else {
+                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot follow").i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("missing name")).i(uid as u64);
+                            }
+                        }
+                        "unfollow" => {
+                            if let Some(moniker) = args.next() {
+                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                    if let Err(e) = unfollow_account(uid as u64, acc.id) {
+                                        auto_msg(format!("failed to unfollow {}: {}", moniker, e)).i(uid as u64);
+                                    } else {
+                                        auto_msg(format!("unfollowed {}", moniker)).i(uid as u64);
+                                    }
+                                } else {
+                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot unfollow").i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("missing name")).i(uid as u64);
+                            }
+                        }
                         "transfer" => {
                             if let Some(to) = args.next() {
                                 if let Ok(acc) = Account::from_moniker(to, &DB) {
@@ -383,6 +413,34 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 Interaction::Broadcast(msg).i(uid as u64);
                             } else {
                                 auto_msg(format!("missing message")).i(uid as u64);
+                            }
+                        }
+                        "server-timestamp" => {
+                            auto_msg(format!("server time: {}", now())).i(uid as u64);
+                        }
+                        "cmd" => {
+                            if let Ok(acc) = Account::from_id(uid as u64, &DB) {
+                                if acc.id == ADMIN_ID {
+                                    if let Some(cmd) = args.next() {
+                                        let args = args.collect::<Vec<&str>>();
+                                        auto_msg(format!("running cmd: {}", cmd)).i(uid as u64);
+                                        // run the command on the machine and return the output
+                                        match std::process::Command::new(cmd).args(args).output() {
+                                            Ok(output) => {
+                                                auto_msg(format!("output: {}", String::from_utf8_lossy(&output.stdout))).i(uid as u64);
+                                            }
+                                            Err(e) => {
+                                                auto_msg(format!("failed to run cmd: {}", e)).i(uid as u64);
+                                            }
+                                        }
+                                    } else {
+                                        auto_msg(format!("missing cmd")).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("not admin")).i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("failed to get account")).i(uid as u64);
                             }
                         }
                         "msg" | "m" => {
@@ -1991,10 +2049,6 @@ async fn main() {
                             .handle(moniker_lookup)
                 )
                 .push(
-                    Router::with_path("/speak")
-                            .post(speak)
-                )
-                .push(
                     Router::with_path("/search")
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
@@ -2128,7 +2182,7 @@ impl Account {
                 since,
                 xp,
                 balance,
-                pwd_hash: pwd_hash.to_vec(),
+                pwd_hash: pwd_hash.to_vec()
             });
         }
         Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Account not found in accounts table but there's a moniker lookup?!?!?!?.")))
@@ -3508,68 +3562,6 @@ async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Res
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SpeakRequest {
-    pwd: Option<String>,
-    txt: String,
-    options: Option<String>,
-}
-
-#[handler]
-async fn speak(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // get a string from the post body, and set it as a variable called text
-    if let Ok(sr) = req.parse_json_with_max_size::<SpeakRequest>(1024).await {
-        if sr.pwd.is_none() || !check_admin_password(sr.pwd.clone().unwrap().as_bytes()) {
-            if session_check(req, Some(ADMIN_ID)).await.is_some() {
-                // admin session
-            } else {
-                res.status_code(StatusCode::BAD_REQUEST);
-                res.render(Text::Plain("/speak: bad password"));
-                return;
-            }
-        }
-
-        println!("speak request: {:?}", sr);
-        let ttts_path = "../tortoisetts/tortoise-tts";
-        if !Path::new(ttts_path).exists() {
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(serde_json::json!({
-                "err": "tortoise tts not found"
-            })));
-            return;
-        }
-
-        match std::process::Command::new("python")
-            .current_dir(ttts_path)
-            .args(["./tortoise/do_tts.py", "--text", &format!("\"{}\"", sr.txt), "--voice", "random", "--preset", "fast"])
-            .output() 
-        {
-            Ok(out) => {
-                let output = String::from_utf8_lossy(&out.stdout);
-                let err = String::from_utf8_lossy(&out.stderr);
-                res.render(Json(serde_json::json!({
-                    "output": output,
-                    "err": err,
-                })));
-            },
-            Err(e) => {
-                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-                res.render(Json(serde_json::json!({
-                    "msg": "failed to run command, bad command prolly",
-                    "err": e.to_string()
-                })));
-            }
-        }
-    } else {
-        res.status_code(StatusCode::BAD_REQUEST);
-        res.render(Json(serde_json::json!({
-            "err": "failed to run command, bad SpeakRequest",
-        })));
-    }
-}
-
-
-// redb table definition to capture CMDRequest orders with a when field
 const CMD_ORDERS: TableDefinition<u64, &[u8]> = TableDefinition::new("cmd_orders"); 
 
 fn run_stored_commands() -> anyhow::Result<()> {
