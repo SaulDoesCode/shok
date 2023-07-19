@@ -105,7 +105,7 @@
         msg.addEventListener("keydown", e => e.key == 'Enter' && submit.click())
         let sse = new EventSource(`/api/chat`), sid
         sse.addEventListener("open", () => status.textContent = "Connected!")
-        sse.addEventListener("user", e => sid = e.data)
+        sse.addEventListener("account", e => sid = e.data)
         sse.addEventListener("message", async e => await showMessage(e.data))
         sse.addEventListener("error", async e => {
             sse.close()

@@ -259,7 +259,7 @@ The Chat API provides endpoints for sending and handling chat messages. Below ar
   - `/follow <moniker>`: Follow an account identified by their "moniker".
   - `/unfollow <moniker>`: Unfollow an account identified by their "moniker".
   - `/balance` or `/b`: Check the account balance of the current user.
-  - `/balance <amount>`: For administrators, add a specified amount to the account balance.
+  - `/balance <amount>`: For administrators, add a specified amount to the account balance. u64, no negative amounts
   - `/broadcast <message>` or `/bc <message>`: Broadcast a message to all users in the chat.
   - `/msg <to> <message>` or `/m <to> <message>`: Send a private message to another user identified by their user ID or "moniker".
   - `/set <key> <value>`: Set a key-value pair in the user's scoped variable store.
