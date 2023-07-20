@@ -442,3 +442,168 @@ drwxr-xr-x  2 user user 4096 Sep 23 14:05 usr
 - If there are any errors during the command execution process, the API will respond with an appropriate error message providing additional details about the error.
 
 It is essential to ensure that proper authentication and authorization mechanisms are implemented to protect the CMDRequest endpoint from unauthorized access. Additionally, consider implementing rate-limiting and input validation to prevent abuse or malicious commands. The provided examples are illustrative and may not cover all possible use cases; consider adding more thorough examples and edge case handling for the actual implementation.
+
+## Resource API
+
+### Overview
+
+The Resource API allows users to manage and access resources on the server. Resources can be files or data that are stored and retrieved through unique hash values.
+
+### Authentication and Authorization
+
+Access to the Resource API is restricted based on user permissions:
+
+- **Admin**: Administrators have full access to all resources and can perform all operations.
+- **Token Session**: Users with a valid access token can perform limited operations based on their permissions.
+
+### Endpoint
+
+```
+/resource_api
+```
+
+### Methods
+
+#### GET
+
+Retrieve resource information based on its hash value.
+
+##### Request:
+
+```
+GET /resource_api?hash=<resource_hash>
+```
+
+- `<resource_hash>`: The unique hash value of the resource.
+
+##### Response:
+
+If the user is authorized and the resource is accessible:
+
+```json
+{
+  "hash": "c29tZSBkYXRhIHRvIGJlIGV4YW1wbGU=",
+  "owner": 12345,
+  "since": 1669238300,
+  "public": true,
+  "until": null,
+  "size": 1024,
+  "mime": "application/octet-stream",
+  "reads": 100,
+  "writes": 50,
+  "data": "base64_encoded_data",
+  "version": 1
+}
+```
+
+If the user is not authorized to access the resource:
+
+```plaintext
+not authorized to get resources
+```
+
+If the resource is not found:
+
+```plaintext
+No such resource found this time
+```
+
+#### POST
+
+Create or update a resource.
+
+##### Request:
+
+```
+POST /resource_api
+```
+
+```json
+{
+  "data": "base64_encoded_data",
+  "mime": "application/octet-stream",
+  "public": true,
+  "until": null,
+  "version": 1,
+  "old_hash": "optional_previous_resource_hash"
+}
+```
+
+- `data`: The base64-encoded data of the resource.
+- `mime`: The MIME type of the resource.
+- `public`: (Optional) Set to `true` to make the resource publicly accessible. Default is `false`.
+- `until`: (Optional) Timestamp indicating until when the resource is valid. Default is `null`.
+- `version`: (Optional) Version information for the resource. Default is `1`.
+- `old_hash`: (Optional) The hash of the previous version of the resource. If provided, it will be updated.
+
+##### Response:
+
+If the resource creation/update is successful:
+
+```json
+{
+  "hash": "c29tZSBkYXRhIHRvIGJlIGV4YW1wbGU=",
+  "owner": 12345,
+  "since": 1669238300,
+  "public": true,
+  "until": null,
+  "size": 1024,
+  "mime": "application/octet-stream",
+  "reads": 100,
+  "writes": 50,
+  "data": "base64_encoded_data",
+  "version": 1
+}
+```
+
+If the user is not authorized to create/update resources:
+
+```plaintext
+failed to parse resource
+```
+
+#### DELETE
+
+Delete a resource.
+
+##### Request:
+
+```
+DELETE /resource_api?hash=<resource_hash>
+```
+
+- `<resource_hash>`: The unique hash value of the resource.
+
+##### Response:
+
+If the user is authorized and the resource is deleted successfully:
+
+```json
+{
+  "hash": "c29tZSBkYXRhIHRvIGJlIGV4YW1wbGU=",
+  "owner": 12345,
+  "since": 1669238300,
+  "public": true,
+  "until": null,
+  "size": 1024,
+  "mime": "application/octet-stream",
+  "reads": 100,
+  "writes": 50,
+  "data": "base64_encoded_data",
+  "version": 1
+}
+```
+
+If the user is not authorized to delete resources:
+
+```plaintext
+unauthorized or bad method
+```
+
+If the resource is not found:
+
+```plaintext
+No such resource found this time
+```
+
+Note: The actual responses may vary depending on the server configuration and resource data.
