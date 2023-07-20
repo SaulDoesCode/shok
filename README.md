@@ -468,7 +468,7 @@ Access to the Resource API is restricted based on user permissions:
 
 Retrieve resource information based on its hash value.
 
-##### Request:
+##### Request
 
 ```
 GET /resource_api?hash=<resource_hash>
@@ -476,7 +476,7 @@ GET /resource_api?hash=<resource_hash>
 
 - `<resource_hash>`: The unique hash value of the resource.
 
-##### Response:
+##### Response
 
 If the user is authorized and the resource is accessible:
 
@@ -512,7 +512,7 @@ No such resource found this time
 
 Create or update a resource.
 
-##### Request:
+##### Request
 
 ```
 POST /resource_api
@@ -536,7 +536,7 @@ POST /resource_api
 - `version`: (Optional) Version information for the resource. Default is `1`.
 - `old_hash`: (Optional) The hash of the previous version of the resource. If provided, it will be updated.
 
-##### Response:
+##### Response
 
 If the resource creation/update is successful:
 
@@ -566,7 +566,7 @@ failed to parse resource
 
 Delete a resource.
 
-##### Request:
+##### Request
 
 ```
 DELETE /resource_api?hash=<resource_hash>
@@ -574,7 +574,7 @@ DELETE /resource_api?hash=<resource_hash>
 
 - `<resource_hash>`: The unique hash value of the resource.
 
-##### Response:
+##### Response
 
 If the user is authorized and the resource is deleted successfully:
 
@@ -607,3 +607,241 @@ No such resource found this time
 ```
 
 Note: The actual responses may vary depending on the server configuration and resource data.
+
+## Scoped Variable Store (svs) Transaction API
+
+The Scoped Variable Store (svs) Transaction API allows users to interact with a scoped variable store on the server. Scoped variables are key-value pairs stored within a specific scope, accessible only by authorized users.
+
+### Authentication and Authorization
+
+Access to the svs Transaction API requires authentication and is subject to the following permissions:
+
+- **Admin**: Administrators have full access to all scoped variables and can perform all operations.
+- **Token Session**: Users with a valid access token can perform limited operations based on their permissions.
+
+### Endpoint
+
+```
+/svs
+```
+
+### Methods
+
+#### POST
+
+Add or update scoped variables in the store.
+
+##### Request
+
+```
+POST /svs
+```
+
+The request body should be a JSON object with key-value pairs representing the scoped variables to be set or updated.
+
+Example Request Body:
+
+```json
+{
+  "variable1": "value1",
+  "variable2": 42,
+  "variable3": true
+}
+```
+
+##### Response
+
+If the scoped variables are successfully added or updated:
+
+```json
+{
+  "ok": true
+}
+```
+
+If there was an error parsing the JSON body:
+
+```plaintext
+error parsing JSON body: <error_message>
+```
+
+If there was an error setting the variables:
+
+```plaintext
+error setting variables: <error_message>
+```
+
+#### DELETE
+
+Delete scoped variables from the store.
+
+##### Request
+
+```
+DELETE /svs
+```
+
+The request body should be a JSON array containing the keys of the scoped variables to be deleted.
+
+Example Request Body:
+
+```json
+[
+  "variable1",
+  "variable2"
+]
+```
+
+##### Response
+
+If the scoped variables are successfully deleted:
+
+```json
+{
+  "ok": true
+}
+```
+
+If there was an error parsing the JSON body:
+
+```plaintext
+error parsing JSON body: <error_message>
+```
+
+If there was an error deleting the variables:
+
+```plaintext
+error deleting variables: <error_message>
+```
+
+#### Other Methods
+
+All other HTTP methods are not allowed for this API and will return a `405 Method Not Allowed` status code.
+
+Note: The actual responses may vary depending on the server configuration and the status of the scoped variable store.
+
+## Scoped Variable Store API
+
+The Scoped Variable Store API allows users to interact with scoped variables within the store associated with a specific moniker. Scoped variables are key-value pairs stored in a scoped context accessible only to authorized users.
+
+### Authentication and Authorization
+
+Access to the Scoped Variable Store API requires authentication and is subject to the following permissions:
+
+- **Admin**: Administrators have full access to all scoped variables and can perform all operations.
+- **Token Session**: Users with a valid access token can perform limited operations based on their permissions.
+
+### Endpoint
+
+```
+/svs/<moniker>
+```
+
+### Methods
+
+#### GET
+
+Retrieve the value of a scoped variable with the specified moniker.
+
+##### Request
+
+```
+GET /svs/<moniker>
+```
+
+##### Response
+
+If the scoped variable is found:
+
+```json
+{
+  "ok": true,
+  "value": <variable_value>
+}
+```
+
+If the scoped variable is not found:
+
+```plaintext
+variable not found
+```
+
+If there was an error getting the variable:
+
+```plaintext
+error getting variable: <error_message>
+```
+
+#### POST
+
+Add or update the value of a scoped variable with the specified moniker.
+
+##### Request
+
+```
+POST /svs/<moniker>
+```
+
+The request body should be a JSON object representing the new value of the scoped variable.
+
+Example Request Body:
+
+```json
+{
+  "key": "value"
+}
+```
+
+##### Response
+
+If the scoped variable is successfully set or updated:
+
+```json
+{
+  "ok": true
+}
+```
+
+If there was an error parsing the JSON body:
+
+```plaintext
+error parsing JSON body: <error_message>
+```
+
+If there was an error setting the variable:
+
+```plaintext
+error setting variable: <error_message>
+```
+
+#### DELETE
+
+Delete the scoped variable with the specified moniker.
+
+##### Request
+
+```
+DELETE /svs/<moniker>
+```
+
+##### Response
+
+If the scoped variable is successfully deleted:
+
+```json
+{
+  "ok": true
+}
+```
+
+If there was an error deleting the variable:
+
+```plaintext
+error deleting variable: <error_message>
+```
+
+#### Other Methods
+
+All other HTTP methods are not allowed for this API and will return a `405 Method Not Allowed` status code.
+
+Note: The actual responses may vary depending on the server configuration and the status of the scoped variable store.

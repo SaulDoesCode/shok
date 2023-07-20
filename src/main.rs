@@ -8,7 +8,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, atomic::AtomicBool}, time::Duration, mem::forget};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, atomic::AtomicBool}, time::Duration, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
 use tantivy::{
@@ -1089,41 +1089,118 @@ struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
     pd: PhantomData<T>,
 }
-
-#[handler]
-async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+                                                                      //  id,  pm, moniker, is_admin
+async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Option<u32>, String, bool)> {
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
     if let Some(id) = session_check(req, None).await {
-        // admin session
-        _is_admin = id == ADMIN_ID;
+        _is_admin = id == ADMIN_ID; // admin session
         _owner = Some(id);
     } else {
         if let Some(tk) = req.query::<String>("tk") {
             if let Ok((perm_schema, owner, _, uses, _)) = validate_token_under_permision_schema(&tk, &[u32::MAX - 5], &DB).await {
-                // token session
-                _pm = Some(perm_schema);
+                _pm = Some(perm_schema); // token session
                 _owner = Some(owner);
                 if uses == 0 {
                     brq(res, "token's uses are exhausted, it expired, let it go m8");
-                    return;
+                    return None;
                 }
             } else {
                 brq(res, "not authorized to use the scoped_variable_api, bad token and not an admin");
-                return;
+                return None;
             }
         } else {
             brq(res, "not authorized to use the scoped_variable_api");
-            return;
+            return None;
         }
     }
 
     if _owner.is_none() {
         brq(res, "not authorized to use the scoped_variable_api, no owner");
-        return;
+        return None;
     }
 
+    let moniker = match req.param::<String>("moniker") {
+        Some(m) => m,
+        None => {
+            brq(res, "invalid scoped_variable_api request, no moniker provided");
+            return None;
+        }
+    };
+
+    Some((_owner.unwrap(), _pm, moniker, _is_admin))
+}
+
+#[handler]
+async fn svs_transaction_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    // svs.set_many, svs.rm_many    
+    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
+            brq(res, "not authorized to use the scoped_variable_api");
+            return;
+        }
+        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(owner) {
+            match *req.method() {
+                Method::POST => {
+                    let tx: serde_json::Map<String, serde_json::Value> = match req.parse_json_with_max_size::<serde_json::Map<String, serde_json::Value>>(20480).await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let keys: Vec<String> = match req.parse_json_with_max_size::<Vec<String>>(20480).await {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    brq(res, &format!("error parsing json body: {}", e));
+                                    return;
+                                }
+                            };
+                            match svs.get_many(keys) {
+                                Ok(values) => {
+                                    jsn(res, json!({
+                                        "ok": true,
+                                        "values": values
+                                    }));
+                                },
+                                Err(e) => {
+                                    brq(res, &format!("error getting variables: {}", e));
+                                }
+                            }
+                            brq(res, &format!("error parsing json body: {}", e));
+                            return;
+                        }
+                    };
+                    let values: HashMap<String, serde_json::Value> = tx.into_iter().map(|(k, v)| (k, v)).collect();
+                    if let Err(e) = svs.set_many(values) {
+                        brq(res, &format!("error setting variables: {}", e));
+                    } else {
+                        jsn(res, json!({"ok": true}));
+                    }
+                },
+                Method::DELETE => {
+                    let keys: Vec<String> = match req.parse_json_with_max_size::<Vec<String>>(20480).await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            brq(res, &format!("error parsing json body: {}", e));
+                            return;
+                        }
+                    };
+                    if let Err(e) = svs.rm_many(keys) {
+                        brq(res, &format!("error deleting variables: {}", e));
+                    } else {
+                        jsn(res, json!({"ok": true}));
+                    }
+                },
+                _ => {
+                    res.status_code(StatusCode::METHOD_NOT_ALLOWED);
+                }
+            }
+        } else {
+            brq(res, "invalid password");
+        }
+    }
+}
+
+#[handler]
+async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let moniker = match req.param::<String>("moniker") {
         Some(m) => m,
         None => {
@@ -1131,71 +1208,83 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
             return;
         }
     };
-
-    match *req.method() {
-        Method::GET => {
-            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
-                match svs.get(&moniker) {
-                    Ok(v) => {
-                        if v.is_none() {
-                            brq(res, "variable not found");
-                            return;
+    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+        match *req.method() {
+            Method::GET => {
+                if pm.is_some() && !pm.is_some_and(|pm| pm == u32::MAX || pm == u32::MAX - 1) {
+                    brq(res, "not authorized to use the scoped_variable_api with that token's perm schema");
+                    return;
+                }
+                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(owner) {
+                    match svs.get(&moniker) {
+                        Ok(v) => {
+                            if v.is_none() {
+                                brq(res, "variable not found");
+                                return;
+                            }
+                            jsn(res, json!({
+                                "ok": true,
+                                "value": v.unwrap()
+                            }));
+                        },
+                        Err(e) => {
+                            brq(res, &format!("error getting variable: {}", e));
                         }
-                        jsn(res, json!({
-                            "ok": true,
-                            "value": v.unwrap()
-                        }));
+                    }
+                } else {
+                    brq(res, "invalid password");
+                }
+            },
+            Method::POST => {
+                if pm.is_some() && !pm.unwrap() == u32::MAX - 1 {
+                    brq(res, "not authorized to write in this scoped_variable_api with that token's perm schema");
+                    return;
+                }
+                let body = match req.parse_json_with_max_size::<serde_json::Value>(20480).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        brq(res, &format!("error parsing json body: {}", e));
+                        return;
+                    }
+                };
+    
+                match ScopedVariableStore::<serde_json::Value>::open(owner) {
+                    Ok(svs) => {
+                        if let Err(e) = svs.set(moniker.as_str(), body) {
+                            // println!("error setting variable: {:?}", e);
+                            brq(res, &format!("error setting variable: {}", e));
+                        } else {
+                            jsn(res, json!({"ok": true}));
+                        }
+                        return;
                     },
                     Err(e) => {
-                        brq(res, &format!("error getting variable: {}", e));
+                        brq(res, &format!("error opening scoped variable store: {}", e));
+                        return;
                     }
+                }
+            },
+            Method::DELETE => if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(owner) {
+                if pm.is_some() && !pm.unwrap() == u32::MAX - 1 {
+                    brq(res, "not authorized to write in this scoped_variable_api with that token's perm schema");
+                    return;
+                }
+                if let Err(e) = svs.rm(&moniker) {
+                    brq(res, &format!("error deleting variable: {}", e));
+                    return;
+                } else {
+                    jsn(res, json!({"ok": true}));
                 }
             } else {
                 brq(res, "invalid password");
-            }
-        },
-        Method::POST => {
-            let body = match req.parse_json_with_max_size::<serde_json::Value>(20480).await {
-                Ok(b) => b,
-                Err(e) => {
-                    brq(res, &format!("error parsing json body: {}", e));
-                    return;
-                }
-            };
-
-            match ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
-                Ok(svs) => {
-                    if let Err(e) = svs.set(moniker.as_str(), body) {
-                        // println!("error setting variable: {:?}", e);
-                        brq(res, &format!("error setting variable: {}", e));
-                    } else {
-                        jsn(res, json!({"ok": true}));
-                    }
-                    return;
-                },
-                Err(e) => {
-                    brq(res, &format!("error opening scoped variable store: {}", e));
-                    return;
-                }
-            }
-        },
-        Method::DELETE => if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(_owner.unwrap()) {
-            if let Err(e) = svs.rm(&moniker) {
-                brq(res, &format!("error deleting variable: {}", e));
                 return;
-            } else {
-                jsn(res, json!({"ok": true}));
+            },
+            _ => {
+                res.status_code(StatusCode::METHOD_NOT_ALLOWED);
             }
-        } else {
-            brq(res, "invalid password");
-            return;
-        },
-        _ => {
-            res.status_code(StatusCode::METHOD_NOT_ALLOWED);
         }
     }
 }
-
 
 impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
     fn open(owner: u64) -> anyhow::Result<Self> {
@@ -1393,17 +1482,20 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(())
     }
     #[allow(dead_code)]
-    fn set_many(&self, values: &[(Arc<str>, T)]) -> anyhow::Result<()> {
+    fn set_many(&self, values: HashMap<String, T>) -> anyhow::Result<()> {
         let owner = self.owner;
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
-            for (k, value) in values {
-                t.insert((owner, k.as_ref()), serialize_and_compress(value)?.as_slice())?;
-                ot.insert(owner, k.as_ref())?;
-                internal_notify_changes(&wt, owner, k.as_ref(), true)?;
+            for (name, value) in values.iter() {
+                t.insert(
+                    (owner, name.as_str()),
+                    serialize_and_compress(value)?.as_slice()
+                )?;
+                ot.insert(owner, name.as_str())?;
+                internal_notify_changes(&wt, owner, name.as_str(), true)?;
             }
         }
         wrtx.commit()?;
@@ -1426,12 +1518,12 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
     }
     #[allow(dead_code)]
-    fn get_many(&self, names: &[&str]) -> anyhow::Result<Vec<Option<T>>> {
+    fn get_many(&self, names: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
         let mut data = Vec::with_capacity(names.len());
         let rtx = DB.begin_read()?;
         let t = rtx.open_table(SCOPED_VARIABLES)?;
         for name in names {
-            if let Some(ag) = t.get((self.owner, *name))? {
+            if let Some(ag) = t.get((self.owner, name.as_str()))? {
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data.push(decompress_and_deserialize(&mut dt)?);
@@ -1462,8 +1554,8 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         wrtx.commit()?;
         Ok(data)
     }
-    #[allow(dead_code)]
-    fn rm_many(&self, names: &[&str]) -> anyhow::Result<Vec<Option<T>>> {
+
+    fn rm_many(&self, names: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
         let mut data = Vec::with_capacity(names.len());
         let wrtx = DB.begin_write()?;
         {
@@ -1471,11 +1563,12 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             for name in names {
-                if let Some(ag) = t.remove((self.owner, *name))? {
+                let name = name.as_str();
+                if let Some(ag) = t.remove((self.owner, name))? {
                     let mut dt = ag.value().to_vec();
                     forget(ag);
                     data.push(Some(decompress_and_deserialize(&mut dt)?));
-                    internal_notify_changes(&wt, self.owner, *name, false)?;
+                    internal_notify_changes(&wt, self.owner, name, false)?;
                 } else {
                     data.push(None);
                 }
@@ -1513,20 +1606,16 @@ fn create_transfer_contract(
                 xp,
                 pwd_hash: pwh.to_vec()
             });
-        } else {
-            return Err(anyhow::Error::msg("from account not found"));
         }
 
         if _from_acc.is_none() {
             return Err(anyhow::Error::msg("from account not found"));
         }
-
         if at.get(to)?.is_none() {
             return Err(anyhow::Error::msg("to account not found"));
         }
 
         let from_acc = _from_acc.unwrap();
-
         if from_acc.balance < amount {
             return Err(anyhow::Error::msg("insufficient funds"));
         }
@@ -1618,12 +1707,7 @@ struct TransferRequest{
 
 impl TransferRequest{
     async fn lodge(&self, from: u64) -> anyhow::Result<()> {
-        create_transfer_contract(
-            self.when,
-            from,
-            self.to,
-            self.amount
-        )
+        create_transfer_contract(self.when, from, self.to, self.amount)
     }
 }
 
@@ -2092,7 +2176,9 @@ async fn main() {
                     .path("/<to>").get(transference_api)
                 )
                 .push(
-                    Router::with_path("/svs/<moniker>")
+                    Router::with_path("/svs")
+                    .handle(svs_transaction_api)
+                    .path("/<moniker>")
                     .handle(scoped_variable_store_api)
                 )
                 .push(
