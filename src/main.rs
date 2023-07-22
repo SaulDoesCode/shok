@@ -212,6 +212,364 @@ fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     Ok(false)
 }
 
+
+//          ts , owner
+type CID = (u64, u64);
+
+#[allow(dead_code)]
+const ROOT_COMMENTS: MultimapTableDefinition<u64, CID> = MultimapTableDefinition::new("root_comments");
+#[allow(dead_code)] //                         root, ...(sub, kind/preposition)
+const COMMENTS_RELATA: MultimapTableDefinition<CID, CID> = MultimapTableDefinition::new("sub_comments");
+#[allow(dead_code)]
+const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
+#[allow(dead_code)]//                       root, ...(ts, id)
+const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
+
+enum Root {
+    Writ(u64),
+    Comment(CID)
+}
+
+fn make_comment(root: Root, owner: u64, content: &str) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    let ts = now();
+    let cid: CID = (ts, owner);
+    {
+        let mut t_rc = wtx.open_multimap_table(ROOT_COMMENTS)?;
+        let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
+        let mut t_cc = wtx.open_table(COMMENT_CONTENTS)?;
+        // let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?;
+        t_cc.insert(cid, content)?;
+        match root {
+            Root::Writ(id) => t_rc.insert(id, cid)?,
+            Root::Comment(cid2) => t_cr.insert(cid, cid2)?
+        };
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn edit_comment(cid: CID, content: &str) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_table(COMMENT_CONTENTS)?;
+        t.insert(cid, content)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn delete_comment(root: Root, cid: CID) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        delete_comment_internal(&wtx, root, cid)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn delete_comment_internal(wtx: &WriteTransaction, root: Root, cid: CID) -> anyhow::Result<()> {
+    let mut t_cc = wtx.open_table(COMMENT_CONTENTS)?;
+    let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?;
+    t_cc.remove(cid)?;
+    t_cl.remove_all(cid)?;
+    match root {
+        Root::Writ(id) => {
+            let mut t_rc = wtx.open_multimap_table(ROOT_COMMENTS)?;
+            let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
+            t_rc.remove(id, cid)?;
+            let mut mmv = t_cr.remove_all(cid)?;
+            while let Some(r) = mmv.next() {
+                delete_comment_internal(wtx, Root::Comment(cid), r?.value())?;
+            }
+        }
+        Root::Comment(cid2) => {
+            let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
+            t_cr.remove(cid2, cid)?;
+        }
+    };
+    Ok(())
+}
+
+fn like_comment(cid: CID, id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(COMMENT_LIKES)?;
+        t.insert(cid, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn unlike_comment(cid: CID, id: u64) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t = wtx.open_multimap_table(COMMENT_LIKES)?;
+        t.remove(cid, id)?;
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+fn get_comment_likes(cid: CID, limit: usize) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_multimap_table(COMMENT_LIKES)?;
+    let mut mmv = t.get(cid)?;
+    let mut likes = Vec::new();
+    while let Some(r) = mmv.next() {
+        likes.push(r?.value());
+        if likes.len() >= limit {
+            break;
+        }
+    }
+    Ok(likes)
+}
+
+fn get_comment_content(cid: CID) -> anyhow::Result<String> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_table(COMMENT_CONTENTS)?;
+    let mut contents = None;
+    if let Some(ag) = t.get(cid)? {
+        contents = Some(ag.value().to_string());
+    }
+    match contents {
+        Some(s) => Ok(s),
+        None => Err(anyhow!("no comment content found"))
+    }
+}
+struct CommentTree{
+    root: CID,
+    branches: Vec<CommentTree>
+}
+
+impl CommentTree {
+    fn build_from_comment(cid: CID, limit: usize) -> anyhow::Result<CommentTree> {
+        let mut branches = Vec::new();
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
+        let mut mmv = t.get(cid)?;
+        while let Some(r) = mmv.next() {
+            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
+            if branches.len() >= limit {
+                break;
+            }
+        }
+        Ok(CommentTree{
+            root: cid,
+            branches
+        })
+    }
+
+    fn build_from_writ_root(id: u64, limit: usize) -> anyhow::Result<CommentTree> {
+        let mut branches = Vec::new();
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_multimap_table(ROOT_COMMENTS)?;
+        let mut mmv = t.get(id)?;
+        while let Some(r) = mmv.next() {
+            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
+            if branches.len() >= limit {
+                break;
+            }
+        }
+        Ok(CommentTree{
+            root: (0, 0),
+            branches
+        })
+    }
+
+    fn find(&self, id: CID) -> Option<&CommentTree> {
+        if self.root == id {
+            return Some(self);
+        }
+        for b in &self.branches {
+            if let Some(c) = b.find(id) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn content(&self) -> anyhow::Result<String> {
+        get_comment_content(self.root)
+    }
+
+    fn owner(&self) -> u64 {
+        self.root.1
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.root.0
+    }
+
+    fn to_comment(&self) -> anyhow::Result<Comment> {
+        let mut likes = Vec::new();
+        let mut replies = Vec::new();
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_multimap_table(COMMENT_LIKES)?;
+        let mut mmv = t.get(self.root)?;
+        while let Some(r) = mmv.next() {
+            likes.push(r?.value());
+        }
+        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
+        let mut mmv = t.get(self.root)?;
+        while let Some(r) = mmv.next() {
+            replies.push(CommentTree::build_from_comment(r?.value(), 0)?.to_comment()?);
+        }
+        Ok(Comment{
+            id: self.root,
+            content: self.content()?,
+            likes,
+            replies
+        })
+    }
+
+    fn from_comment(c: &Comment) -> CommentTree {
+        let mut branches = Vec::new();
+        for r in &c.replies {
+            branches.push(CommentTree::from_comment(r));
+        }
+        CommentTree{root: c.id, branches}
+    }
+
+    fn build_comment_tree(&self, limit: usize) -> anyhow::Result<CommentTree> {
+        let mut branches = Vec::new();
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
+        let mut mmv = t.get(self.root)?;
+        while let Some(r) = mmv.next() {
+            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
+            if branches.len() >= limit { break; }
+        }
+        Ok(CommentTree{
+            root: self.root,
+            branches
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Comment{
+    id: CID,
+    content: String,
+    likes: Vec<u64>,
+    replies: Vec<Comment>
+}
+
+#[derive(Serialize, Deserialize)]
+struct PutComment {
+    comment: Option<CID>,
+    content: String
+}
+
+#[handler]
+async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
+            brq(res, "not authorized to use the comments_api");
+            return;
+        }
+        let root = match &req.param::<u64>("writ") {
+            Some(id) => Root::Writ(*id),
+            _ => {
+                brq(res, "missing writ param");
+                return;
+            }
+        };
+
+        match *req.method() {
+            Method::GET => {
+                let limit = req.query::<usize>("limit").unwrap_or(256);
+                if limit > 256 && !_is_admin {
+                    brq(res, "limit too high");
+                    return;
+                }
+                // get all the root level comments for a writ
+                let tree = match root {
+                    Root::Writ(id) => CommentTree::build_from_writ_root(id, limit),
+                    Root::Comment(cid) => CommentTree::build_from_comment(cid, limit)
+                };
+                match tree {
+                    Ok(tree) => {
+                        let tree = tree.build_comment_tree(limit);
+                        match tree {
+                            Ok(tree) => {
+                                let tree = tree.to_comment();
+                                match tree {
+                                    Ok(tree) => {
+                                        jsn(res, tree);
+                                    }
+                                    Err(e) => {
+                                        brq(res, &format!("failed to get comment tree: {}", e));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                brq(res, &format!("failed to build comment tree: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        brq(res, &format!("failed to build comment tree: {}", e));
+                    }
+                }
+            }
+            Method::POST => match req.parse_json_with_max_size::<PutComment>(20000).await {
+                Ok(pc) => {
+                    let pc: PutComment = pc;
+                    let root = match pc.comment {
+                        Some(cid) => Root::Comment(cid),
+                        None => root
+                    };
+                    if let Err(e) = make_comment(root, owner, &pc.content) {
+                        brq(res, &format!("failed to make comment: {}", e));
+                        return;
+                    }
+                    jsn(res, json!({
+                        "status": "ok"
+                    }));
+                }
+                Err(e) => {
+                    brq(res, &format!("failed to parse json: {}", e));
+                }
+            }
+            Method::PUT => match req.parse_json_with_max_size::<PutComment>(20000).await {
+                Ok(pc) => {
+                    let pc: PutComment = pc;
+                    let cid = match pc.comment {
+                        Some(cid) => cid,
+                        None => {
+                            brq(res, "missing comment param");
+                            return;
+                        }
+                    };
+                    if let Err(e) = edit_comment(cid, &pc.content) {
+                        brq(res, &format!("failed to edit comment: {}", e));
+                        return;
+                    }
+                    jsn(res, json!({
+                        "status": "ok"
+                    }));
+                }
+                Err(e) => {
+                    brq(res, &format!("failed to parse json: {}", e));
+                }
+            } 
+            Method::DELETE => if let Some(ts) = req.param::<u64>("comment") {
+                if let Err(e) = delete_comment(root, (ts, owner)) {
+                    brq(res, &format!("failed to delete comment: {}", e));
+                    return;
+                }
+                jsn(res, json!({"status": "ok"}));
+            } else {
+                brq(res, "missing comment param");
+            }
+            _ => {
+                brq(res, "unsupported method");
+            }
+        }
+    }
+}
+
 const SV_CHANGE_WATCHERS: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("sv_change_watchers");
 
 fn watch_changes(id: u64, key: &str) -> anyhow::Result<()> {
@@ -588,8 +946,6 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 }
                                 "get" => {
-                                    // get a collection
-                                    // use svs.get_collection
                                     if let Some(name) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
                                             if let Ok(val) = svs.get_collection(name) {
@@ -603,8 +959,6 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 }
                                 "has" => {
-                                    // check if a collection has a variable
-                                    // use svs.check_collection_membership
                                     if let Some(name) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
                                             let vars = args.collect::<Vec<&str>>();
@@ -623,8 +977,6 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 }
                                 _ => {
-                                    // get the collection with usign op as its name
-                                    // use svs.get_collection
                                     if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
                                         if let Ok(val) = svs.get_collection(op) {
                                             auto_msg(format!("collection {}: {}", op, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
@@ -2105,6 +2457,14 @@ async fn main() {
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
                     .handle(search_api)
+                )
+                .push(
+                    Router::with_path("/comment/<writ>")
+                        .handle(comment_api)
+                )
+                .push(
+                    Router::with_path("/comment/<writ>/<comment>")
+                        .delete(comment_api)
                 )
                 .push(
                     Router::with_path("/access/<ts>")
