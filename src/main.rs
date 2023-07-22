@@ -8,7 +8,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::{Arc, atomic::AtomicBool}, time::Duration, mem::forget, collections::HashMap};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::Duration, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
 use tantivy::{
@@ -74,8 +74,6 @@ fn remove_all_likes_from_account(wtx: &WriteTransaction, id: u64) -> anyhow::Res
     }
     Ok(())
 }
-
-
 
 #[allow(dead_code)]
 fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
@@ -237,7 +235,6 @@ fn unwatch_changes(id: u64, key: &str) -> anyhow::Result<()> {
 }
 
 fn internal_notify_changes(t: &redb::MultimapTable<u64, &str>, id: u64, key: &str, inserted: bool) -> anyhow::Result<()> {
-    // check if there's a watcher
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
         if r?.value() == key {
@@ -724,19 +721,13 @@ async fn account_connected(req: &mut Request, res: &mut Response) {
 
     tracing::info!("chat account came online: {}, req {:?}", uid, req);
 
-    // Use an unbounded channel to handle buffering and flushing of messages
-    // to the event source...
     let (tx, rx) = mpsc::unbounded_channel();
     let rx = UnboundedReceiverStream::new(rx);
+    
+    tx.send(Message::UserId(uid)).unwrap();
 
-    tx.send(Message::UserId(uid))
-        // rx is right above, so this cannot fail
-        .unwrap();
-
-    // Save the sender in our list of connected accounts.
     ONLINE_USERS.insert(uid, tx);
 
-    // Convert messages into Server-Sent Events and returns resulting stream.
     let stream = rx.map(move |msg| match msg {
         Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("account").text(uid.to_string())),
         Message::Reply(reply) => Ok(SseEvent::default().text(reply))
@@ -806,14 +797,8 @@ fn interaction(id: u64, i: Interaction) {
         },
         Interaction::Broadcast(msg) => {
             // tracing::info!("account {} broadcast: {}", id, msg);
-            ONLINE_USERS.retain(|i, tx| {
-                if id as usize == *i {
-                    // don't send to same account, but do retain
-                    true
-                } else {
-                    // If not `is_ok`, the SSE stream is gone, and so don't retain
-                    tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
-                }
+            ONLINE_USERS.retain(|i, tx| if id as usize == *i { true } else {
+                tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
             });
         },
         Interaction::Message(uid, msg) => {
@@ -886,14 +871,14 @@ fn check_admin_password(pwd: &[u8]) -> bool {
     &PWD.1.hash(pwd) == PWD.0.as_slice()
 }
 
-fn zstd_compress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<()> {
+fn zstd_compress(data: &mut U8s, output: &mut U8s) -> anyhow::Result<()> {
     let mut encoder = zstd::stream::Encoder::new(output, 6)?;
     encoder.write_all(data)?;
     encoder.finish()?;
     Ok(())
 }
 
-fn zstd_decompress(data: &mut Vec<u8>, output: &mut Vec<u8>) -> anyhow::Result<usize> {
+fn zstd_decompress(data: &mut U8s, output: &mut U8s) -> anyhow::Result<usize> {
     let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(data))?;
     let decompressed_size = decoder.read_to_end(output)?;
     Ok(decompressed_size)
@@ -907,7 +892,7 @@ fn serialize_and_compress<T: Serialize>(payload: T) -> anyhow::Result<U8s> {
     Ok(serialized_payload)
 }
 
-fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(data: &mut Vec<u8>) -> anyhow::Result<T> {
+fn decompress_and_deserialize<'a, T: serde::de::DeserializeOwned>(data: &mut U8s) -> anyhow::Result<T> {
     let mut serialized = vec![];
     zstd_decompress(data, &mut serialized)?;
     let payload: T = serde_json::from_slice(&serialized)?;
@@ -982,15 +967,10 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-lazy_static!{
-    static ref CAN_WRITE: AtomicBool = AtomicBool::new(true);
-}
-
 pub fn expiry_checker() -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(|| {
         loop {
             std::thread::sleep(Duration::from_secs(30));
-            CAN_WRITE.store(false, std::sync::atomic::Ordering::Relaxed);
 //            println!("expiry checker doing a sweep");
             match db_expiry_handler() {
                 Ok(()) => {},
@@ -1011,7 +991,6 @@ pub fn expiry_checker() -> tokio::task::JoinHandle<()> {
                     println!("failed to run stored commands: {:?}", e);
                 }
             }
-            CAN_WRITE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     })
 }
@@ -1460,11 +1439,6 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(())
     }
     fn set(&self, name: &str, value: T) -> anyhow::Result<()> {
-        if !CAN_WRITE.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(
-                anyhow::Error::msg("cannot write to db right now")
-            );
-        }
         let owner = self.owner;
         let wrtx = DB.begin_write()?;
         {
@@ -1555,26 +1529,26 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(data)
     }
 
-    fn rm_many(&self, names: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
-        let mut data = Vec::with_capacity(names.len());
+    fn rm_many(&self, monikers: Strings) -> anyhow::Result<Vec<Option<T>>> {
+        let mut data = Vec::with_capacity(monikers.len());
         let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
-            for name in names {
-                let name = name.as_str();
-                if let Some(ag) = t.remove((self.owner, name))? {
+            for m in monikers {
+                let m = m.as_str();
+                if let Some(ag) = t.remove((self.owner, m))? {
                     let mut dt = ag.value().to_vec();
                     forget(ag);
                     data.push(Some(decompress_and_deserialize(&mut dt)?));
-                    internal_notify_changes(&wt, self.owner, name, false)?;
+                    internal_notify_changes(&wt, self.owner, m, false)?;
                 } else {
                     data.push(None);
                 }
-                ot.remove(self.owner, name)?;
-                self.unset_all_tags_internal(name, &wrtx)?;
-                self.cleanup_collections_when_var_is_removed(name, &wrtx)?;
+                ot.remove(self.owner, m)?;
+                self.unset_all_tags_internal(m, &wrtx)?;
+                self.cleanup_collections_when_var_is_removed(m, &wrtx)?;
             }
         }
         wrtx.commit()?;
@@ -1585,12 +1559,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 //                                      when, from, to, amount
 const STAKED_TRANSFERS: TableDefinition<u64, (u64, u64, u64)> = TableDefinition::new("staked-transfers");
 
-fn create_transfer_contract(
-    when: u64,
-    from: u64,
-    to: u64,
-    amount: u64
-) -> anyhow::Result<()> {
+fn create_transfer_contract(when: u64, from: u64, to: u64, amount: u64) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
         let mut _from_acc = None;
@@ -1627,7 +1596,6 @@ fn create_transfer_contract(
             from_acc.balance,
             from_acc.pwd_hash.as_slice()
         ))?;
-
         // let mut t = at.get(to)?.ok_or_else(|| anyhow::Error::msg("to account not found"))?.value();
         st.insert(when, (from, to, amount))?;
     }
@@ -3940,13 +3908,19 @@ fn get_timeline(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
 
 #[derive(Deserialize, Serialize)]
 struct PutWrit{
+    #[serde(skip_serializing_if = "Option::is_none")]
     ts: Option<u64>,
     public: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     kind: String,
     content: String,
+    // serde skip serialization on nullish
+    #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sell_price: Option<u64>,
     tags: String
 }
@@ -3960,10 +3934,14 @@ struct Writ{
     kind: String,
     owner: u64,
     public: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sell_price: Option<u64>,
     tags: String
 }
@@ -4021,10 +3999,8 @@ impl Writ {
                     title = val.as_text().map(|s| s.to_string());
                 }
                 "kind" => if let Some(k) = val.as_text() {
-                    if let Some(pk) = &prefered_kind {
-                        if pk != k {
-                            continue;
-                        }
+                    if prefered_kind.is_some() && prefered_kind.as_ref().unwrap() != k {
+                        continue;
                     }
                     kind = k.to_string();
                 }
@@ -4102,20 +4078,18 @@ impl Writ {
     }
 
     fn search_for(query: &str, limit: usize, mut page: usize, s: &Search) -> tantivy::Result<Vec<(f32, tantivy::Document)>> {
-        if page == 0 {
-            page = 1;
-        }
+        if page == 0 { page = 1; }
         let reader = s.index.reader()?;
         let searcher = reader.searcher();
         let schema = s.schema.clone();
         let query_parser = QueryParser::for_index(&s.index, vec![
             schema.get_field("title").unwrap(),
-            schema.get_field("tags").unwrap(),
+            schema.get_field("content").unwrap(),
+            schema.get_field("tags").unwrap()
             // schema.get_field("ts").unwrap(),
             // schema.get_field("owner").unwrap(),
             // schema.get_field("public").unwrap(),
             // schema.get_field("state").unwrap(),
-            schema.get_field("content").unwrap()
         ]);
         // query_parser.set_conjunction_by_default();
         let query = query_parser.parse_query(query)?;
@@ -4128,9 +4102,7 @@ impl Writ {
                 skipped += 1;
                 continue;
             }
-            if results.len() >= limit {
-                break;
-            }
+            if results.len() >= limit { break; }
             results.push((_score, retrieved_doc));
         }
         Ok(results)
@@ -4382,21 +4354,17 @@ struct SearchRequest{
 
 #[handler]
 pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // authenticate
     let mut _is_admin = false;
-    let mut _owner: Option<u64> = None;
+    let mut _owner: Option<u64> = None; // authenticate
     if session_check(req, Some(ADMIN_ID)).await.is_some() {
-        // admin session
         _is_admin = true;
-        _owner = Some(ADMIN_ID);
+        _owner = Some(ADMIN_ID); // admin session
     } else if let Some(id) = session_check(req, None).await { 
-        // account session
-        _owner = Some(id);
+        _owner = Some(id); // account session
     } else {
         if let Some(tk) = req.query::<String>("tk") {
             if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-                // token session
-                _owner = Some(o);
+                _owner = Some(o); // token session
             } else if req.method() != Method::GET {
                 brq(res, "not authorized to use the search api");
                 return;
@@ -4439,12 +4407,9 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         }
     } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
-            Ok(search_request) => {
-                // search for the query
-                match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
-                    Ok(writs) => res.render(Json(serde_json::json!({"writs": writs}))),
-                    Err(e) => brqe(res, &e.to_string(), "failed to search"),
-                }
+            Ok(search_request) => match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
+                Ok(writs) => res.render(Json(serde_json::json!({"writs": writs}))),
+                Err(e) => brqe(res, &e.to_string(), "failed to search"),
             },
             Err(e) => brqe(res, &e.to_string(), "failed to search, bad body"),
         }
