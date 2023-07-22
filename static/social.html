@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/marx.css">
+    <link rel="stylesheet" href="/ks.css">
+    <title>kurshok.space</title>
+</head>
+<body>
+    <header>
+        <h1><span>kur</span><span>shok</span></h1>
+        <nav class="vs">
+            <header class="avd"></header>
+
+        </nav>
+        <input type="search">
+    </header>
+    <main>
+
+    </main>
+
+    <script type="module">
+        import d from "/domlib.js"
+        import http from "/http.js"
+
+        const svsapi = '/api/svs/', svs = new Proxy({
+            async get(m) { return await http.get(svsapi+m) },
+            async set(m, v) { return await http.post(svsapi+m, v) },
+            async delete(m) { return await http.del(svsapi+m) }
+        }, {
+            async get(m, k) { return k in m ? m[k] : (await m.get(k)).value },
+            async set(m, k, v) { return await m.set(k, v) },
+            async deleteProperty(m, k) { return await m.delete(k) }
+        })
+
+        const {query, queryEach, render, domfn} = d
+        const {section, div, button, span, p, header, article, textarea, html} = domfn
+
+        const main = query('main')
+        const vs = query('.vs')
+        const avd = query('.avd')
+        const si = query('input[type=search]')
+
+        const views = Object.create(null)
+        const view = (title, v) => {
+            if (v != null) {
+                views[title] = v
+                return vs.appendChild(span({
+                    attr: {title},
+                    onpointerdown(e) {(e.preventDefault(), view(title))}
+                }))
+            }
+            main.innerHTML = ''
+            svs.activeView = title
+            render(views[avd.textContent = title], main)
+        }
+
+        const blog = section.blog()
+        let lastSearchQuery = ''
+        const searchForWrits = async (q = search.value, p = 0, k = 'post') => {
+            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
+            if (writs.length) {
+                if (lastSearchQuery !== q) {
+                    // if the search query has changed, reset the page to 0
+                    p = 0
+                    lastSearchQuery = q
+                } else {
+                    lastSearchQuery = q
+                    p += 1
+                }
+                blog.innerHTML = ''
+                let i = -1
+                for (const writ of writs) {
+                    blog.append(article.writ(html`
+                        <header>
+                            <h2>${writ.title}</h2>
+                            <span>${writ.ts}</span>
+                            <span>${monikers[++i]}</span>
+                        </header>
+                        <section>${writ.content}</section>
+                        <footer>
+                            <p>${writ.tags}</p>
+                        </footer>
+                    `))
+                }
+            } else {
+                const nf = span.nothing_found({$:si.parentNode}, 404)
+                setTimeout(() => nf.remove(), 3500)
+            }
+        }
+
+        searchForWrits('post')
+        si.onkeydown = e => {
+            if (e.key === 'Enter') {
+                searchForWrits(si.value)
+                view('blog')
+            }
+        }
+
+        view('blog', blog)
+
+        view('writer', section.writ_writer('writ writer..'))
+
+        view('about', section.about(
+            `Homespun server and frontend`
+        ))
+
+        svs.activeView.then(av => view(av), () => view('blog'))
+    </script>
+</body>
+</html>
