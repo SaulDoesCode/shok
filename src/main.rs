@@ -336,11 +336,14 @@ fn get_comment_content(cid: CID) -> anyhow::Result<String> {
         None => Err(anyhow!("no comment content found"))
     }
 }
+
+#[allow(dead_code)]
 struct CommentTree{
     root: CID,
     branches: Vec<CommentTree>
 }
 
+#[allow(dead_code)]
 impl CommentTree {
     fn build_from_comment(cid: CID, limit: usize) -> anyhow::Result<CommentTree> {
         let mut branches = Vec::new();
@@ -376,6 +379,7 @@ impl CommentTree {
         })
     }
 
+    #[allow(dead_code)]
     fn find(&self, id: CID) -> Option<&CommentTree> {
         if self.root == id {
             return Some(self);
@@ -391,11 +395,11 @@ impl CommentTree {
     fn content(&self) -> anyhow::Result<String> {
         get_comment_content(self.root)
     }
-
+    #[allow(dead_code)]
     fn owner(&self) -> u64 {
         self.root.1
     }
-
+    #[allow(dead_code)]
     fn timestamp(&self) -> u64 {
         self.root.0
     }
