@@ -216,13 +216,12 @@ fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
 //          ts , owner
 type CID = (u64, u64);
 
-#[allow(dead_code)]
 const ROOT_COMMENTS: MultimapTableDefinition<u64, CID> = MultimapTableDefinition::new("root_comments");
-#[allow(dead_code)] //                         root, ...(sub, kind/preposition)
+//                         root, ...(sub, kind/preposition)
 const COMMENTS_RELATA: MultimapTableDefinition<CID, CID> = MultimapTableDefinition::new("sub_comments");
-#[allow(dead_code)]
+
 const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
-#[allow(dead_code)]//                       root, ...(ts, id)
+//                       root, ...(ts, id)
 const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
 
 enum Root {
@@ -515,7 +514,6 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
             }
             Method::POST => match req.parse_json_with_max_size::<PutComment>(20000).await {
                 Ok(pc) => {
-                    let pc: PutComment = pc;
                     let root = match pc.comment {
                         Some(cid) => Root::Comment(cid),
                         None => root
@@ -534,7 +532,6 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
             }
             Method::PUT => match req.parse_json_with_max_size::<PutComment>(20000).await {
                 Ok(pc) => {
-                    let pc: PutComment = pc;
                     let cid = match pc.comment {
                         Some(cid) => cid,
                         None => {
@@ -565,6 +562,67 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
             }
             _ => {
                 brq(res, "unsupported method");
+            }
+        }
+    }
+}
+
+#[handler]
+async fn comment_liking_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    if let Some((owner, pm, _moniker, is_admin)) = auth_step_svs(req, res).await {
+        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
+            brq(res, "not authorized to use the comments_api");
+            return;
+        }
+
+        let comment_owner = match &req.param::<u64>("acc") {
+            Some(wid) => *wid,
+            _ => {
+                brq(res, "missing writ param");
+                return;
+            }
+        };
+
+        let cid = if let Some(cid) = req.param::<u64>("comment") {
+            cid
+        } else {
+            brq(res, "missing comment param");
+            return;
+        };
+
+        match *req.method() {
+            Method::GET => match req.param::<&str>("op") {
+                Some("likes") => {
+                    if let Ok(likes) = get_comment_likes((cid, comment_owner), if is_admin { 2048 } else { 256 }) {
+                        jsn(res, likes);
+                    } else {
+                        brq(res, "failed to get likes");
+                    }
+                }
+                Some("like") => {
+                    if let Err(e) = like_comment((cid, comment_owner), owner) {
+                        brq(res, &format!("failed to like comment: {}", e));
+                        return;
+                    }
+                    jsn(res, json!({"status": "ok"}));
+                }
+                Some("unlike") => {
+                    if let Err(e) = unlike_comment((cid, comment_owner), owner) {
+                        brq(res, &format!("failed to unlike comment: {}", e));
+                        return;
+                    }
+                    jsn(res, json!({"status": "ok"}));
+                }
+                Some(other) => {
+                    brq(res, &format!("unsupported op: {}", other));
+                }
+                None => {
+                    brq(res, "missing op param");
+                }
+            } // Method::DELETE => {}
+            _ => {
+                brq(res, "unsupported method");
+                return;
             }
         }
     }
@@ -2465,6 +2523,10 @@ async fn main() {
                 .push(
                     Router::with_path("/comment/<writ>/<comment>")
                         .delete(comment_api)
+                )
+                .push(
+                    Router::with_path("/comment/<acc>/<cid>/<op>")
+                        .handle(comment_liking_api)
                 )
                 .push(
                     Router::with_path("/access/<ts>")
