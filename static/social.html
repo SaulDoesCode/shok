@@ -52,7 +52,7 @@
                 }))
             }
             main.innerHTML = ''
-            svs.activeView = title
+            localStorage.setItem('av', title)
             render(views[avd.textContent = title], main)
         }
 
@@ -61,14 +61,8 @@
         const searchForWrits = async (q = search.value, p = 0, k = 'post') => {
             const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
             if (writs.length) {
-                if (lastSearchQuery !== q) {
-                    // if the search query has changed, reset the page to 0
-                    p = 0
-                    lastSearchQuery = q
-                } else {
-                    lastSearchQuery = q
-                    p += 1
-                }
+                p = lastSearchQuery !== q ? 0 : p + 1
+                lastSearchQuery = q
                 blog.innerHTML = ''
                 let i = -1
                 for (const writ of writs) {
@@ -106,7 +100,68 @@
             `Homespun server and frontend`
         ))
 
-        svs.activeView.then(av => view(av), () => view('blog'))
+        view(localStorage.getItem('av') || 'blog')
+
+        const whos = JSON.parse(localStorage.getItem('whos') || '{}')
+        const status = header.status('Connecting...')
+        const chatMessages = article.messages()
+        const chatInput = textarea()
+        chatInput.placeholder = 'type a message..'
+        // on control+enter, send message
+        chatInput.onkeydown = async e => {
+            if (!e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault()
+                const body = chatInput.value.trim()
+                await fetch(`/api/chat`, {method: "POST", body})
+                showMessage('me', body)
+                chatInput.value = ''
+            }
+        }
+        const chatRoot = section.chat({$: 'body'}, status, chatMessages, chatInput)
+
+        const makeMessage = async (who, data) => {
+            if (who != 'me') {
+                if (who != null && whos[who] == null) {
+                    whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
+                    localStorage.setItem('whos', JSON.stringify(whos))
+                }
+            }
+            const msg = article.message({$: chatMessages}, span.who[whos[who]](whos[who] || 'me'), p(data))
+            if (who == 'me') msg.classList.add('me')
+            const msgs = [...(JSON.parse(localStorage.getItem('c') || '[]')), [who, data]]
+            for (let i = 0; i < msgs.length; i++) {
+                for (let j = 0; j < msgs.length; j++) {
+                    if (i == j) continue
+                    if (msgs[i][0] == msgs[j][0] && msgs[i][1] == msgs[j][1]) {
+                        msgs.splice(j, 1)
+                    }
+                }
+            }
+            localStorage.setItem('c', JSON.stringify([...msgs]))
+        }
+        const showMessage = async (who, data) => {
+            if (data == null && who.includes(":")) {
+                let wd = who.split(":")
+                who = wd.shift()
+                data = wd.join(':')
+                if (who == 'me') return makeMessage(who, data)
+            } else {
+                whos[who] = who
+            }
+            makeMessage(who, data)
+        }
+        JSON.parse(localStorage.getItem('c') || '[]').forEach(wd => makeMessage(...wd))
+
+        let sse = new EventSource(`/api/chat`), sid
+        sse.addEventListener("account", e => sid = e.data)
+        sse.addEventListener("message", e => showMessage(e.data))
+        sse.addEventListener("open", () => status.innerHTML = "Connected!")
+        sse.addEventListener("error", async e => {
+            sse.close()
+            status.innerHTML = "Disconnected!"
+            status.classList.add('error')
+            await showMessage(`error: ${e}`)
+        })
     </script>
 </body>
 </html>
