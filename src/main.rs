@@ -75,7 +75,6 @@ fn remove_all_likes_from_account(wtx: &WriteTransaction, id: u64) -> anyhow::Res
     Ok(())
 }
 
-#[allow(dead_code)]
 fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKED_BY)?;
@@ -337,13 +336,13 @@ fn get_comment_content(cid: CID) -> anyhow::Result<String> {
     }
 }
 
-#[allow(dead_code)]
 struct CommentTree{
     root: CID,
+    #[allow(dead_code)]
     branches: Vec<CommentTree>
 }
 
-#[allow(dead_code)]
+
 impl CommentTree {
     fn build_from_comment(cid: CID, limit: usize) -> anyhow::Result<CommentTree> {
         let mut branches = Vec::new();
@@ -425,7 +424,7 @@ impl CommentTree {
             replies
         })
     }
-
+    #[allow(dead_code)]
     fn from_comment(c: &Comment) -> CommentTree {
         let mut branches = Vec::new();
         for r in &c.replies {
@@ -1103,6 +1102,105 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
                             }
                         }
+                        "register-expiry" => {
+                            if let Some(name) = args.next() {
+                                if let Some(time) = args.next() {
+                                    if let Ok(time) = time.parse::<u64>() {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            if let Ok(val) = svs.register_expiry(name, time) {
+                                                auto_msg(format!("registered expiry {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            } else {
+                                                auto_msg(format!("failed to register expiry {}", name)).i(uid as u64);
+                                            }
+                                        } else {
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to parse time")).i(uid as u64);
+                                    }
+                                } else {
+                                    auto_msg(format!("missing time")).i(uid as u64);
+                                }
+                            } else {
+                                auto_msg(format!("missing name")).i(uid as u64);
+                            }
+                        }
+                        "perms" => {
+                            // add, remove, modify, check
+                            // get op
+                            let op = match args.next() {
+                                Some(op) => op,
+                                None => {
+                                    auto_msg(format!("missing op")).i(uid as u64);
+                                    return;
+                                }
+                            };
+                            // get the perm_schema id:u32
+                            let pm: u32 = match args.next() {
+                                Some(pm) => match pm.parse::<u32>() {
+                                    Ok(pm) => pm,
+                                    Err(e) => {
+                                        auto_msg(format!("failed to parse perm_schema id: {}", e)).i(uid as u64);
+                                        return;
+                                    }
+                                },
+                                None => {
+                                    auto_msg(format!("missing perm_schema id")).i(uid as u64);
+                                    return;
+                                }
+                            };
+
+                            match op {
+                                "add" => {
+                                    let perms = args.collect::<Vec<&str>>();
+                                    match PermSchema::add_perms(pm, &perms) {
+                                        Ok(_) => {
+                                            auto_msg(format!("added perms to perm_schema {}", pm)).i(uid as u64);
+                                        }
+                                        Err(e) => {
+                                            auto_msg(format!("failed to add perms to perm_schema {}: {}", pm, e)).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                "rm" => {
+                                    let perms = args.collect::<Vec<&str>>();
+                                    match PermSchema::rm_perms(pm, &perms) {
+                                        Ok(_) => {
+                                            auto_msg(format!("removed perms from perm_schema {}", pm)).i(uid as u64);
+                                        }
+                                        Err(e) => {
+                                            auto_msg(format!("failed to remove perms from perm_schema {}: {}", pm, e)).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                "get" => match PermSchema::get_perms(pm) {
+                                    Ok(perms) => {
+                                        auto_msg(format!("perms on perm_schema {}: {}", pm, perms.join(", "))).i(uid as u64);
+                                    }
+                                    Err(e) => {
+                                        auto_msg(format!("failed to get perms on perm_schema {}: {}", pm, e)).i(uid as u64);
+                                    }
+                                }
+                                "check" => {
+                                    let perms = args.collect::<Vec<&str>>();
+                                    match PermSchema::check_for(pm, &perms) {
+                                        Ok(val) => {
+                                            if val {
+                                                auto_msg(format!("perm_schema {} has perms {}", pm, perms.join(", "))).i(uid as u64);
+                                            } else {
+                                                auto_msg(format!("perm_schema {} does not have perms {}", pm, perms.join(", "))).i(uid as u64);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            auto_msg(format!("failed to check perms on perm_schema {}: {}", pm, e)).i(uid as u64);
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    auto_msg(format!("unrecognized op: {}", op)).i(uid as u64);
+                                }
+                            }
+                        }
                         _ => {
                             auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid as u64);
                         }
@@ -1181,8 +1279,7 @@ fn str_auto_msg(msg: &str) -> Interaction {
 fn interaction(id: u64, i: Interaction) {
     match i {
         Interaction::Transfer(to, amount, when) => {
-            tracing::info!("account {} transfer: {} to {} at {:?}", id, amount, to, when);
-            // find the to account and transfer
+            tracing::info!("account {} transfer: {} to {} at {:?}", id, amount, to, when); // find the to account and transfer
             if let Ok(mut acc) = Account::from_id(id as u64, &DB) {
                 if let Ok(mut recipient_acc) = Account::from_id(to as u64, &DB) {
                     if let Some(when) = when {
@@ -1210,14 +1307,12 @@ fn interaction(id: u64, i: Interaction) {
             }
         },
         Interaction::Broadcast(msg) => {
-            // tracing::info!("account {} broadcast: {}", id, msg);
-            ONLINE_USERS.retain(|i, tx| if id as usize == *i { true } else {
+            ONLINE_USERS.retain(|i, tx| if id as usize == *i { true } else { // tracing::info!("account {} broadcast: {}", id, msg);
                 tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
             });
         },
         Interaction::Message(uid, msg) => {
-            let uid = uid as usize;
-            // tracing::info!("account {} message: {}", id, msg);
+            let uid = uid as usize; // tracing::info!("account {} message: {}", id, msg);
             if let Some(s) = ONLINE_USERS.get(&uid) {
                 if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
                     tracing::info!("failed to send message to account {}", id);
@@ -1869,7 +1964,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         wrtx.commit()?; // std::thread::spawn(move || {});
         Ok(())
     }
-    #[allow(dead_code)]
+
     fn set_many(&self, values: HashMap<String, T>) -> anyhow::Result<()> {
         let owner = self.owner;
         let wrtx = DB.begin_write()?;
@@ -1889,6 +1984,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         wrtx.commit()?;
         Ok(())
     }
+
     fn get(&self, name: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
         let rtx = DB.begin_read()?;
@@ -1905,7 +2001,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             )
         }
     }
-    #[allow(dead_code)]
+
     fn get_many(&self, names: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
         let mut data = Vec::with_capacity(names.len());
         let rtx = DB.begin_read()?;
@@ -2095,31 +2191,18 @@ impl TransferRequest{
 
 #[handler]
 async fn transference_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    let mut _pm: Option<u32> = None;
-    let mut _owner: Option<u64> = None;
-    let mut _is_admin = false;
-    if session_check(req, Some(ADMIN_ID)).await.is_some() {
-        // admin session
-        _is_admin = true;
-    } else {
+    let mut _owner = session_check(req, None).await;
+    let mut _is_admin = _owner.is_some_and(|id| id == ADMIN_ID); // admin session
+    if _owner.is_none() {
         if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((perm_schema, owner, _, _, _)) = validate_token_under_permision_schema(&tk, &[3], &DB).await {
-                // token session
-                _pm = Some(perm_schema);
-                _owner = Some(owner);
+            if let Ok((_pm, owner, _, _, _)) = validate_token_under_permision_schema(&tk, &[u32::MAX - 3], &DB).await {
+                _owner = Some(owner);  // token session
             } else {
-                brq(res, "not authorized to use the transference_api");
-                return;
+                return brq(res, "not authorized to use the transference_api");
             }
         } else {
-            brq(res, "not authorized to use the transference_api");
-            return;
+            return brq(res, "not authorized to use the transference_api");
         }
-    }
-
-    if _owner.is_none() {
-        brq(res, "not authorized to use the transference_api");
-        return;
     }
 
     match *req.method() {
@@ -2156,7 +2239,7 @@ impl PermSchema {
     fn ensure_basic_defaults(db: &Database) {
         let wrtx = db.begin_write().expect("db write failed");
         {
-            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS).expect("db write failed");
+            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS).expect("db open permschema table failed");
             let mut pm = u32::MAX;
             for code in DEFAULT_PERM_SCHEMAS {
                 t.insert(pm, code).expect("db default permission schema insert failed");
@@ -2171,8 +2254,7 @@ impl PermSchema {
         let id = match id {
             Some(i) => i,
             None => {
-                // random
-                let mut rng = thread_rng();
+                let mut rng = thread_rng(); // random
                 loop {
                     let i = rng.gen::<u32>();
                     if i < u32::MAX - DEFAULT_PERM_SCHEMAS.len() as u32 {
@@ -2202,9 +2284,9 @@ impl PermSchema {
         wrtx.commit()?;
         Ok(Self(id, perms))
     }
-    #[allow(dead_code)]
-    fn check_for(pm: u32, db: &Database, perms: &[&str]) -> Result<bool, redb::Error> {
-        let rtx = db.begin_read()?;
+
+    fn check_for(pm: u32, perms: &[&str]) -> Result<bool, redb::Error> {
+        let rtx = DB.begin_read()?;
         let t = rtx.open_multimap_table(PERM_SCHEMAS)?;
         let mut mm = t.get(pm)?;
         let mut all_there = perms.len();
@@ -2216,27 +2298,42 @@ impl PermSchema {
         }
         Ok(all_there == 0)
     }
-    #[allow(dead_code)]
-    fn add_perms(pm: u32, db: &Database, perms: &Strings) -> Result<(), redb::Error> {
-        let wrtx = db.begin_write()?;
+
+    fn add_perms(pm: u32, perms: &[&str]) -> Result<(), redb::Error> {
+        let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
-            for p in perms.iter() {
-                t.insert(pm, p.as_str())?;
+            for p in perms {
+                t.insert(pm, p)?;
             }
         }
         wrtx.commit()?;
         Ok(())
     }
-    #[allow(dead_code)]
-    fn remove_perms(pm: u32, db: &Database, perms: &Strings) -> Result<(), redb::Error> {
-        let wrtx = db.begin_write()?;
+
+    fn get_perms(pm: u32) -> Result<Strings, redb::Error> {
+        let rtx = DB.begin_read()?;
+        let mut perms = vec![];
+        {
+            let t = rtx.open_multimap_table(PERM_SCHEMAS)?;
+            let mut mmv = t.get(pm)?;
+            while let Some(p) = mmv.next() {
+                perms.push(p?.value().to_string());
+            }
+        }
+        Ok(perms)
+    }
+    fn rm_perms(pm: u32, perms: &[&str]) -> Result<(), redb::Error> {
+        let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
-            for p in perms.iter() {
-                t.remove(pm, p.as_str())?;
+            for p in perms {
+                t.remove(pm, p)?;
             }
-            // TODO: cleanup perm schema if it is empty
+            let mmv = t.get(pm)?;
+            if mmv.count() == 0 {
+                t.remove_all(pm)?;
+            }
         }
         wrtx.commit()?;
         Ok(())
@@ -2580,6 +2677,10 @@ async fn main() {
                     .post(resource_api)
                     .path("/<hash>")
                     .handle(resource_api)
+                )
+                .push(
+                    Router::with_path("/resource-transfer/<new_owner>")
+                    .get(resource_transfer_api)
                 )
                 .push(
                     Router::with_path("/writ-likes/<ts>")
@@ -3482,7 +3583,6 @@ struct Resource {
     version: u64
 }
 
-#[allow(dead_code)]
 impl Resource {
     fn new(hash: U8s, owner: Option<u64>, size: usize, mime: String) -> Self {
         Self {
@@ -3834,25 +3934,83 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
 }
 
 #[handler]
+pub async fn resource_transfer_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
+    let mut _pm: Option<u32> = None;
+    let mut _owner: Option<u64> = session_check(req, None).await;
+    let mut _is_admin = _owner.is_some_and(|o| o == ADMIN_ID);
+    if _owner.is_none() {
+        if let Some(tk) = req.query::<String>("tk") {
+            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+                _pm = Some(perm_schema); // token session
+                _owner = Some(owner);
+                // if let Some(state) = _state {}
+            } else {
+                brq(res, "not authorized to use the resource_api");
+                return;
+            }
+        } else {
+            return uares(res, "resource transfer requires authentication");
+        }
+    }
+
+    let new_owner = match req.param("new_owner") {
+        Some(new_owner) => new_owner,
+        None => {
+            return brq(res, "no new_owner provided");
+        }
+    };
+
+    let owner = _owner.unwrap();
+
+    let hash = match req.param::<String>("hash") {
+        Some(hash) => hash,
+        None => {
+            brq(res, "no hash provided");
+            return;
+        }
+    };
+
+    let mut resource = match Resource::from_b64_straight(&hash, true) {
+        Ok(r) => r,
+        Err(e) => {
+            brqe(res, &e.to_string(), "failed to get resource");
+            return;
+        }
+    };
+
+    if resource.owner.is_some_and(|o| owner != o) {
+        return uares(res, "you are not the owner of this resource");
+    }
+
+    match resource.change_owner(new_owner) {
+        Ok(()) => {
+            jsn(res, resource);
+        },
+        Err(e) => {
+            brqe(res, &e.to_string(), "failed to change owner");
+        }
+    }
+}
+
+#[handler]
 pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut _pm: Option<u32> = None;
-    let mut _owner: Option<u64> = None;
-    let mut _is_admin = false;
-    if session_check(req, Some(ADMIN_ID)).await.is_some() {
-        _is_admin = true; // admin session
-    } else if let Some(tk) = req.query::<String>("tk") {
-        if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-            // token session
-            _pm = Some(perm_schema);
-            _owner = Some(owner);
-            // if let Some(state) = _state {}
+    let mut _owner: Option<u64> = session_check(req, None).await;
+    let mut _is_admin = _owner.is_some_and(|o| o == ADMIN_ID);
+    if _owner.is_none() {
+        if let Some(tk) = req.query::<String>("tk") {
+            if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+                _pm = Some(perm_schema); // token session
+                _owner = Some(owner);
+                // if let Some(state) = _state {}
+            } else {
+                brq(res, "not authorized to use the resource_api");
+                return;
+            }
         } else {
             brq(res, "not authorized to use the resource_api");
             return;
         }
-    } else {
-        brq(res, "not authorized to use the resource_api");
-        return;
     }
 
     match *req.method() {
@@ -4205,13 +4363,17 @@ fn add_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn rm_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+fn transfer_access_for(from: u64, to: u64, writs: &[u64]) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_multimap_table(WRIT_ACCESS)?;
         for writ in writs {
-            t.remove(id, *writ)?;
+            let had = t.remove(from, *writ)?;
+            if had {
+                t.insert(to, *writ)?;
+            } else {
+                return Err(anyhow!("no writ access, cannot transfer non existant access"));
+            }
         }
     }
     wrtx.commit()?;
@@ -4497,6 +4659,11 @@ impl Writ {
         Ok(())
     }
 
+    fn transfer_access(&self, from: u64, to: u64) -> anyhow::Result<()> {
+        transfer_access_for(from, to, &[self.ts])?;
+        Ok(())
+    }
+
     fn add_to_index(&self, index_writer: &mut IndexWriter, schema: &Schema) -> tantivy::Result<()> {
         index_writer.add_document(self.to_doc(schema))?;
         index_writer.commit()?;
@@ -4701,18 +4868,43 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
         Some(id) => id,
         None => return
     };
-    match req.param::<u64>("ts") {
-        Some(ts) => match SEARCH.get_doc(ts) {
-            Ok(doc) => match Writ::from_doc(&doc, None) {
-                Ok(writ) => match writ.purchase_access(id) {
-                    Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access purchased"})),
-                    Err(e) => brqe(res, &e.to_string(), "failed to purchase access"),
-                }
-                Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+
+    let ts: u64 = match req.param::<u64>("ts") {
+        Some(ts) => ts,
+        None => {
+            brq(res, "no ts param provided");
+            return;
+        }
+    };
+
+    let writ = match SEARCH.get_doc(ts) {
+        Ok(doc) => match Writ::from_doc(&doc, None) {
+            Ok(writ) => writ,
+            Err(e) => {
+                brqe(res, &e.to_string(), "failed to get writ");
+                return;
             }
-            Err(e) => brqe(res, &e.to_string(), "failed to purchase access")
+        }
+        Err(e) => {
+            brqe(res, &e.to_string(), "failed to get writ");
+            return;
+        }
+    };
+
+    match req.param::<u64>("to") {
+        Some(id) => {
+            match writ.transfer_access(id, id) {
+                Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access transfered"})),
+                Err(e) => brqe(res, &e.to_string(), "failed to transfer access"),
+            }
+            return;
         },
-        None => brq(res, "no ts param provided")
+        None => {}
+    };
+
+    match writ.purchase_access(id) {
+        Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access purchased"})),
+        Err(e) => brqe(res, &e.to_string(), "failed to purchase access"),
     }
 }
 
