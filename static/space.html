@@ -3,811 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>space</title>
-    <style>
-        :root {
-            --highlight-color: #e90b3ff1;
-            --selected-color: #f12260;
-            --body-color: #fee4e4;
-        }
-        html {
-            font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
-            background: var(--body-color);
-        }
-        body {
-            display: flex;
-            flex-flow: column nowrap;
-            justify-content: flex-start;
-            align-items: center;
-            overflow: hidden;
-            overscroll-behavior: none;
-            width: 100vw;
-            height: 100vh;
-            margin: 0;
-            padding: 0;
-            background: var(--body-color);
-        }
-    
-        main {
-            box-sizing: border-box;
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
-            grid-template-rows: auto;
-            justify-content: space-evenly;
-            align-content: space-between;
-            align-items: flex-start;
-            width: 99.9vw;
-            height: 74vh;
-            gap: 3.3333mm;
-            padding: 3.8mm;
-            column-gap: 3.3333mm;
-            top: 1cm;
-            margin: 1mm auto 3mm auto;
-            overflow: hidden;
-            overflow-y: scroll;
-            text-align: center;
-            z-index: 0;
-        }
-
-        .item {
-            box-sizing: border-box;
-            position: relative;
-            display: inline-grid;
-            height: fit-content;
-            align-self: center;
-            background: #fff;
-            max-width: 95%;
-            align-content: space-between;
-            border-radius: 1mm;
-            margin: 0 auto;
-            margin-bottom: 6mm;
-            padding: 1mm;
-            line-height: 1;
-            border: 1px dashed #e90b3ff1;
-        }
-        .item.active, .item:hover {
-            background: #000;
-            color: #fff;
-            border: 1px solid #e90b3ff1;
-            box-shadow: 0 0 .9rem .16rem #00000020, 0 0 .66rem .16rem hsla(346, 91%, 48%, .4);
-            user-select: text;
-        }
-        .item > header {
-            position: relative;
-            box-sizing: border-box;
-            display: flex;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            margin: 1mm;
-        }
-        .item > header > h2 {
-            position: relative;
-            display: inline-flex;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            margin: 2.4mm;
-            padding: 0;
-            width: 100%;
-            font-size: 1.2rem;
-            text-align: center;
-            overflow-wrap: break-word;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .tags {
-            position: relative;
-            display: flex;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            margin: 1mm;
-            padding: 0;
-            text-align: center;
-            text-overflow: ellipsis;
-        }
-        .composer {
-            position:relative;
-            display: flex;
-            flex-flow: column wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            margin: 0;
-            padding: 0;
-            background: #fff;
-            border-radius: 2mm;
-            margin: 2mm auto 1mm auto;
-            user-select: none;
-            box-shadow: 0 0 .98rem 0.3rem #00000020, 0 0 .8rem 0.3rem hsla(346, 91%, 48%, .4);
-            transform: translateY(7.777mm) scale(.666);
-            transition: all 123ms ease-in;
-        }
-        .composer:hover {
-            transform: translateY(0) scale(1);
-            box-shadow: 0 0 .5rem 0.2rem hsla(0, 0%, 0%, 0.1), 0 0 .4rem 0.2rem hsla(346, 91%, 48%, .3);
-        }
-        .composer textarea {
-            transition: all 120ms ease-in;
-        }
-        .composer:hover textarea {
-            min-height: 244px;
-            min-width: 174px;
-        }
-
-        .soft-edge {
-            border-radius: 2mm;
-            box-shadow: 0 0 1mm 2.222mm #fff;
-        }
-
-        .interaction-ui {
-            box-sizing: border-box;
-            overscroll-behavior: none; 
-            margin-top: 2mm;
-            position: fixed;
-            bottom: 0;
-            display: grid;
-            min-width: 75%;
-            overflow: visible;
-            max-height: min-content;
-            align-content: center;
-            justify-content: center;
-            align-items: end;
-            text-align: center;
-            grid-template-columns: 3cm min-content 1fr 1fr;
-            background: linear-gradient(0deg, hsla(0, 0%, 100%, 0.8), hsla(0, 0%, 100%, 0.8) 1.5mm, hsla(0, 0%, 100%, 0.6) 1.5mm, hsla(0, 0%, 100%, 0.6) 3mm, hsla(0, 0%, 100%, 0.4) 3mm, hsla(0, 0%, 100%, 0.4) 4.5mm, hsla(0, 0%, 100%, 0.2) 4.5mm, hsla(0, 0%, 100%, 0.2) 6mm, hsla(0, 0%, 100%, 0) 6mm);
-            z-index: 1;
-            user-select: none;
-        }
-
-        .divider {
-            color: #eca3b4c5;
-            margin: 0 1mm 0 1mm;
-        }
-
-        header > h1:first-of-type {
-            display: inline-block;
-            font-size: 1.44rem;
-            font-weight: 900;            
-            filter: drop-shadow(0 .5px 2mm hsla(0, 45%, 20%, .6));
-            user-select: none;
-            text-shadow: 0 0 1px #281d1d;
-            background: #fff;
-            border-radius: 1mm;
-            padding: 0 1mm 0 1mm;
-            margin: 2.222mm 1.111mm 2.222mm 1.111mm;
-            width: fit-content;
-        }
-
-        .scroll-ball {
-            box-sizing: border-box;
-            overscroll-behavior: none; 
-            position: relative;
-            display: inline-flex;
-            justify-content: center;
-            align-items: center;
-            width: 1.8cm;
-            height: 1.8cm;
-            border-radius: 50%;
-            margin: 1mm auto;
-            transform: translateY(-8mm) translateX(-1mm);
-            background: #fff;
-            color:hsl(0, 0%, 8%);
-            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
-            filter: drop-shadow(0 1px .15rem hsla(346, 91%, 48%, .34));
-            cursor: pointer;
-            user-select: none;
-            font-weight: 600;
-            z-index: 1;
-            transition: all 300ms ease-out;
-        }
-
-        .scroll-ball > span {
-            position: absolute;
-            display: inline-flex;
-            display: inline-flex;
-            justify-content: center;
-            align-items: center;
-            align-content: center;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 1.2rem;
-            font-weight: 900;
-            color: #765c5c;
-            text-shadow: 0 0 1px #281d1d;
-            user-select: none;
-            transition: all 130ms ease-out;
-        }
-        .scroll-ball > span:hover {
-            color: #e90b3ff1;
-        }
-
-
-        .scroll-ball > span:nth-of-type(1) {
-            left: 50%;
-            top: -10%;
-        }
-
-        .scroll-ball > span:nth-of-type(4) {
-            top: 104%;
-            left: 50%;
-        }
-
-        .scroll-ball > span:nth-of-type(2) {
-            right: 90%;
-        }
-
-        .scroll-ball > span:nth-of-type(3) {
-            left: 116%;
-        }
-
-        header > h1 {
-            color: #e90b3ff1;
-            margin: 2mm auto;
-        }
-        header > h1 > .kur {
-            color: #000;
-        }
-        .kur {
-            color: #e90b3ff1;
-            transition: all 300ms ease-out;
-        }
-
-        nav {
-            position: relative;
-            top: 0;
-            display: flex;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            border-radius: 1px;
-            height: 8mm;
-            margin: 2mm auto 4mm auto;
-            background: #fff;
-            box-shadow: 0 0 .1rem .333rem hsl(0, 0%, 100%);
-            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
-            z-index: 1;
-        }
-
-        input[name="search"] {
-            box-sizing: border-box;
-            width: 100%;
-            border: none;
-            background: transparent;
-            outline: none;
-            font-size: .98rem;
-            text-align: left;
-            color: #000;
-            user-select: none;
-        }
-
-        .private {
-            font-size: .6rem;
-        }
-
-        .tags {
-            display: flex;
-            flex-flow: row wrap;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            gap: 1mm;
-            margin: 1mm;
-            user-select: none;
-        }
-
-        .tag {
-            box-sizing: border-box;
-            display: inline-flex;
-            justify-content: center;
-            align-items: center;
-            flex-flow: row wrap;
-            margin: 1mm;
-            width: min-content;
-            height: 1.222rem;
-            transform: translateY(1rem);
-            border-radius: 50% 2px;
-            background: #fff;
-            color: #000 !important;
-            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 91%, 48%, .4);
-            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
-            cursor: pointer;
-            user-select: none;
-            font-weight: 600;
-            font-size: .8rem;
-            z-index: 2;
-        }
-
-        .tag:hover {
-            background: #fff;
-            color: #000 !important;
-            box-shadow: 0 0 .1rem .3rem hsl(0, 0%, 100%), 0 0 1rem 0.5rem hsla(346, 72%, 56%, 0.1633);
-            filter: drop-shadow(0 0 .5rem hsla(346, 91%, 48%, .4));
-        }
-
-        /*
-            modify the selection color to be transparent
-        */
-        .scroll-ball::selection, .control::selection {
-            background: transparent;
-        }
-
-        button, input[type="submit"] {
-            padding: 0.5rem 1rem;
-            border-radius: .333rem;
-            margin: .333rem;
-            cursor: pointer;
-            background: var(--highlight-color);
-            color: #fff;
-            text-shadow: 0 1px 3px #00000020;
-            transition: all 120ms ease-in;
-            box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213);
-        }
-
-        textarea {
-            padding: .5rem .5rem;
-            border-radius: .333rem;
-            margin: .333rem;
-            box-shadow: 0 .02rem .1rem rgba(82, 27, 27, 0.213), inset 0 0 0.1rem rgba(82, 27, 27, 0.213);
-            border: none;
-        }
-
-        button:hover, input[type="submit"]:hover {
-            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
-            background-color: var(--selected-color);
-            border: .02rem solid var(--highlight-color);
-        }
-
-        input {
-            padding: 0.25rem .25rem;
-            border-radius: .333rem;
-            margin: .111rem;
-            border: 1px solid #00000020;
-        }
-
-        button:hover {
-            filter: brightness(1.1) drop-shadow(0 0 0.5rem #00000020);
-        }
-
-        .auth {
-            box-sizing: border-box;
-            display: inline-grid;
-            justify-content: center;
-            align-content: center;
-            align-items: center;
-            grid-template-columns: 1fr min-content;
-            border-radius: 1.5px;
-            background: #fff;
-            max-width: min-content;
-            margin: 3mm auto;
-            width: min-content;
-            box-shadow: 0 0 2px 2px hsl(0, 0%, 100%);
-            filter: drop-shadow(0 0 .15rem hsla(346, 91%, 48%, .34));
-            z-index: 1;
-        }
-
-        .auth > button {
-            margin: .12rem;
-            padding: .12rem;
-        }
-
-        .search {
-            position: relative;
-        }
-
-        .search > .nothing-found:nth-of-type(2) {
-            top: 1.5rem;
-        }
-
-        .search > .nothing-found:nth-of-type(3) {
-            top: 3rem;
-        }
-
-        .search > .nothing-found:nth-of-type(4) {
-            top: 4.5rem;
-        }
-
-        .search > .nothing-found:nth-of-type(4)::before {
-            content: "yeah no, this isn't working ";
-        }
-
-        .nothing-found {
-            position: absolute;
-            left: calc(100% + .5rem);
-            top: 0;
-            font-weight: 600;
-            color: #e53e3e;
-            background: #fff;
-            border-radius: 2mm;
-            padding: .1mm 1mm;
-            filter: drop-shadow(0 0 .5rem #00000020);
-        }
-
-        @media screen and (min-width: 1600px) {
-            main {
-                grid-template-columns: repeat(5, 1fr);
-            }
-        }
-
-        @media screen and (max-width: 1140px) {
-            main {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-
-        @media screen and (max-width: 900px) {
-            main {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .interaction-ui {
-                display: flex;
-            }
-            .interaction-ui > h1:first-of-type {
-                position: fixed;
-                top: 0;
-                left: 0;
-                scale: .9;
-            }
-            .auth {
-                position: fixed;
-                left: 2mm;
-                bottom: 0;
-            }
-        }
-
-        @media screen and (max-width: 642px) {
-            main {
-                display: block;
-            }
-        }
-
-        @media screen and (max-width: 444px) {
-            nav {
-                margin: 1mm auto;
-                transform: translateX(12mm);
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="/marx.css">
+    <link rel="stylesheet" href="/ks.css">
+    <title>kurshok.space</title>
 </head>
 <body>
-    <nav>
-        <section class="search">
-            <input type="text" name="search" placeholder="search" value="post"/>
-        </section>
-    </nav>
-    <main></main>
-    <header class="interaction-ui">
-        <h1><span class="kur">kur</span>shok</h1>
+    <header>
+        <h1><span>kur</span><span>shok</span></h1>
+        <nav class="vs">
+            <header class="avd"></header>
 
-        <section class="auth">
+        </nav>
+        <input type="search">
+
+        <section class="auth" title="register/login">
             <span class="inputs">
-                <input type="text">
-                <input type="password">
+                <input type="text" placeholder="moniker">
+                <input type="password" placeholder="password">
             </span>
             <button class="auth-btn" title="authenticate">🔓</button>
         </section>
-
-        <section class="scroll-ball">
-            <span class="up">↑</span>
-            <span class="left">←</span>↕<span class="right">→</span>
-            <span class="down">↓</span>
-        </section>
     </header>
-    <script type="module" async>
-        import d from './domlib.js'
-        import http from './http.js'
-        await d.ready
+    <main>
+
+    </main>
+
+    <script type="module">
+        import d from "/domlib.js"
+        import http from "/http.js"
+
         const {query, queryEach, render, domfn} = d
-        const {section, div, button, span, p, header, article, textarea} = domfn
-        const main = query('main')
-        const controls = query('.controls')
-        const search = query('input[name="search"]')
-        const scrollball = query('.scroll-ball')
-        const items = []
-        let lastActive, active = 0
-        const setActive = (a, scroll) => {
-            if (a > items.length - 1 || a == NaN) return setActive(0, scroll)
-            if (a == -Infinity) return setActive(items.length - 1, scroll)
-            if (a == Infinity) return setActive(active = 0 ? items.length - 1 : 0, scroll)
-            if (typeof a == 'number') {
-                active = a
-                if (scroll === undefined) scroll = true
-            } else if (typeof a == 'boolean') scroll = a
-            // if negative roll over, if longer than items.length go to the start and add the difference if there is one
-            if (active < 0) active = items.length + (active % items.length)
-            else if (active >= items.length) active = active % items.length
-            if (lastActive) lastActive.classList.remove('active')
-            const ia = items[active]
-            if (ia) {
-                ia.classList.add('active')
-                if (scroll) {
-                    if (ia.scrollIntoViewIfNeeded) ia.scrollIntoViewIfNeeded()
-                    else ia.scrollIntoView()
-                    if (lastActive) {
-                        const lai = items.indexOf(lastActive), by = 60
-                        if (lai > active) ia.scrollTop -= by
-                        else if (lai < active) ia.scrollTop += by
-                    }
-                }
-                lastActive = ia
-            }
-        }
-        // get the amound of items in a row given the size and margins
-        const getItemsInRow = () => {
-            if (!items.length) return 0
-            const {width, marginLeft, marginRight} = getComputedStyle(items[0])
-            const itemWidth = parseFloat(width)
-            const itemMarginLeft = parseFloat(marginLeft)
-            const itemMarginRight = parseFloat(marginRight)
-            const rowWidth = main.clientWidth
-            const itemsInRow = Math.floor(rowWidth / (itemWidth + itemMarginLeft + itemMarginRight))
-            return itemsInRow
-        }
-        const makeItem = (text, i) => {
-            const item = article.item(text)
-            item.onpointerover = e => setActive(i)
-            item.classList.add('item')
-            items.push(item)
-            return item
-        }
+        const {section, div, button, span, p, header, article, input, textarea, html} = domfn
 
-        document.scrollingElement.onpointermove = (e) => {
-            // if shift is down pan and scroll on the body
-            if (e.shiftKey) {
-                // get the size of the scrollingElement
-                const {width, height} = document.scrollingElement.getBoundingClientRect()
-                //console.log(e)
-                active += e.movementX
-                
-                setActive()
-                main.scrollTop += (e.movementY * height) / 8
-            }
-        }
-
-        // on middle mouse in main, perform scrolling, set the scrollTop property
-        main.onwheel = e => {
-            main.scrollTop += e.deltaY
-        }
-
-        queryEach('.scroll-ball > span', s => s.onpointerdown = e => {
-            rowWidth = getItemsInRow()
-            e.preventDefault()
-            switch(e.target.textContent) {
-                case '←':
-                    setActive(active - 1)
-                break
-                case '→':
-                    setActive(active + 1)
-                break
-                case '↑':
-                    setActive(active - rowWidth)
-                break
-                case '↓':
-                    setActive(active + rowWidth)
-                break
-            }
+        const svsapi = '/api/svs/', svs = new Proxy({
+            async get(m) { return await http.get(svsapi+m) },
+            async set(m, v) { return await http.post(svsapi+m, v) },
+            async delete(m) { return await http.del(svsapi+m) }
+        }, {
+            async get(m, k) { return k in m ? m[k] : (await m.get(k)).value },
+            async set(m, k, v) { return await m.set(k, v) },
+            async deleteProperty(m, k) { return await m.delete(k) }
         })
-        // when the mouse or pointer moves inside of the scroll ball scroll x and y on the main element
-        scrollball.onpointermove = e => {
-            if (e.target.tagName == 'SPAN') return
-            e.preventDefault()
-            // get the size of the scrollingElement
-            const {width, height} = document.scrollingElement.getBoundingClientRect()
-            //console.log(e)
-            main.scrollLeft += (e.movementX * width) / 7
-            main.scrollTop += (e.movementY * height) / 7
-        }
-
-        let rowWidth = 3
-
-        document.onkeydown = async e => {
-            if (e.target.tagName == 'INPUT' && e.key != 'Enter') return
-            if (!e.target.classList || !e.key || e.target.classList.contains('item')) return
-            if (e.key.includes('Arrow')) {
-                e.preventDefault()
-                rowWidth = getItemsInRow()
-                switch(e.key.replace('Arrow', '')) {
-                    case 'Left':
-                        setActive(active - 1)
-                        break
-                    case 'Right':
-                        setActive(active + 1)
-                        break
-                    case 'Up':
-                        setActive(active - rowWidth)
-                        break
-                    case 'Down':
-                        setActive(active + rowWidth)
-                        break
-                }
-            } else if (e.key === 'Enter') {
-                await searchForWrits(search.value)
-            }
-        }
-        main.addEventListener('pointermove', e => {
-            if (e.target.classList && e.target.classList.contains('item') && !e.shiftKey) {
-                if (lastActive) lastActive.classList.remove('active')
-                e.target.classList.add('active')
-                ;(lastActive = e.target).scrollIntoView()
-                active = items.indexOf(e.target)
-            }
-        })
-
-        main.onpointerdown = async e => {
-            let item = e.target
-            if (!item && item.classList) return
-            if (item.classList.contains('tag')) {
-                return await searchForWrits(search.value = 'tags:'+ item.textContent)
-            } else if (!item.classList.contains('item')) {
-                if (item.tagName == 'SPAN' && item.textContent.includes('private')) {
-                    // togle the writ's public boolean by upserting the whole document with that field fliped
-                    const writ = item.parentNode.parentNode.writ
-                    writ.public = !writ.public
-                    await http.put('/api/search/', writ)
-                }
-                if (item.parentNode && item.parentNode.classList.contains('item')) item = item.parentNode
-            }
-            if (!item.classList.contains('item')) return
-            if (e.button === 1) {
-                console.log(e)
-                e.preventDefault()
-                http.del('/api/search/'+ item.ts)
-                setTimeout(populateBodywithCards, 600)
-            }
-            e.target.focus()
-        }
-
-        const customContextMenu = (e, obj) => {
-            e.preventDefault()
-            const menu = document.createElement('div')
-            menu.classList.add('context-menu')
-            menu.style.left = e.clientX + 'px'
-            menu.style.top = e.clientY + 'px'
-            const text = document.createElement('p')
-            text.textContent = 'Copy'
-            text.classList.add('context-menu-item')
-            text.onpointerdown = () => {
-                navigator.clipboard.writeText(displayObjectText(obj))
-                menu.remove()
-            }
-            menu.appendChild(text)
-            document.body.appendChild(menu)
-            setTimeout(() => menu.remove(), 3000)
-        }
-
-        main.oncontextmenu = e => {
-            if (e.target.classList && e.target.classList.contains('item')) {
-                e.preventDefault()
-                e.target.focus()
-                customContextMenu(e, lastActive)
-            }
-        }
-        const divider = "<span class=\"divider\"> | </span>"
-        const niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`
-
-        const displayObject = obj => {
-            const div = document.createElement('div')
-            for (const key in obj) {
-                const p = document.createElement('p')
-                p.textContent = `${key}: ${d.isObj(obj[key]) ? displayObject(obj[key]) : obj[key]}` 
-                div.appendChild(p)
-            }
-            return div
-        }
 
         const displayObjectText = obj => {
             let text = ''
             for (const key in obj) text += `${key}: ${obj[key]}\n`
             return text
         }
-        let lastSearchQuery = ''
-        const searchForWrits = async (q = search.value, p = 0, k = 'post') => {
-            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
-            if (writs.length) {
-                if (lastSearchQuery !== q) {
-                    // if the search query has changed, reset the page to 0
-                    p = 0
-                    lastSearchQuery = q
-                } else {
-                    lastSearchQuery = q
-                    p += 1
-                }
-                // display them in main as items
-                main.innerHTML = ''
-                let i = -1
-                for (const writ of writs) {
-                    const item = makeItem(d.html`<header>
-${writ.title != '' ? `<h2>${writ.title}</h2>` : ''}
-<time>${niceTime(writ.ts)}</time>${divider}
-${writ.public ? '' : `<span class="private"> private </span>${divider}`}
-<span class="owner">${monikers[++i]}</span>
-</header>
-<section class="content">${writ.content}</section>
-<div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>
-<div class="state">${displayObjectText(JSON.parse(writ.state || '{}'))}</div>`, i)
-                    item.writ = writ
-                    item.ts = writ.ts
-                    main.appendChild(item)
-                }
-                console.log(writs)
-            } else {
-                const nf = span.nothing_found({$:search.parentNode}, 404)
-                setTimeout(() => nf.remove(), 3500)
-            }
-        }
-
-        const composeWrit = async (title, content, tags = '', state = {}, p, price) => {
-            tags.replace(',', ' ').replace('  ', ' ')
-            const writ = {
-                public: !!p,
-                title,
-                kind: 'post',
-                content,
-                state: (state != null && state != '') ? JSON.stringify(state) : '{}',
-                price: price || undefined,
-                tags: 'post experimental ' + tags
-            }
-            const res = await http.put('/api/search', writ)
-            console.log(res)
-            return res
-        }
-
-        const htmlWritMaker = d.html`<section class="composer">
-<textarea name="content" placeholder="Content" ></textarea>
-<input type="text" name="tags" placeholder="tags" />
-<input type="text" name="title" placeholder="title (optional)" />
-<input type="text" name="state" placeholder="optional json state field" />
-<input type="number" name="price" placeholder="optional price to access (pays points, no way to get points yet)" />
-<div>
-<input type="checkbox" name="public" checked/>
-<input type="submit" value="save" />
-</div>
-</section>`[0][0]
-
-        const [
-            contentIn,
-            tagsIn,
-            titleIn,
-            stateIn,
-            priceIn,
-            pbbdiv
-        ] = htmlWritMaker.children
-        const [pbIn, saveBtn] = pbbdiv.children
-
-        const clearComposer = () => {
-            titleIn.value = ''
-            contentIn.value = ''
-            tagsIn.value = ''
-            stateIn.value = ''
-            pbIn.checked = true
-        }
-
-        saveBtn.onpointerdown = async e => {
-            e.preventDefault()
-            const res = await composeWrit(
-                titleIn.value,
-                contentIn.value,
-                tagsIn.value,
-                stateIn.value.length ? JSON.parse(stateIn.value) : '',
-                pbIn.checked,
-                Number(priceIn.value)
-            )
-            console.log(res)
-            clearComposer()
-            populateBodywithCards()
-        }
-
-        const populateBodywithCards = async () => {
-            await searchForWrits(search.value, 0)
-            rowWidth = getItemsInRow()
-        }
-
-        populateBodywithCards()
 
         const authenticate = async () => {
             const ae = query('.auth')
@@ -819,16 +61,11 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
                 // display the result then remove the auth form
                 if (data.err == null) {
                     ae.innerHTML = `<p>Authenticated</p><p>Info: ${displayObjectText(data)}</p>`
-                    setTimeout(() => {
-                        ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr'
-                        ae.remove()
-                    }, 4200)
+                    setTimeout(() => { ae.remove() }, 4200)
                     localStorage.setItem('auth', 'true')
-                    render(htmlWritMaker, 'body > header')
-                    populateBodywithCards()
                 }
             } catch(e) {
-                const errMsg = d.html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
+                const errMsg = html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
                 ae.append(errMsg)
                 setTimeout(() => errMsg.remove(), 4200)
             }
@@ -852,36 +89,262 @@ ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
                     setTimeout(() => location.reload(), 4200)
                 }
             }, '🔒 ')
-            render(htmlWritMaker, 'body > header')
+            ae.classList.add('unauth')
         } else {
-            ae.parentNode.style.gridTemplateColumns = '3cm min-content 1fr'
             query('button', ae).onpointerdown = e => authenticate()
             query('[type="password"]', ae).onkeydown = e => {
                 if (e.key === 'Enter') authenticate()
             }
         }
 
-window.svs = new Proxy({
-    async get(m) {
-        return await http.get(`/api/svs/${m}`)
-    },
-    async set(m, v) {
-        return await http.post(`/api/svs/${m}`, v)
-    },
-    async delete(m) {
-        return await http.del(`/api/svs/${m}`)
-    }
-}, {
-    async get(m, k) {
-        return k in m ? m[k] : (await m.get(k)).value
-    },
-    async set(m, k, v) {
-        return await m.set(k, v)
-    },
-    async deleteProperty(m, k) {
-        return await m.delete(k)
-    }
-})
+        const main = query('main')
+        const vs = query('.vs')
+        const avd = query('.avd')
+        const si = query('input[type=search]')
+
+        const views = Object.create(null)
+        const view = (title, v) => {
+            if (v != null) {
+                views[title] = v
+                return vs.appendChild(span({
+                    attr: {title},
+                    onpointerdown(e) {(e.preventDefault(), view(title))}
+                }))
+            }
+            main.innerHTML = ''
+            localStorage.setItem('av', title)
+            render(views[avd.textContent = title], main)
+        }
+
+        const divider = "<span class=\"divider\"> | </span>"
+        const niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`
+
+        const blog = section.blog()
+        let lastSearchQuery = '', page = 0
+        const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
+            page = lastSearchQuery == q ? page + 1 : 0
+            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            if (writs.length) {
+                lastSearchQuery = q
+                blog.innerHTML = ''
+                let i = -1
+                for (const writ of writs) {
+                    blog.append(article.writ(html`
+                        <header>
+                            <h2>${writ.title}</h2>
+                            <span>${niceTime(writ.ts)}</span>
+                            ${divider}
+                            <span>${monikers[++i]}</span>
+                        </header>
+                        <section>${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(this, \`${writ.ts}\`)">Paid post, Buy Access</button>' : 'no content found')}</section>
+                        <footer>
+                            <p class="tags">
+                                ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
+                            </p>
+                        </footer>
+                    `))
+                }
+            } else {
+                const nf = span.nothing_found({$:si.parentNode}, 404)
+                setTimeout(() => nf.remove(), 3500)
+            }
+        }
+
+        window.searchTag = async function searchTag(tag) {
+            await searchForWrits(si.value = 'tags:'+tag.textContent)
+            view('blog')
+        }
+
+        window.buyWritAccess = async function buyWritAccess(btn, ts) {
+            await searchForWrits('post')
+            const res = await http.get('/api/access/' + ts)
+            if (res.ok) {
+                btn.remove()
+                showMessage('me', 'access granted to writ: ' + ts)
+            } else {
+                showMessage('error', 'could not buy access to writ: ' + ts)
+            }
+            view('blog')
+        }
+
+        searchForWrits('post')
+        si.onkeydown = e => {
+            if (e.key === 'Enter') {
+                searchForWrits(si.value)
+                view('blog')
+            }
+        }
+
+        view('blog', blog)
+
+        const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title (optional)'}})
+        const wContent = textarea({attr: {required: true, placeholder: 'content (required)'}})
+        const wTags = input({attr: {type: 'text', pattern: '[a-zA-Z0-9 ]+', placeholder: 'tags (required)', required: true}})
+        const wPrice = input({attr: {type: 'number', min: 0, max: 1000000, title: 'price (optional)'}})
+        const wPublic = input({attr: {type: 'checkbox', checked: true, title: 'public'}})
+        const wState = input({attr: {type: 'text', required: false, placeholder: 'json statefield (optional)'}})
+        
+        const wwRoot = section.writ_writer('writ-Writer', 
+            wTitle, wContent, wTags, wState, wPrice, wPublic, 
+            button({onpointerdown() {
+                writeWrit({
+                    title: wTitle.value.trim(),
+                    content: wContent.value.trim(),
+                    kind: 'post',
+                    tags: 'post ' + wTags.value.trim(),
+                    public: wPublic.checked,
+                    price: Number(wPrice.value) || undefined,
+                    state: wState.value.trim() || '{}'
+                })
+            }}, 'save')
+        )
+        view('writer', wwRoot)
+
+        const writeWrit = async writ => {
+            showMessage('me', 'writing post...')
+            const res = await http.put('/api/search', writ)        
+            if (res.ok) {
+                wTitle.value = ''
+                wContent.value = ''
+                wTags.value = ''
+                wPrice.value = ''
+                wState.value = ''
+                searchForWrits('post')
+                view('blog')
+                showMessage('me', 'post written!')
+            }
+            view('blog')
+        }
+
+        view('about', section.about(p("Homespun server and frontend"), html`
+<article>
+Welcome to kurshok.space, a new blog and platform for philosophical content and paid posts. Kurshok.space is more than just a website, it is a community of thinkers, writers, and readers who share a passion for exploring the big questions of life.
+
+Kurshok.space is powered by Rust, a fast and reliable programming language that ensures high performance and security. Rust also enables us to create social features akin to Twitter, such as search, timelines, likes, and reposting. You can follow your favorite authors, interact with their posts, and discover new perspectives on various topics.
+
+Kurshok.space is also a publishing platform (WIP) that will allow you to monetize your content with points on the website that can be purchased/fundged from the admin, who is contactable at saul@kurshok.space. You can create your own blog, choose your subscription model, and earn money from your loyal readers.
+
+Kurshok.space is a place where you can express yourself freely, learn from others, and grow as a person. Whether you are interested in ethics, metaphysics, logic, or anything in between, you will find something that sparks your curiosity and challenges your mind.
+</article>
+<article>
+<header>
+    Privacy Policy: 
+</header>
+    We do not collect any personal information from you. We do not use cookies or any other tracking technology. We do not share your data with third parties. We do not sell your data to advertisers. We do not store your data on our servers. We do not store your data on your device. We do not store your data anywhere. We do not store data you did not enter here to be stored, like moniker and posts. 
+    We use a cookie for auth, there are no stats on the backend, and the frontend is practically static.
+    Chat messages are not stored on the server, they are persisted only on localStorage.
+    Private posts are accessible only to the admin and the author. All posts can be deleted by the author or the admin, as need be.
+    The admin is contactable at saul@kurshok.space
+    The code is open source, so you can see for yourself how things are handled, no surprises.
+    The server is privately hosted, and the domain is privately owned, tls encryption is used.
+</article>
+<article>
+<header>
+Terms of Use:
+</header>
+Don't spam, don't be a doos/asshole. Be respectful of the server's capacity. Don't use the server for anything illegal.
+</article>
+</article>
+<article>
+<header>
+Liability:
+</header>
+Seeing as this is less than a spaza shop at this point, and run by me sometimes. Please save whatever needs saved, contact me is there's issues.
+I am not responsible for what you get up to on this server, I do not take accountablility for what you say or publish here.
+By using the site, you agree to these conditions, respectfully.
+</article>
+        `))
+
+        view(localStorage.getItem('av') || 'blog')
+
+        const whos = JSON.parse(localStorage.getItem('whos') || '{}')
+        const status = header.status()
+        const chatMessages = article.messages()
+        const chatInput = textarea()
+        status.innerHTML = "Connecting..."
+        chatInput.placeholder = 'type a message..'
+        // on control+enter, send message
+        chatInput.onkeydown = async e => {
+            if (!e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault()
+                const body = chatInput.value.trim()
+                if (body.length == 0) return
+                if (body == '/clear') {
+                    localStorage.setItem('c', '[]')
+                    return chatMessages.innerHTML = ''
+                }
+                await fetch(`/api/chat`, {method: "POST", body})
+                showMessage('me', body)
+                chatInput.value = ''
+            }
+        }
+        const chatRoot = section.chat({$: 'body'}, status, chatMessages, chatInput)
+
+        const makeMessage = async (who, data) => {
+            if (who != 'me') {
+                if (who != null && whos[who] == null) {
+                    if (who == 'error') {
+                        return showMessage('error', 'probably not authenticated right')
+                    }
+                    whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
+                    localStorage.setItem('whos', JSON.stringify(whos))
+                }
+            }
+            const msg = article.message({$: chatMessages}, span.who[whos[who]](whos[who] || 'me'), p(data))
+            if (who == 'me') msg.classList.add('me')
+            const msgs = [...(JSON.parse(localStorage.getItem('c') || '[]')), [who, data]]
+            for (let i = 0; i < msgs.length; i++) {
+                for (let j = 0; j < msgs.length; j++) {
+                    if (i == j) continue
+                    if (msgs[i][0] == msgs[j][0] && msgs[i][1] == msgs[j][1]) {
+                        msgs.splice(j, 1)
+                    }
+                }
+            }
+            localStorage.setItem('c', JSON.stringify([...msgs]))
+        }
+        const showMessage = async (who, data) => {
+            if (data == null && who.includes(":")) {
+                let wd = who.split(":")
+                who = wd.shift()
+                data = wd.join(':')
+                if (who == 'me') return makeMessage(who, data)
+            } else {
+                whos[who] = who
+            }
+            makeMessage(who, data)
+        }
+        JSON.parse(localStorage.getItem('c') || '[]').forEach(wd => makeMessage(...wd))
+        try {
+            let tries = 10
+            const startSSE = () => {
+                if (tries-- == 0) {
+                    status.innerHTML = "Lost the connection!"
+                    status.classList.add('error')
+                    showMessage('error', 'sse failed to connect')
+                    return
+                }
+                let sse = new EventSource(`/api/chat`), sid
+                sse.addEventListener("account", e => sid = e.data)
+                sse.addEventListener("message", e => showMessage(e.data))
+                sse.addEventListener("open", () => status.innerHTML = "Connected!")
+                sse.addEventListener("error", async e => {
+                    sse.close()
+                    status.innerHTML = "Disconnected!"
+                    status.classList.add('error')
+                    await showMessage(`error: ${e}`)
+                    setTimeout(() => {
+                        status.classList.remove('error')
+                        status.innerHTML = "Reconnecting..."
+                        startSSE()
+                    }, 1000)
+                })
+                return sse
+            }
+            startSSE()
+        } catch(e) {
+            showMessage('error: ', `${e} ${e.message} ${e.stack}`)
+        }
     </script>
 </body>
 </html>
