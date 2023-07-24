@@ -1476,8 +1476,8 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn expiry_checker() -> tokio::task::JoinHandle<()> {
-    tokio::task::spawn_blocking(|| {
+pub fn expiry_checker() -> std::thread::JoinHandle<()> {
+    std::thread::spawn(|| {
         loop {
             std::thread::sleep(Duration::from_secs(30));
 //            println!("expiry checker doing a sweep");
@@ -2718,9 +2718,6 @@ async fn main() {
     let listener = TcpListener::new(addr.clone()).rustls(config.clone());
     let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
     Server::new(acceptor).serve(router).await;
-    if let Err(e) = _expiry_checker.await {
-        println!("Expiry checker failed: {}", e);
-    }
 }
 
 
@@ -3384,7 +3381,6 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             res.render(Json(serde_json::json!({"err":"moniker and password must be at least 3 characters long"})));
             return;
         } else {
-            // check that the moniker is composed of the dictionary characters only
             for c in ar.moniker.chars() {
                 if !DICT.contains(c) {
                     res.status_code(StatusCode::BAD_REQUEST);
@@ -3485,8 +3481,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             acc.id
         } else {
             let mut sid = rand::thread_rng().gen::<u64>();
-            // check for clash
-            while Account::from_id(sid, &DB).is_ok() {
+            while Account::from_id(sid, &DB).is_ok() { // check for clash
                 sid = rand::thread_rng().gen::<u64>();
             }
             sid
@@ -4821,19 +4816,16 @@ impl Search{
                 let mut writs = vec![];
                 for (_s, d) in results {
                     let mut writ = Writ::from_doc(&d, prefered_kind.clone())?;
-                    if writ.public || include_public_for_owner.is_some_and(|o| o == writ.owner || o == 1997) {
-                        if writ.price.is_some() {
-                            // check if the owner has access to this writ
-                            if let Some(id) = id {
-                                if let Err(e) = check_access_for(id, &[writ.ts]) {
-                                    writ.content = e.to_string();
-                                }
-                            } else {
-                                writ.content = String::new();
+                    if (writ.price.is_some_and(|p| p > 0) || !writ.public) && !include_public_for_owner.is_some_and(|o| o != writ.owner || o != ADMIN_ID || id.is_some_and(|id| id != o)) {
+                        if let Some(id) = id { // check if the owner has access to this writ
+                            if let Err(e) = check_access_for(id, &[writ.ts]) {
+                                writ.content = e.to_string();
                             }
+                        } else {
+                            writ.content = String::new();
                         }
-                        writs.push(writ);
                     }
+                    writs.push(writ);
                 }
                 Ok(writs)
             },
@@ -4993,11 +4985,9 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         }
     }
 
-    if req.method() == Method::GET {
-        // serve public searchable items
+    if req.method() == Method::GET { // serve public searchable items
         match req.query::<String>("q") {
             Some(q) => {
-                // if there's a page query use it
                 let page = match req.query::<usize>("p") {
                     Some(p) => p,
                     None => 0,
