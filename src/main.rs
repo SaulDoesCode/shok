@@ -1537,11 +1537,11 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
 }
 
 fn restart_server() {
-    if cfg!(target_os = "linux") { // if it is linux run the restart script at ./run.sh
-        std::process::Command::new("./run.sh").spawn().expect("failed to restart server");
+    std::process::Command::new(if cfg!(target_os = "linux") {
+        "./run.sh"
     } else {
-        std::process::Command::new("./run.bat").spawn().expect("failed to restart server");
-    }
+        "./run.bat"
+    }).spawn().expect("failed to restart server");
     std::process::exit(0);
 }
 
