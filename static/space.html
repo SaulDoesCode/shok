@@ -119,6 +119,25 @@
         const divider = "<span class=\"divider\"> | </span>"
         const niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`
 
+        const writLikes = async ts => {
+            try {
+                const res = await (await fetch('/api/writ-likes/' + ts)).json()
+                if (!res.err) {
+                    return res[0] && res[0].length || 0
+                }
+            } catch(e) {
+            }
+            return 0
+        }
+
+        window.likeWrit = async (ts, el) => {
+            const res = await (await fetch(`/api/like/${ts}`)).json()
+            try {
+                el.parentNode.querySelector('.likes').textContent = await writLikes(ts)
+            } catch(e) {}
+            return res.ok
+        }
+
         const blog = section.blog()
         let lastSearchQuery = '', page = 0
         const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
@@ -140,6 +159,10 @@
                         <footer>
                             <p class="tags">
                                 ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
+                            </p>
+                            <p class="interactions">
+                                <span class="likes">${await writLikes(writ.ts)}</span>
+                                <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
                             </p>
                         </footer>
                     `))

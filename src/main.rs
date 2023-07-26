@@ -45,9 +45,15 @@ fn like_writ(id: u64, like_id: u64) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
         let mut t = wtx.open_multimap_table(LIKES)?;
-        t.insert(id, like_id)?;
-        let mut t = wtx.open_multimap_table(LIKED_BY)?;
-        t.insert(like_id, id)?;
+        let was_liked = t.insert(id, like_id)?;
+        if was_liked {
+            t.remove(id, like_id)?;
+            let mut t = wtx.open_multimap_table(LIKED_BY)?;
+            t.remove(like_id, id)?;
+        } else {
+            let mut t = wtx.open_multimap_table(LIKED_BY)?;
+            t.insert(like_id, id)?;
+        }
     }
     wtx.commit()?;
     Ok(())
@@ -57,9 +63,15 @@ fn unlike_writ(id: u64, like_id: u64) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
         let mut t = wtx.open_multimap_table(LIKES)?;
-        t.remove(id, like_id)?;
-        let mut t = wtx.open_multimap_table(LIKED_BY)?;
-        t.remove(like_id, id)?;
+        let was_liked = t.remove(id, like_id)?;
+        if was_liked {
+            let mut t = wtx.open_multimap_table(LIKED_BY)?;
+            t.remove(like_id, id)?;
+        } else {
+            t.insert(id, like_id)?;
+            let mut t = wtx.open_multimap_table(LIKED_BY)?;
+            t.insert(like_id, id)?;
+        }
     }
     wtx.commit()?;
     Ok(())
@@ -717,6 +729,17 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 }
                             } else {
                                 auto_msg(format!("missing name")).i(uid as u64);
+                            }
+                        }
+                        "whoami" => {
+                            auto_msg(format!("you are {}", uid)).i(uid as u64);
+                        }
+                        "restart" => {
+                            if uid == ADMIN_ID as usize {
+                                auto_msg(format!("restarting server")).i(uid as u64);
+                                restart_server();
+                            } else {
+                                auto_msg(format!("not admin")).i(uid as u64);
                             }
                         }
                         "follow" => {
@@ -1448,6 +1471,10 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
     }
 }
 
+lazy_static!{
+    static ref SINCE_START: u64 = now();
+}
+
 const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
 // token, account_id, expiry
@@ -1500,8 +1527,22 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                     println!("failed to run stored commands: {:?}", e);
                 }
             }
+
+            if now() - *SINCE_START > 14400 { // if it has beeb more than 4 hours since the server started, restart the server
+                println!("server has been running for more than 4 hours, restarting... hope for the best.. been real..");
+                restart_server();
+            }
         }
     })
+}
+
+fn restart_server() {
+    if cfg!(target_os = "linux") { // if it is linux run the restart script at ./run.sh
+        std::process::Command::new("./run.sh").spawn().expect("failed to restart server");
+    } else {
+        std::process::Command::new("./run.bat").spawn().expect("failed to restart server");
+    }
+    std::process::exit(0);
 }
 
 // Accounts             name, since, xp, balance, pwd_hash
@@ -4945,6 +4986,10 @@ pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Res
                     } else {
                         monikers.push("unknown".to_string());
                     }
+                }
+                if likes.len() == 0 {
+                    brq(res, "no likes found");
+                    return;
                 }
                 res.render(Json((likes, monikers)));
             },
