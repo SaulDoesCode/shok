@@ -150,9 +150,11 @@
                     blog.append(article.writ(html`
 <header>
     <h2>${writ.title}</h2>
+    <div>
     <span>${niceTime(writ.ts)}</span>
     ${divider}
     <span>${writ.owner_moniker}</span>
+    </div>
 </header>
 <section>
     <pre>

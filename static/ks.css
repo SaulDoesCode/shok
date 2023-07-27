@@ -363,6 +363,18 @@ input[type="search"] {
     filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
+.writ > header > h1 {
+    display: inline-block;
+    margin: 3mm 3mm 3mm 3mm;
+    width: min-content;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+.writ > header > div {
+    margin: 3mm;
+    padding: .3mm;
+}
+
 .tag {
     box-sizing: border-box;
     display: inline-flex;
