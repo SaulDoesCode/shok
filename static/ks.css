@@ -336,6 +336,33 @@ input[type="search"] {
     min-height: 120px;
 }
 
+.writ {
+    display: inline-flex;
+    justify-content: center;
+    align-content: center;
+    align-items: center;
+    flex-flow: row wrap;
+    overflow: hidden;
+    color:rgb(74, 20, 37);
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+    transition: all 140ms ease-in;
+}
+
+.writ pre {
+    line-height: 1.1;
+}
+
+.writ > header {
+    display: inline-flex;
+    justify-content: center;
+    align-content: center;
+    align-items: center;
+    flex-flow: row wrap;
+    text-align: center;
+    color: #fff;
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+}
+
 .tag {
     box-sizing: border-box;
     display: inline-flex;

@@ -148,22 +148,26 @@
                 let i = -1
                 for (const writ of writs) {
                     blog.append(article.writ(html`
-                        <header>
-                            <h2>${writ.title}</h2>
-                            <span>${niceTime(writ.ts)}</span>
-                            ${divider}
-                            <span>${writ.owner_moniker}</span>
-                        </header>
-                        <section>${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(this, \`${writ.ts}\`)">Paid post, Buy Access</button>' : 'no content found')}</section>
-                        <footer>
-                            <p class="tags">
-                                ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
-                            </p>
-                            <p class="interactions">
-                                <span class="likes">${writ.likes}</span>
-                                <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
-                            </p>
-                        </footer>
+<header>
+    <h2>${writ.title}</h2>
+    <span>${niceTime(writ.ts)}</span>
+    ${divider}
+    <span>${writ.owner_moniker}</span>
+</header>
+<section>
+    <pre>
+${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(this, \`${writ.ts}\`)">Paid post, Buy Access</button>' : 'no content found')}
+    </pre>
+</section>
+<footer>
+    <p class="tags">
+        ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
+    </p>
+    <p class="interactions">
+        <span class="likes">${writ.likes.length}</span>
+        <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
+    </p>
+</footer>
                     `))
                 }
             } else {
@@ -271,7 +275,7 @@ Don't spam, don't be a doos/asshole. Be respectful of the server's capacity. Don
 <header>
 Liability:
 </header>
-Seeing as this is less than a spaza shop at this point, and run by me sometimes. Please save whatever needs saved, contact me is there's issues.
+Seeing as this is less than a spaza shop at this point, and run by me sometimes. Please save whatever needs saved, contact me if there are issues.
 I am not responsible for what you get up to on this server, I do not take accountablility for what you say or publish here.
 By using the site, you agree to these conditions, respectfully.
 </article>
