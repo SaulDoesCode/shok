@@ -101,6 +101,21 @@ fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     Ok(likes)
 }
 
+fn get_likes_for_writs(writs: &[u64]) -> anyhow::Result<HashMap<u64, Vec<u64>>> {
+    let rtx = DB.begin_read()?;
+    let t = rtx.open_multimap_table(LIKED_BY)?;
+    let mut likes = HashMap::new();
+    for id in writs {
+        let mut mmv = t.get(*id)?;
+        let mut likes_vec = Vec::new();
+        while let Some(r) = mmv.next() {
+            likes_vec.push(r?.value());
+        }
+        likes.insert(*id, likes_vec);
+    }
+    Ok(likes)
+}
+
 fn get_liked_by(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKES)?;
@@ -492,7 +507,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
 
         match *req.method() {
             Method::GET => {
-                let limit = req.query::<usize>("limit").unwrap_or(256);
+                let limit = req.query::<usize>("l").unwrap_or(256);
                 if limit > 256 && !_is_admin {
                     brq(res, "limit too high");
                     return;
@@ -527,7 +542,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                     }
                 }
             }
-            Method::POST => match req.parse_json_with_max_size::<PutComment>(20000).await {
+            Method::POST => match req.parse_json_with_max_size::<PutComment>(30000).await {
                 Ok(pc) => {
                     let root = match pc.comment {
                         Some(cid) => Root::Comment(cid),
@@ -545,7 +560,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                     brq(res, &format!("failed to parse json: {}", e));
                 }
             }
-            Method::PUT => match req.parse_json_with_max_size::<PutComment>(20000).await {
+            Method::PUT => match req.parse_json_with_max_size::<PutComment>(30000).await {
                 Ok(pc) => {
                     let cid = match pc.comment {
                         Some(cid) => cid,
@@ -4856,7 +4871,25 @@ impl Search{
             Ok(results) => {
                 let mut writs = vec![];
                 for (_s, d) in results {
-                    let mut writ = Writ::from_doc(&d, prefered_kind.clone())?;
+                    let mut writ = match Writ::from_doc(&d, prefered_kind.clone()) {
+                        Ok(writ) => writ,
+                        Err(e) => {
+                            writs.push(Writ{
+                                ts: 0,
+                                kind: "error".to_string(),
+                                owner: 0,
+                                public: false,
+                                title: None,
+                                content: e.to_string(),
+                                state: None,
+                                price: None,
+                                sell_price: None,
+                                tags: String::new()
+                            });
+                            continue;
+                        }
+                    };
+
                     if (writ.price.is_some_and(|p| p > 0) || !writ.public) && !include_public_for_owner.is_some_and(|o| o != writ.owner || o != ADMIN_ID || id.is_some_and(|id| id != o)) {
                         if let Some(id) = id { // check if the owner has access to this writ
                             if let Err(e) = check_access_for(id, &[writ.ts]) {
@@ -5061,7 +5094,18 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
     } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
-                Ok(writs) => res.render(Json(serde_json::json!({"writs": writs}))),
+                Ok(writs) => {
+                    // get the likes of each writ
+                    let wids = writs.iter().map(|w| w.ts).collect::<Vec<u64>>();
+                    match get_likes_for_writs(wids.as_slice()) {
+                        Ok(likes) => {
+                            res.render(Json(serde_json::json!({"writs": writs, "likes": likes})));
+                        },
+                        Err(e) => {
+                            res.render(Json(serde_json::json!({"writs": writs, "likes_err": e.to_string()})));
+                        }
+                    };
+                },
                 Err(e) => brqe(res, &e.to_string(), "failed to search"),
             },
             Err(e) => brqe(res, &e.to_string(), "failed to search, bad body"),
@@ -5075,7 +5119,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     kind: pw.kind,
                     owner: _owner.unwrap(),
                     title: pw.title,
-                    content: pw.content,
+                    content: if pw.content.len() > 0 {
+                        pw.content
+                    } else {
+                        brq(res, "content is empty, can't update writ");
+                        return;
+                    },
                     state: pw.state,
                     price: pw.price,
                     sell_price: pw.sell_price,
@@ -5181,14 +5230,19 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     owner: _owner.unwrap(),
                     title: pw.title,
                     kind: pw.kind,
-                    content: pw.content,
+                    content: if pw.content.len() > 0 {
+                        pw.content
+                    } else {
+                        brq(res, "content is empty, can't update writ");
+                        return;
+                    },
                     state: pw.state,
                     price: pw.price,
                     sell_price: pw.sell_price,
                     tags: if let Some(tags) = validate_tags_string(&pw.tags) {
                         tags
                     } else {
-                        brq(res, "failed to add to index, tags are invalid");
+                        brq(res, "tags are invalid, can't update writ");
                         return;
                     }
                 };
