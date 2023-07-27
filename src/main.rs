@@ -2610,7 +2610,7 @@ lazy_static! {
         let key = PWD.0.as_slice();
         sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"resources")), Some(b"insurance"))
     };
-    static ref SEARCH: Search = Search::build_150mb().expect("Failed to build search.");
+    static ref SEARCH: Search = Search::build_512mb().expect("Failed to build search.");
 }
 
 #[tokio::main]
@@ -4807,6 +4807,13 @@ impl Search{
     }
 
     fn get_doc(&self, ts: u64) -> tantivy::Result<Document> {
+        if ts == 0 {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("there is no 0")
+                )
+            );
+        }
         let reader = self.index.reader()?;
         let term = Term::from_field_date(self.schema.get_field("ts")?, DateTime::from_timestamp_secs(ts as i64));
         let searcher = reader.searcher();
@@ -4818,6 +4825,13 @@ impl Search{
     }
 
     fn remove_doc(&self, owner: u64, ts: u64) -> tantivy::Result<u64> {
+        if ts == 0 {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("cannot remove writ with timestamp 0")
+                )
+            );
+        }
         let mut index_writer = self.index_writer.write();
         let op_stamp = index_writer.delete_term(Term::from_field_date(
             self.schema.get_field("ts")?,
@@ -4862,6 +4876,13 @@ impl Search{
     }
 
     fn update_doc(&self, writ: &Writ) -> tantivy::Result<()> {
+        if writ.ts == 0 {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("0 is not allowed here anymore")
+                )
+            );
+        }
         let mut index_writer = self.index_writer.write();
         index_writer.delete_term(Term::from_field_date(
             self.schema.get_field("ts").unwrap(),
@@ -4911,8 +4932,13 @@ impl Search{
         }
     }
 
+    #[allow(dead_code)]
     fn build_150mb() -> tantivy::Result<Self> {
         Self::build(150_000_000)
+    }
+
+    fn build_512mb() -> tantivy::Result<Self> {
+        Self::build(512_000_000)
     }
 }
 
@@ -5051,16 +5077,20 @@ struct FoundWrit{
     owner_moniker: String,
     owner: u64,
     public: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sell_price: Option<u64>,
     tags: String,
     liked: bool,
     reposted: bool,
     repost_count: u64,
-    likes: Vec<u64>,
+    likes: Vec<u64>
 }
 
 impl FoundWrit {
@@ -5254,6 +5284,36 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     },
                 };
+
+                if writ.ts == 0 {
+                    brq(res, "ts cannot be 0");
+                    return;
+                }
+
+                if writ.ts > now() {
+                    brq(res, "ts cannot be in the future");
+                    return;
+                }
+
+                if writ.ts < now() - (315_360_000 * 2) {
+                    brq(res, "ts cannot be more than 20 years in the past");
+                    return;
+                }
+
+                // ensure writ.kind is valid
+                if writ.kind.len() > 64 {
+                    brq(res, "kind is too long");
+                    return;
+                }
+
+                // ensure writ.title is valid
+                if let Some(title) = &writ.title {
+                    if title.len() > 256 {
+                        brq(res, "title is too long");
+                        return;
+                    }
+                }
+
                 println!("adding writ to index: {:?}", writ);
                 if writ.owner != _owner.unwrap() {
                     brq(res, "not authorized to add posts to the index without the right credentials");
@@ -5365,6 +5425,40 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     }
                 };
+
+                if writ.ts == 0 {
+                    brq(res, "ts cannot be 0");
+                    return;
+                }
+
+                if writ.ts > now() {
+                    brq(res, "ts cannot be in the future");
+                    return;
+                }
+
+                if writ.ts < now() - (315_360_000 * 2) {
+                    brq(res, "ts cannot be more than 20 years in the past");
+                    return;
+                }
+
+                // ensure writ.kind is valid
+                if writ.kind.len() > 64 {
+                    brq(res, "kind is too long");
+                    return;
+                }
+
+                // ensure writ.title is valid
+                if let Some(title) = &writ.title {
+                    if title.len() > 256 {
+                        brq(res, "title is too long");
+                        return;
+                    }
+                }
+
+                if writ.owner != _owner.unwrap() {
+                    brq(res, "not authorized to update posts in the index without the right credentials");
+                    return;
+                }
                 // update the writ in the index
                 match SEARCH.update_doc(&writ) {
                     Ok(()) => jsn(res, json!({"ok": true})),
