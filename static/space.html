@@ -139,21 +139,29 @@
 
         const blog = section.blog()
         let lastSearchQuery = '', page = 0
+        //let cachedWrits = JSON.parse(localStorage.getItem('cachedWrits') || '{}')
         const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
             page = lastSearchQuery == q ? page + 1 : 0
-            const writs = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            //const localResults = Object.values(cachedWrits).filter(w => w && [w.title, w.tags, w.content].map(v => v && v.includes(k)))
+            const remoteResults = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            //console.log(remoteResults, localResults)
+            const writs = [/*...localResults,*/ ...remoteResults].filter((w, i, a) => a.findIndex(w2 => w2.ts == w.ts) == i)
             if (writs.length) {
                 lastSearchQuery = q
                 blog.innerHTML = ''
                 let i = -1
                 for (const writ of writs) {
+                    // cachedWrits[writ.ts] = writ
+                    // localStorage.setItem('cachedWrits', JSON.stringify(cachedWrits))
                     blog.append(article.writ(html`
 <header>
     <h2>${writ.title}</h2>
     <div>
-    <span>${niceTime(writ.ts)}</span>
-    ${divider}
-    <span>${writ.owner_moniker}</span>
+        <span data-ts="${writ.ts}">${niceTime(writ.ts)}</span>
+        ${divider}
+        <span>${writ.owner_moniker}</span>
+        ${divider}
+        <button class="menu-btn">⚙️</button>
     </div>
 </header>
 <section>
@@ -169,14 +177,43 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
         <span class="likes">${writ.likes.length}</span>
         <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
     </p>
-</footer>
-                    `))
+</footer>`))
                 }
             } else {
                 const nf = span.nothing_found({$:si.parentNode}, 404)
                 setTimeout(() => nf.remove(), 3500)
             }
         }
+
+        document.body.addEventListener('pointerdown', e => {
+            if (e.target.classList.contains('menu-btn')) {
+                const menu = e.target.parentNode.parentNode.parentNode.querySelector('.menu')
+                if (menu) {
+                    menu.remove()
+                } else {
+                    const writ = e.target.parentNode.parentNode.parentNode
+                    const ts = writ.querySelector('[data-ts]').getAttribute('data-ts')
+                    const menu = article.menu({$pre: writ}, 
+                        button({async onpointerdown() {
+                            const res = await http.del('/api/search/' + ts)
+                            if (res.ok) {
+                                writ.remove()
+                            }
+                        }}, 'delete'),
+                        button({async onpointerdown() {
+                            const w = await http.get('/api/search?ts='+ts)
+                            editing = ts
+                            wTitle.value = w.title
+                            wContent.value = w.content
+                            wTags.value = w.tags
+                            wPrice.value = w.price
+                            wState.value = w.state
+                            view('writer')
+                        }}, 'edit')
+                    )
+                }
+            }
+        })
 
         window.searchTag = async function searchTag(tag) {
             await searchForWrits(si.value = 'tags:'+tag.textContent)
@@ -205,6 +242,7 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
 
         view('blog', blog)
 
+        let editing
         const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title (optional)'}})
         const wContent = textarea({attr: {required: true, placeholder: 'content (required)'}})
         const wTags = input({attr: {type: 'text', pattern: '[a-zA-Z0-9 ]+', placeholder: 'tags (required)', required: true}})
@@ -215,7 +253,7 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 
             button({onpointerdown() {
-                writeWrit({
+                const w = {
                     title: wTitle.value.trim(),
                     content: wContent.value.trim(),
                     kind: 'post',
@@ -223,15 +261,20 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
                     public: wPublic.checked,
                     price: Number(wPrice.value) || undefined,
                     state: wState.value.trim() || '{}'
-                })
+                }
+                if (editing != null) {
+                    w.ts = Number(editing)
+                } 
+                writeWrit(w)
             }}, 'save')
         )
         view('writer', wwRoot)
 
         const writeWrit = async writ => {
             showMessage('me', 'writing post...')
-            const res = await http.put('/api/search', writ)        
+            const res = await http[writ.ts == null ? 'put' : 'patch']('/api/search', writ)        
             if (res.ok) {
+                editing = null
                 wTitle.value = ''
                 wContent.value = ''
                 wTags.value = ''
@@ -332,6 +375,14 @@ By using the site, you agree to these conditions, respectfully.
             localStorage.setItem('c', JSON.stringify([...msgs]))
         }
         const showMessage = async (who, data) => {
+            // santize the who, no html space characters
+            who = who.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            data = data.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            if (typeof who == 'string' && who.includes('error')) {
+                status.classList.add('error')
+                status.innerHTML = who + ': ' + data
+                return
+            }
             if (data == null && who.includes(":")) {
                 let wd = who.split(":")
                 who = wd.shift()
@@ -344,12 +395,21 @@ By using the site, you agree to these conditions, respectfully.
         }
         JSON.parse(localStorage.getItem('c') || '[]').forEach(wd => makeMessage(...wd))
         try {
-            let tries = 10
+            let tries = (localStorage.getItem('auth') || '').includes('true') ? 10 : 0
             const startSSE = () => {
-                if (tries-- == 0) {
+                if (tries-- <= 0) {
                     status.innerHTML = "Lost the connection!"
                     status.classList.add('error')
+                    // add a once listener on the status element that will retry to connect
+                    status.onpointerdown = e => {
+                        status.onpointerdown = null
+                        status.classList.remove('error')
+                        status.innerHTML = "Reconnecting..."
+                        tries = 3
+                        startSSE()
+                    }
                     showMessage('error', 'sse failed to connect')
+                    tries = 0
                     return
                 }
                 let sse = new EventSource(`/api/chat`), sid
@@ -369,7 +429,12 @@ By using the site, you agree to these conditions, respectfully.
                 })
                 return sse
             }
-            startSSE()
+            console.log(tries)
+            if (tries == 0) {
+                status.innerHTML = "Not authenticated, chat disabled"
+            } else {
+                startSSE()
+            }
         } catch(e) {
             showMessage('error: ', `${e} ${e.message} ${e.stack}`)
         }
