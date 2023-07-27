@@ -707,7 +707,7 @@
         }
         let lastSearchQuery = ''
         const searchForWrits = async (q = search.value, p = 0, k = 'post') => {
-            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
+            const writs = await http.get('/api/search?q=' + q + `&p=${p}&k=${k}`)
             if (writs.length) {
                 if (lastSearchQuery !== q) {
                     // if the search query has changed, reset the page to 0
@@ -725,7 +725,7 @@
 ${writ.title != '' ? `<h2>${writ.title}</h2>` : ''}
 <time>${niceTime(writ.ts)}</time>${divider}
 ${writ.public ? '' : `<span class="private"> private </span>${divider}`}
-<span class="owner">${monikers[++i]}</span>
+<span class="owner">${writ.owner_moniker}</span>
 </header>
 <section class="content">${writ.content}</section>
 <div class="tags">${writ.tags.split(' ').map(t => `<span class="tag">${t}</span>`).join(' ')}</div>

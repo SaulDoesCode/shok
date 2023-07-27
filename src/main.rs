@@ -101,7 +101,8 @@ fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     Ok(likes)
 }
 
-fn get_likes_for_writs(writs: &[u64]) -> anyhow::Result<HashMap<u64, Vec<u64>>> {
+#[allow(dead_code)]
+fn writs_likes(writs: &[u64]) -> anyhow::Result<HashMap<u64, Vec<u64>>> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKED_BY)?;
     let mut likes = HashMap::new();
@@ -5040,6 +5041,128 @@ struct SearchRequest{
     page: usize,
 }
 
+#[derive(Deserialize, Serialize)]
+struct FoundWrit{
+    ts: u64,
+    kind: String,
+    owner_moniker: String,
+    owner: u64,
+    public: bool,
+    title: Option<String>,
+    content: String,
+    state: Option<String>,
+    price: Option<u64>,
+    sell_price: Option<u64>,
+    tags: String,
+    liked: bool,
+    reposted: bool,
+    repost_count: u64,
+    likes: Vec<u64>,
+}
+
+impl FoundWrit {
+    #[allow(dead_code)]
+    fn build_from_writ(w: &Writ, requester_id: u64) -> anyhow::Result<Self> {
+        let mut liked = false;
+        let mut reposted = false;
+        let mut repost_count = 0;
+        let mut likes = vec![];
+        if let Ok(likers) = get_writ_likes(w.ts, 1000) {
+            liked = likers.contains(&requester_id);
+            likes = likers;
+        }
+        if let Ok(reposters) = get_reposters(w.ts, 0, 1000) {
+            repost_count = reposters.len() as u64;
+            reposted = reposters.contains(&requester_id);
+        }
+        Ok(Self{
+            ts: w.ts,
+            kind: w.kind.clone(),
+            owner_moniker: w.lookup_owner_moniker()?,
+            owner: w.owner,
+            public: w.public,
+            title: w.title.clone(),
+            content: w.content.clone(),
+            state: w.state.clone(),
+            price: w.price,
+            sell_price: w.sell_price,
+            tags: w.tags.clone(),
+            liked,
+            reposted,
+            repost_count,
+            likes,
+        })
+    }
+
+    fn build_from_writs(writs: &[Writ], requester_id: Option<u64>) -> anyhow::Result<Vec<Self>> {
+        let mut found_writs = vec![];
+        let rtx = DB.begin_read()?;
+        let t_likes= rtx.open_multimap_table(LIKED_BY)?;
+        let t_accounts = rtx.open_table(ACCOUNTS)?;
+        let t_reposts = match rtx.open_multimap_table(REPOSTS) {
+            Ok(t) => Some(t),
+            Err(_e) => { // for if there haven't been reposts yet
+                None
+            }
+        };
+        
+        // do manual lookup in a single read transaction for likes, owner_monikers, and reposts
+        for w in writs {
+            let mut liked = false;
+            let mut reposted = false;
+            let mut repost_count = 0;
+            let mut likes = vec![];
+            let mut owner_moniker = String::new();
+            let mut owner = 0;
+            
+            let mut mmv = t_likes.get(w.ts)?;
+            while let Some(r) = mmv.next() {
+                let liked_by_id = r?.value();
+                if requester_id.is_some_and(|id| id == liked_by_id) {
+                    liked = true;
+                }
+                likes.push(liked_by_id);
+            }
+
+            if let Some(t_reposts) = &t_reposts {
+                let mmv = t_reposts.get(w.ts)?;
+                for r in mmv {
+                    let ag  = r?;
+                    if requester_id.is_some_and(|id| id == ag.value()) {
+                        reposted = true;
+                    }
+                    repost_count += 1;
+                }
+            }
+
+            if let Some(ag) = t_accounts.get(w.owner)? {
+                owner_moniker = ag.value().0.to_string();
+                owner = w.owner;
+            }
+
+            found_writs.push(Self{
+                ts: w.ts,
+                kind: w.kind.clone(),
+                owner_moniker,
+                owner,
+                public: w.public,
+                title: w.title.clone(),
+                content: w.content.clone(),
+                state: w.state.clone(),
+                price: w.price,
+                sell_price: w.sell_price,
+                tags: w.tags.clone(),
+                liked,
+                reposted,
+                repost_count,
+                likes,
+            });
+        }
+        
+        Ok(found_writs)
+    }
+}
+
 #[handler]
 pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut _is_admin = false;
@@ -5075,14 +5198,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     None => None,
                 };
                 match SEARCH.search(&q, 128, page, _owner, kind, _owner) {
-                    Ok(writs) => {
-                        let mut monikers = vec![];
-                        for w in &writs {
-                            monikers.push(
-                                w.lookup_owner_moniker().unwrap_or("unknown".to_string())
-                            );
+                    Ok(writs) => match FoundWrit::build_from_writs(&writs, _owner) {
+                        Ok(writs) => res.render(Json(writs)),
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to search");
+                            return;
                         }
-                        res.render(Json((writs, monikers)));
                     },
                     Err(e) => brqe(res, &e.to_string(), "failed to search"),
                 }
@@ -5094,17 +5215,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
     } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
-                Ok(writs) => {
-                    // get the likes of each writ
-                    let wids = writs.iter().map(|w| w.ts).collect::<Vec<u64>>();
-                    match get_likes_for_writs(wids.as_slice()) {
-                        Ok(likes) => {
-                            res.render(Json(serde_json::json!({"writs": writs, "likes": likes})));
-                        },
-                        Err(e) => {
-                            res.render(Json(serde_json::json!({"writs": writs, "likes_err": e.to_string()})));
-                        }
-                    };
+                Ok(writs) => match FoundWrit::build_from_writs(&writs, _owner) {
+                    Ok(writs) => res.render(Json(writs)),
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to search");
+                        return;
+                    }
                 },
                 Err(e) => brqe(res, &e.to_string(), "failed to search"),
             },

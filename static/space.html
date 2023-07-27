@@ -125,8 +125,7 @@
                 if (!res.err) {
                     return res[0] && res[0].length || 0
                 }
-            } catch(e) {
-            }
+            } catch(e) {}
             return 0
         }
 
@@ -142,7 +141,7 @@
         let lastSearchQuery = '', page = 0
         const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
             page = lastSearchQuery == q ? page + 1 : 0
-            const [writs, monikers] = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            const writs = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
             if (writs.length) {
                 lastSearchQuery = q
                 blog.innerHTML = ''
@@ -153,7 +152,7 @@
                             <h2>${writ.title}</h2>
                             <span>${niceTime(writ.ts)}</span>
                             ${divider}
-                            <span>${monikers[++i]}</span>
+                            <span>${writ.owner_moniker}</span>
                         </header>
                         <section>${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(this, \`${writ.ts}\`)">Paid post, Buy Access</button>' : 'no content found')}</section>
                         <footer>
@@ -161,7 +160,7 @@
                                 ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
                             </p>
                             <p class="interactions">
-                                <span class="likes">${await writLikes(writ.ts)}</span>
+                                <span class="likes">${writ.likes}</span>
                                 <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
                             </p>
                         </footer>
