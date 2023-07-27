@@ -5094,7 +5094,6 @@ struct FoundWrit{
 }
 
 impl FoundWrit {
-    #[allow(dead_code)]
     fn build_from_writ(w: &Writ, requester_id: u64) -> anyhow::Result<Self> {
         let mut liked = false;
         let mut reposted = false;
@@ -5242,7 +5241,85 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 }
             },
             None => {
-                brq(res, "no query provided");
+                if let Some(ts) = req.query::<u64>("ts") { // if there's a ts param serve that one writ
+                    match SEARCH.get_doc(ts) {
+                        Ok(doc) => match Writ::from_doc(&doc, None) {
+                            Ok(writ) => match FoundWrit::build_from_writ(&writ, _owner.unwrap()) {
+                                Ok(writ) => res.render(Json(writ)),
+                                Err(e) => {
+                                    brqe(res, &e.to_string(), "failed to get writ");
+                                    return;
+                                }
+                            },
+                            Err(e) => {
+                                brqe(res, &e.to_string(), "failed to get writ");
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to get writ");
+                            return;
+                        }
+                    }
+                } else {
+                    if let Some(since) = req.query::<u64>("since") { // otherwise if there's a since query param then serve all writs since that timestamp
+                        let mut writs = vec![];
+                        let reader = SEARCH.index.reader().unwrap();
+                        let searcher = reader.searcher();
+                        
+                        let dt = DateTime::from_timestamp_secs(since as i64);
+                        
+                        let rq = tantivy::query::RangeQuery::new_date_bounds(
+                            "ts".to_string(),
+                            std::ops::Bound::Included(dt),
+                            std::ops::Bound::Unbounded,
+                        );
+
+                        match searcher.search(&rq, &TopDocs::with_limit(2000)) {
+                            Ok(top_docs) => {
+                                for (_score, doc_address) in top_docs {
+                                    let retrieved_doc = match searcher.doc(doc_address) {
+                                        Ok(doc) => doc,
+                                        Err(e) => {
+                                            brqe(res, &e.to_string(), "failed to search");
+                                            return;
+                                        }
+                                    };
+                                    match Writ::from_doc(&retrieved_doc, None) {
+                                        Ok(writ) => writs.push(writ),
+                                        Err(e) => {
+                                            if e.to_string().contains("must be set") {
+                                                continue;
+                                            } else {
+                                                brqe(res, &e.to_string(), "failed to formulate writ postSearch");
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                brqe(res, &e.to_string(), "failed to search");
+                                return;
+                            }
+                        };
+
+                        if writs.len() == 0 {
+                            brq(res, "no writs found");
+                            return;
+                        }
+
+                        match FoundWrit::build_from_writs(&writs, _owner) {
+                            Ok(writs) => res.render(Json(writs)),
+                            Err(e) => {
+                                brqe(res, &e.to_string(), "failed to search");
+                                return;
+                            }
+                        }
+                    } else {
+                        brq(res, "no query or ts param provided");
+                    }
+                }
             }
         }
     } else if req.method() == Method::POST {
