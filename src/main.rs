@@ -1546,6 +1546,7 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
 
             if now() - *SINCE_START > 14400 { // if it has beeb more than 4 hours since the server started, restart the server
                 println!("server has been running for more than 4 hours, restarting... hope for the best.. been real..");
+                Interaction::Broadcast("server has been running for more than 4 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
                 restart_server();
             }
         }
@@ -1557,7 +1558,9 @@ fn restart_server() {
         "./run.sh"
     } else {
         "./run.bat"
-    }).spawn().expect("failed to restart server");
+    })
+     .spawn()
+    .expect("failed to restart server");
     std::process::exit(0);
 }
 
