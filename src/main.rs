@@ -251,6 +251,7 @@ const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comme
 //                       root, ...(ts, id)
 const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
 
+#[derive(Clone)]
 enum Root {
     Writ(u64),
     Comment(CID)
@@ -266,6 +267,7 @@ fn make_comment(root: Root, owner: u64, content: &str) -> anyhow::Result<()> {
         let mut t_cc = wtx.open_table(COMMENT_CONTENTS)?;
         // let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?;
         t_cc.insert(cid, content)?;
+        // t_cl.insert(cid, owner)?;
         match root {
             Root::Writ(id) => t_rc.insert(id, cid)?,
             Root::Comment(cid2) => t_cr.insert(cid, cid2)?
@@ -350,7 +352,7 @@ fn get_comment_likes(cid: CID, limit: usize) -> anyhow::Result<Vec<u64>> {
     }
     Ok(likes)
 }
-
+#[allow(dead_code)]
 fn get_comment_content(cid: CID) -> anyhow::Result<String> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_table(COMMENT_CONTENTS)?;
@@ -364,6 +366,7 @@ fn get_comment_content(cid: CID) -> anyhow::Result<String> {
     }
 }
 
+#[derive(Debug)]
 struct CommentTree{
     root: CID,
     #[allow(dead_code)]
@@ -401,7 +404,7 @@ impl CommentTree {
             }
         }
         Ok(CommentTree{
-            root: (0, 0),
+            root: (id, 0),
             branches
         })
     }
@@ -418,13 +421,13 @@ impl CommentTree {
         }
         None
     }
-
+    #[allow(dead_code)]
     fn content(&self) -> anyhow::Result<String> {
         get_comment_content(self.root)
     }
     #[allow(dead_code)]
-    fn owner(&self) -> u64 {
-        self.root.1
+    fn has_owner(&self, owner: u64) -> bool {
+        self.root.1 == owner
     }
     #[allow(dead_code)]
     fn timestamp(&self) -> u64 {
@@ -432,22 +435,52 @@ impl CommentTree {
     }
 
     fn to_comment(&self) -> anyhow::Result<Comment> {
+        if self.root.1 == 0 {
+            return Err(anyhow!("cannot convert a writ root to a comment"));
+        }
+
+        let mut _contents = None;
         let mut likes = Vec::new();
         let mut replies = Vec::new();
         let rtx = DB.begin_read()?;
-        let t = rtx.open_multimap_table(COMMENT_LIKES)?;
-        let mut mmv = t.get(self.root)?;
-        while let Some(r) = mmv.next() {
-            likes.push(r?.value());
-        }
-        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
-        let mut mmv = t.get(self.root)?;
-        while let Some(r) = mmv.next() {
-            replies.push(CommentTree::build_from_comment(r?.value(), 0)?.to_comment()?);
-        }
+        match rtx.open_multimap_table(COMMENT_LIKES) {
+            Ok(t) => {
+                let mut mmv = t.get(self.root)?;
+                while let Some(r) = mmv.next() {
+                    likes.push(r?.value());
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!("failed to open comment likes table and retrieve the comment's likes: {}", e));
+            }
+        };
+        match rtx.open_multimap_table(COMMENTS_RELATA) {
+            Ok(t) => {
+                let mut mmv = t.get(self.root)?;
+                while let Some(r) = mmv.next() {
+                    replies.push(CommentTree::build_from_comment(r?.value(), 0)?.to_comment()?);
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!("failed to open comments relata table and retrieve the comment's replies: {}", e));
+            }
+        };
+        match rtx.open_table(COMMENT_CONTENTS) {
+            Ok(t) => {
+                if let Some(ag) = t.get(self.root)? {
+                    _contents = Some(ag.value().to_string());
+                } else {
+                    return Err(anyhow!("no comment content found"));
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!("failed to open comment contents table and retrieve the comment's innerds: {}", e));
+            }
+        };
+
         Ok(Comment{
             id: self.root,
-            content: self.content()?,
+            content: _contents.ok_or(anyhow!("no comment content found"))?,
             likes,
             replies
         })
@@ -462,17 +495,28 @@ impl CommentTree {
     }
 
     fn build_comment_tree(&self, limit: usize) -> anyhow::Result<CommentTree> {
-        let mut branches = Vec::new();
-        let rtx = DB.begin_read()?;
-        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
-        let mut mmv = t.get(self.root)?;
-        while let Some(r) = mmv.next() {
-            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
-            if branches.len() >= limit { break; }
-        }
-        Ok(CommentTree{
-            root: self.root,
-            branches
+        // when the self.root is not a comment, the second value will be zero, it needs to be handled differently, because it is a writ root comment
+        Ok(if self.root.1 == 0 {
+            // flesh out the branches
+            let mut branches = Vec::new();
+            let rtx = DB.begin_read()?;
+            let t = rtx.open_multimap_table(ROOT_COMMENTS)?;
+            let mut mmv = t.get(self.root.0)?;
+            while let Some(r) = mmv.next() {
+                branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
+                if branches.len() >= limit { break; }
+            }
+            CommentTree{root: self.root, branches}
+        } else {
+            let mut branches = Vec::new();
+            let rtx = DB.begin_read()?;
+            let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
+            let mut mmv = t.get(self.root)?;
+            while let Some(r) = mmv.next() {
+                branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
+                if branches.len() >= limit { break; }
+            }
+            CommentTree{root: self.root, branches}
         })
     }
 }
@@ -513,9 +557,12 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                     brq(res, "limit too high");
                     return;
                 }
-                // get all the root level comments for a writ
+                let mut is_root = false;
                 let tree = match root {
-                    Root::Writ(id) => CommentTree::build_from_writ_root(id, limit),
+                    Root::Writ(id) => {
+                        is_root = true;
+                        CommentTree::build_from_writ_root(id, limit)
+                    },
                     Root::Comment(cid) => CommentTree::build_from_comment(cid, limit)
                 };
                 match tree {
@@ -523,13 +570,32 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                         let tree = tree.build_comment_tree(limit);
                         match tree {
                             Ok(tree) => {
-                                let tree = tree.to_comment();
-                                match tree {
-                                    Ok(tree) => {
-                                        jsn(res, tree);
-                                    }
-                                    Err(e) => {
-                                        brq(res, &format!("failed to get comment tree: {}", e));
+                                if is_root {
+                                    match tree.branches.iter().map(|b| b.to_comment()).collect::<anyhow::Result<Vec<Comment>>>() {
+                                        Ok(comments) => {
+                                            jsn(res, json!({
+                                                "status": "ok",
+                                                "comments": comments,
+                                                "root": true
+                                            }));
+                                        }
+                                        Err(e) => {
+                                            brq(res, &format!("failed to get comment tree: {}", e));
+                                        }
+                                    };
+                                } else {
+                                    let tree = tree.to_comment();
+                                    match tree {
+                                        Ok(tree) => {
+                                            let comments = vec![tree];
+                                            jsn(res, json!({
+                                                "status": "ok",
+                                                "comments": comments
+                                            }));
+                                        }
+                                        Err(e) => {
+                                            brq(res, &format!("failed to get comment tree: {}", e));
+                                        }
                                     }
                                 }
                             }
@@ -549,12 +615,16 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                         Some(cid) => Root::Comment(cid),
                         None => root
                     };
-                    if let Err(e) = make_comment(root, owner, &pc.content) {
+                    if let Err(e) = make_comment(root.clone(), owner, &pc.content) {
                         brq(res, &format!("failed to make comment: {}", e));
                         return;
                     }
                     jsn(res, json!({
-                        "status": "ok"
+                        "status": "ok",
+                        "root": match root {
+                            Root::Writ(id) => format!("{}", id),
+                            Root::Comment(cid) => format!("{},{}", cid.0, cid.1)
+                        }
                     }));
                 }
                 Err(e) => {
