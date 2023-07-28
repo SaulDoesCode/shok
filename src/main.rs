@@ -570,6 +570,12 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                             return;
                         }
                     };
+
+                    if cid.1 != owner {
+                        brq(res, "not authorized to edit another's comment");
+                        return;
+                    }
+
                     if let Err(e) = edit_comment(cid, &pc.content) {
                         brq(res, &format!("failed to edit comment: {}", e));
                         return;
