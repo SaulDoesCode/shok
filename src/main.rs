@@ -493,7 +493,7 @@ struct PutComment {
 
 #[handler]
 async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the comments_api");
             return;
@@ -606,7 +606,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
 
 #[handler]
 async fn comment_liking_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, _moniker, is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, is_admin)) = auth_step_svs(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the comments_api");
             return;
@@ -720,7 +720,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                 msg = msg.trim_start_matches("@");
                 let mut args = msg.split_whitespace();
                 if let Some(moniker) = args.next() {
-                    if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                    if let Ok(acc) = Account::from_moniker(moniker) {
                         let mut msg = String::new();
                         while let Some(arg) = args.next() {
                             msg.push_str(arg);
@@ -744,7 +744,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             if let Some(moniker) = args.next() {
                                 if moniker == "me" || moniker == "I" {
                                     auto_msg(format!("{} is {}", moniker, uid)).i(uid as u64);
-                                } else if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                } else if let Ok(acc) = Account::from_moniker(moniker) {
                                     auto_msg(format!("{} is {}", moniker, acc.id)).i(uid as u64);
                                 } else {
                                     str_auto_msg("No such identity found").i(uid as u64);
@@ -766,7 +766,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         }
                         "follow" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                if let Ok(acc) = Account::from_moniker(moniker) {
                                     if let Err(e) = follow_account(uid as u64, acc.id) {
                                         auto_msg(format!("failed to follow {}: {}", moniker, e)).i(uid as u64);
                                     } else {
@@ -781,7 +781,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         }
                         "unfollow" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(acc) = Account::from_moniker(moniker, &DB) {
+                                if let Ok(acc) = Account::from_moniker(moniker) {
                                     if let Err(e) = unfollow_account(uid as u64, acc.id) {
                                         auto_msg(format!("failed to unfollow {}: {}", moniker, e)).i(uid as u64);
                                     } else {
@@ -796,7 +796,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         }
                         "transfer" => {
                             if let Some(to) = args.next() {
-                                if let Ok(acc) = Account::from_moniker(to, &DB) {
+                                if let Ok(acc) = Account::from_moniker(to) {
                                     if let Some(amount) = args.next() {
                                         if let Ok(amount) = amount.parse::<u64>() {
                                             let when = args.next().map(|s| s.parse::<u64>().ok()).flatten();
@@ -833,11 +833,11 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             // if there is a next arg that can be read as a u64 ammount then if the account is admin add balance
                             if let Some(amount) = args.next() {
                                 if let Ok(amount) = amount.parse::<u64>() {
-                                    if let Ok(mut acc) = Account::from_id(uid as u64, &DB) {
+                                    if let Ok(mut acc) = Account::from_id(uid as u64) {
                                         if acc.id == ADMIN_ID {
                                             auto_msg(format!("adding {} to balance", amount)).i(uid as u64);
                                             acc.balance += amount;
-                                            match acc.save(&DB, false) {
+                                            match acc.save(false) {
                                                 Ok(_) => {
                                                     auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
                                                 }
@@ -856,7 +856,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 }
                             }
                             // check own balance using id to get account
-                            if let Ok(acc) = Account::from_id(uid as u64, &DB) {
+                            if let Ok(acc) = Account::from_id(uid as u64) {
                                 auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
                             } else {
                                 auto_msg(format!("failed to get balance")).i(uid as u64);
@@ -880,7 +880,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             auto_msg(format!("server time: {}", now())).i(uid as u64);
                         }
                         "cmd" => {
-                            if let Ok(acc) = Account::from_id(uid as u64, &DB) {
+                            if let Ok(acc) = Account::from_id(uid as u64) {
                                 if acc.id == ADMIN_ID {
                                     if let Some(cmd) = args.next() {
                                         let args = args.collect::<Vec<&str>>();
@@ -921,7 +921,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 } else {
                                     // handle moniker use instead of id
-                                    if let Ok(acc) = Account::from_moniker(to, &DB) {
+                                    if let Ok(acc) = Account::from_moniker(to) {
                                         let mut msg = String::new();
                                         while let Some(arg) = args.next() {
                                             msg.push_str(arg);
@@ -1325,8 +1325,8 @@ fn interaction(id: u64, i: Interaction) {
     match i {
         Interaction::Transfer(to, amount, when) => {
             tracing::info!("account {} transfer: {} to {} at {:?}", id, amount, to, when); // find the to account and transfer
-            if let Ok(mut acc) = Account::from_id(id as u64, &DB) {
-                if let Ok(mut recipient_acc) = Account::from_id(to as u64, &DB) {
+            if let Ok(mut acc) = Account::from_id(id as u64) {
+                if let Ok(mut recipient_acc) = Account::from_id(to as u64) {
                     if let Some(when) = when {
                         if when < now() {
                             auto_msg(format!("cannot transfer to the past")).i(id);
@@ -1338,7 +1338,7 @@ fn interaction(id: u64, i: Interaction) {
                                 msg(to, format!("{} will be transfered to You ({}) from {}, at {}", amount, to, id, when)).i(id);                            
                             }
                         }
-                    } else if let Err(e) = acc.transfer(&mut recipient_acc, amount, &DB) {
+                    } else if let Err(e) = acc.transfer(&mut recipient_acc, amount) {
                         auto_msg(format!("failed to transfer: {}", e)).i(id);
                     } else {
                         auto_msg(format!("transfered {} to {}", amount, to)).i(id);
@@ -1643,8 +1643,8 @@ struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     owner: u64,
     pd: PhantomData<T>,
 }
-                                                                      //  id,  pm, moniker, is_admin
-async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Option<u32>, String, bool)> {
+                                                                      //  id,  pm, is_admin
+async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Option<u32>, bool)> {
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
@@ -1661,35 +1661,27 @@ async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Op
                     return None;
                 }
             } else {
-                brq(res, "not authorized to use the scoped_variable_api, bad token and not an admin");
+                brq(res, "not authorized to use this api, bad token and not an admin");
                 return None;
             }
         } else {
-            brq(res, "not authorized to use the scoped_variable_api");
+            brq(res, "not authorized to use this api");
             return None;
         }
     }
 
     if _owner.is_none() {
-        brq(res, "not authorized to use the scoped_variable_api, no owner");
+        brq(res, "not authorized to use this api, no owner");
         return None;
     }
 
-    let moniker = match req.param::<String>("moniker") {
-        Some(m) => m,
-        None => {
-            brq(res, "invalid scoped_variable_api request, no moniker provided");
-            return None;
-        }
-    };
-
-    Some((_owner.unwrap(), _pm, moniker, _is_admin))
+    Some((_owner.unwrap(), _pm, _is_admin))
 }
 
 #[handler]
 async fn svs_transaction_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // svs.set_many, svs.rm_many    
-    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the scoped_variable_api");
             return;
@@ -1758,11 +1750,11 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
     let moniker = match req.param::<String>("moniker") {
         Some(m) => m,
         None => {
-            brq(res, "invalid scoped_variable_api request, no moniker provided");
+            brq(res, "missing moniker");
             return;
         }
     };
-    if let Some((owner, pm, _moniker, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
         match *req.method() {
             Method::GET => {
                 if pm.is_some() && !pm.is_some_and(|pm| pm == u32::MAX || pm == u32::MAX - 1) {
@@ -2735,7 +2727,7 @@ async fn main() {
                 .push(
                     Router::with_path("/svs")
                     .handle(svs_transaction_api)
-                    .path("/<moniker>")
+                    .path("<moniker>")
                     .handle(scoped_variable_store_api)
                 )
                 .push(
@@ -2809,8 +2801,8 @@ impl Account {
         }
     }
 
-    pub fn from_moniker(moniker: &str, db: &Database) -> Result<Self, redb::Error> {
-        let rtx = db.begin_read()?;
+    pub fn from_moniker(moniker: &str) -> Result<Self, redb::Error> {
+        let rtx = DB.begin_read()?;
         let t = rtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
         let id = if let Some(ag) = t.get(moniker)? {
             ag.value()
@@ -2911,13 +2903,13 @@ impl Account {
         unrepost(self.id, writs)
     }
 
-    pub fn transfer(&mut self, other: &mut Self, amount: u64, db: &Database) -> Result<(), redb::Error> {
+    pub fn transfer(&mut self, other: &mut Self, amount: u64) -> Result<(), redb::Error> {
         if self.balance < amount {
             return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Insufficient funds.")));
         }
         self.balance -= amount;
         other.balance += amount;
-        let wrtx = db.begin_write()?;
+        let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(ACCOUNTS)?;
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
@@ -2927,9 +2919,9 @@ impl Account {
         Ok(())
     }
 
-    pub fn increase_exp(&mut self, i: u64, db: &Database) -> Result<u64, redb::Error> {
+    pub fn increase_exp(&mut self, i: u64) -> Result<u64, redb::Error> {
         self.xp += i;
-        let wrtx = db.begin_write()?;
+        let wrtx = DB.begin_write()?;
         {
             let mut t = wrtx.open_table(ACCOUNTS)?;
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
@@ -2938,8 +2930,8 @@ impl Account {
         Ok(self.xp)
     }
 
-    pub fn save(&self, db: &Database, new_acc: bool) -> Result<(), redb::Error> {
-        let wrtx = db.begin_write()?;
+    pub fn save(&self, new_acc: bool) -> Result<(), redb::Error> {
+        let wrtx = DB.begin_write()?;
         let mut _assigned_moniker: Option<String> = None;
         {
             let mut t = wrtx.open_table(ACCOUNTS)?;
@@ -3013,8 +3005,8 @@ impl Account {
         Ok(())
     }
 
-    pub fn from_id(id: u64, db: &Database) -> Result<Self, redb::Error> {
-        let rtx = db.begin_read()?;
+    pub fn from_id(id: u64) -> Result<Self, redb::Error> {
+        let rtx = DB.begin_read()?;
         let mut acc = None;
         let t = rtx.open_table(ACCOUNTS)?;
         if let Some(ag) = t.get(id)? {
@@ -3389,7 +3381,7 @@ async fn health(res: &mut Response){
 async fn moniker_lookup(req: &mut Request, res: &mut Response) {
     if let Some(_) = session_check(req, None).await {
         if let Some(id) = req.param::<u64>("id") {
-            if let Ok(acc) = Account::from_id(id, &DB) {
+            if let Ok(acc) = Account::from_id(id) {
                 jsn(res, serde_json::json!({
                     "status": "ok",
                     "moniker": acc.moniker
@@ -3398,7 +3390,7 @@ async fn moniker_lookup(req: &mut Request, res: &mut Response) {
                 brq(res, "not found");
             }
         } else if let Some(moniker) = req.param::<String>("id") {
-            if let Ok(acc) = Account::from_moniker(&moniker, &DB) {
+            if let Ok(acc) = Account::from_moniker(&moniker) {
                 jsn(res, serde_json::json!({
                     "status": "ok",
                     "id": acc.id
@@ -3456,7 +3448,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             }
         }
         let mut _acc = None;
-        match Account::from_moniker(&ar.moniker, &DB) {
+        match Account::from_moniker(&ar.moniker) {
             Ok(acc) => if !acc.check_password(ar.pwd.as_bytes()) {
                 println!("acc: {:?}", acc);
                 res.status_code(StatusCode::UNAUTHORIZED);
@@ -3483,12 +3475,12 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 
         if ar.moniker == "admin" {
             // check if admin exists
-            match Account::from_id(ADMIN_ID, &DB) {
+            match Account::from_id(ADMIN_ID) {
                 Ok(mut acc) => if acc.check_password(ar.pwd.as_bytes()) {
                    // verified admin 
                    acc.xp += 1;
                    admin_xp = Some(acc.xp);
-                   if let Err(e) = acc.save(&DB, false) {
+                   if let Err(e) = acc.save(false) {
                        brqe(res, &e.to_string(), "failed to update admin account");
                        return;
                    }
@@ -3500,7 +3492,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                     println!("admin not seen before, also moniker lookup error because of this: {:?}", e);
                     let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
                     let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
-                    match na.save(&DB, true) {
+                    match na.save(true) {
                         Ok(_) => {
                             // new admin
                         },
@@ -3547,7 +3539,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             acc.id
         } else {
             let mut sid = rand::thread_rng().gen::<u64>();
-            while Account::from_id(sid, &DB).is_ok() { // check for clash
+            while Account::from_id(sid).is_ok() { // check for clash
                 sid = rand::thread_rng().gen::<u64>();
             }
             sid
@@ -3562,7 +3554,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 
         acc.xp += 1;
         
-        match acc.save(&DB, new_acc) {
+        match acc.save(new_acc) {
             Ok(()) => {
                 if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
                     res.status_code(StatusCode::ACCEPTED);
@@ -3829,7 +3821,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
         }
     };
 
-    if let Ok(mut acc) = Account::from_id(id, &DB) {
+    if let Ok(mut acc) = Account::from_id(id) {
         // check the req method and the param for the operation we're doing, GET: /api/<op>/<id>
         match *req.method() {
             Method::GET => match op.as_str() {
@@ -4691,7 +4683,7 @@ impl Writ {
     }
 
     fn lookup_owner_moniker(&self) -> anyhow::Result<String> {
-        Ok(Account::from_id(self.owner, &DB)?.moniker)
+        Ok(Account::from_id(self.owner)?.moniker)
     }
 
     #[allow(dead_code)]
@@ -4711,11 +4703,11 @@ impl Writ {
         if self.price.is_none() {
             return Err(anyhow!("this writ is not for sale"));
         }
-        let mut acc = Account::from_id(id, &DB)?;
+        let mut acc = Account::from_id(id)?;
         if acc.balance < self.price.unwrap() {
             return Err(anyhow!("you don't have enough money to buy this writ"));
         }
-        acc.transfer(&mut Account::from_id(self.owner, &DB)?, self.price.unwrap(), &DB)?;
+        acc.transfer(&mut Account::from_id(self.owner)?, self.price.unwrap())?;
         add_access_for(id, &[self.ts])?;
         Ok(())
     }
@@ -5028,7 +5020,7 @@ pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut R
             Ok(reposters) => {
                 let mut monikers = vec![];
                 for id in reposters {
-                    if let Ok(acc) = Account::from_id(*id, &DB) {
+                    if let Ok(acc) = Account::from_id(*id) {
                         monikers.push(acc.moniker);
                     } else {
                         monikers.push("unknown".to_string());
@@ -5050,7 +5042,7 @@ pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Res
             Ok(likes) => {
                 let mut monikers = vec![];
                 for id in likes {
-                    if let Ok(acc) = Account::from_id(*id, &DB) {
+                    if let Ok(acc) = Account::from_id(*id) {
                         monikers.push(acc.moniker);
                     } else {
                         monikers.push("unknown".to_string());
