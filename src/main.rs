@@ -10,7 +10,7 @@ use serde_json::json;
 use sthash::Hasher;
 use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::Duration, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
-use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
+use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction, ReadOnlyMultimapTable, ReadOnlyTable};
 use tantivy::{
     doc,
     collector::TopDocs,
@@ -101,7 +101,7 @@ fn get_writ_likes(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     Ok(likes)
 }
 
-#[allow(dead_code)]
+/*#[allow(dead_code)]
 fn writs_likes(writs: &[u64]) -> anyhow::Result<HashMap<u64, Vec<u64>>> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_multimap_table(LIKED_BY)?;
@@ -115,7 +115,7 @@ fn writs_likes(writs: &[u64]) -> anyhow::Result<HashMap<u64, Vec<u64>>> {
         likes.insert(*id, likes_vec);
     }
     Ok(likes)
-}
+}*/
 
 fn get_liked_by(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let rtx = DB.begin_read()?;
@@ -169,15 +169,14 @@ fn unfollow_account(id: u64, follow_id: u64) -> anyhow::Result<()> {
     wtx.commit()?;
     Ok(())
 }
-
-#[allow(dead_code)]
+/*#[allow(dead_code)]
 fn follow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) -> anyhow::Result<()> {
     let mut t = wtx.open_multimap_table(FOLLOWS)?;
     t.insert(id, follow_id)?;
     let mut t = wtx.open_multimap_table(FOLLOWED_BY)?;
     t.insert(follow_id, id)?;
     Ok(())
-}
+}*/
 
 fn unfollow_account_internal(wtx: &WriteTransaction, id: u64, follow_id: u64) -> anyhow::Result<()> {
     let mut t = wtx.open_multimap_table(FOLLOWS)?;
@@ -239,19 +238,15 @@ fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-
 //          ts , owner
 type CID = (u64, u64);
 
 const ROOT_COMMENTS: MultimapTableDefinition<u64, CID> = MultimapTableDefinition::new("root_comments");
-//                         root, ...(sub, kind/preposition)
 const COMMENTS_RELATA: MultimapTableDefinition<CID, CID> = MultimapTableDefinition::new("sub_comments");
-
 const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
-//                       root, ...(ts, id)
 const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Root {
     Writ(u64),
     Comment(CID)
@@ -261,20 +256,77 @@ fn make_comment(root: Root, owner: u64, content: &str) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     let ts = now();
     let cid: CID = (ts, owner);
-    {
-        let mut t_rc = wtx.open_multimap_table(ROOT_COMMENTS)?;
-        let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
-        let mut t_cc = wtx.open_table(COMMENT_CONTENTS)?;
-        // let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?;
-        t_cc.insert(cid, content)?;
-        // t_cl.insert(cid, owner)?;
+    { // let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?; t_cl.insert(cid, owner)?;
+        wtx.open_table(COMMENT_CONTENTS)?.insert(cid, content)?;
         match root {
-            Root::Writ(id) => t_rc.insert(id, cid)?,
-            Root::Comment(cid2) => t_cr.insert(cid, cid2)?
+            Root::Writ(id) => wtx.open_multimap_table(ROOT_COMMENTS)?.insert(id, cid)?,
+            Root::Comment(cid2) => wtx.open_multimap_table(COMMENTS_RELATA)?.insert(cid, cid2)?
         };
     }
     wtx.commit()?;
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FoundComment {
+    id: CID,
+    content: String,
+    likes: Vec<u64>,
+    replies: Vec<FoundComment>
+}
+
+fn get_comments_for_writ(id: u64, limit: usize) -> anyhow::Result<Vec<FoundComment>> {
+    let rtx = DB.begin_read()?;
+    let rt = rtx.open_multimap_table(ROOT_COMMENTS)?;
+    let cr = rtx.open_multimap_table(COMMENTS_RELATA)?;
+    let cc = rtx.open_table(COMMENT_CONTENTS)?;
+    let cl = rtx.open_multimap_table(COMMENT_LIKES)?;
+    let mut mmv = rt.get(id)?;
+    let mut comments = Vec::new();
+ 
+
+    while let Some(r) = mmv.next() {
+        comments.push(handle_comment_relata(&cr, &cc, &cl, r?.value(), limit)?);
+    }
+
+    if comments.len() == 0 {
+        return Err(anyhow!("no comments found"));
+    }
+    
+    Ok(comments)
+}
+
+/*fn get_subcomments_for_comment(cid: CID, limit: usize) -> anyhow::Result<Vec<FoundComment>> {
+    let rtx = DB.begin_read()?;
+    let cr = rtx.open_multimap_table(COMMENTS_RELATA)?;
+    let cc = rtx.open_table(COMMENT_CONTENTS)?;
+    let cl = rtx.open_multimap_table(COMMENT_LIKES)?;
+    let mut comments = Vec::new();
+    let mut mmv = cr.get(cid)?;
+    while let Some(r) = mmv.next() {
+        let fc = handle_comment_relata(&cr, &cc, &cl, r?.value(), limit)?;
+        comments.push(fc);
+    }
+    Ok(comments)
+}*/
+
+fn handle_comment_relata(cr: &ReadOnlyMultimapTable<CID, CID>, cc: &ReadOnlyTable<CID, &str>, cl: &ReadOnlyMultimapTable<CID, u64>, cid: CID, limit: usize) -> anyhow::Result<FoundComment> {
+    let mut likes = Vec::new();
+    let mut replies = Vec::new();
+    let mut mmv = cl.get(cid)?;
+    while let Some(r) = mmv.next() {
+        likes.push(r?.value());
+    }
+    let mut mmv = cr.get(cid)?;
+    let content = if let Some(ag) = cc.get(cid)? {
+        ag.value().to_string()
+    } else {
+        return Err(anyhow!("no comment content found"));
+    };
+    while let Some(r) = mmv.next() {
+        replies.push(handle_comment_relata(cr, cc, cl, r?.value(), limit)?);
+    }
+    Ok(FoundComment{id: cid, content, likes, replies})
 }
 
 fn edit_comment(cid: CID, content: &str) -> anyhow::Result<()> {
@@ -352,7 +404,7 @@ fn get_comment_likes(cid: CID, limit: usize) -> anyhow::Result<Vec<u64>> {
     }
     Ok(likes)
 }
-#[allow(dead_code)]
+/*#[allow(dead_code)]
 fn get_comment_content(cid: CID) -> anyhow::Result<String> {
     let rtx = DB.begin_read()?;
     let t = rtx.open_table(COMMENT_CONTENTS)?;
@@ -364,186 +416,20 @@ fn get_comment_content(cid: CID) -> anyhow::Result<String> {
         Some(s) => Ok(s),
         None => Err(anyhow!("no comment content found"))
     }
-}
-
-#[derive(Debug)]
-struct CommentTree{
-    root: CID,
-    #[allow(dead_code)]
-    branches: Vec<CommentTree>
-}
-
-
-impl CommentTree {
-    fn build_from_comment(cid: CID, limit: usize) -> anyhow::Result<CommentTree> {
-        let mut branches = Vec::new();
-        let rtx = DB.begin_read()?;
-        let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
-        let mut mmv = t.get(cid)?;
-        while let Some(r) = mmv.next() {
-            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
-            if branches.len() >= limit {
-                break;
-            }
-        }
-        Ok(CommentTree{
-            root: cid,
-            branches
-        })
-    }
-
-    fn build_from_writ_root(id: u64, limit: usize) -> anyhow::Result<CommentTree> {
-        let mut branches = Vec::new();
-        let rtx = DB.begin_read()?;
-        let t = rtx.open_multimap_table(ROOT_COMMENTS)?;
-        let mut mmv = t.get(id)?;
-        while let Some(r) = mmv.next() {
-            branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
-            if branches.len() >= limit {
-                break;
-            }
-        }
-        Ok(CommentTree{
-            root: (id, 0),
-            branches
-        })
-    }
-
-    #[allow(dead_code)]
-    fn find(&self, id: CID) -> Option<&CommentTree> {
-        if self.root == id {
-            return Some(self);
-        }
-        for b in &self.branches {
-            if let Some(c) = b.find(id) {
-                return Some(c);
-            }
-        }
-        None
-    }
-    #[allow(dead_code)]
-    fn content(&self) -> anyhow::Result<String> {
-        get_comment_content(self.root)
-    }
-    #[allow(dead_code)]
-    fn has_owner(&self, owner: u64) -> bool {
-        self.root.1 == owner
-    }
-    #[allow(dead_code)]
-    fn timestamp(&self) -> u64 {
-        self.root.0
-    }
-
-    fn to_comment(&self) -> anyhow::Result<Comment> {
-        if self.root.1 == 0 {
-            return Err(anyhow!("cannot convert a writ root to a comment"));
-        }
-
-        let mut _contents = None;
-        let mut likes = Vec::new();
-        let mut replies = Vec::new();
-        let rtx = DB.begin_read()?;
-        match rtx.open_multimap_table(COMMENT_LIKES) {
-            Ok(t) => {
-                let mut mmv = t.get(self.root)?;
-                while let Some(r) = mmv.next() {
-                    likes.push(r?.value());
-                }
-            }
-            Err(e) => {
-                return Err(anyhow!("failed to open comment likes table and retrieve the comment's likes: {}", e));
-            }
-        };
-        match rtx.open_multimap_table(COMMENTS_RELATA) {
-            Ok(t) => {
-                let mut mmv = t.get(self.root)?;
-                while let Some(r) = mmv.next() {
-                    replies.push(CommentTree::build_from_comment(r?.value(), 0)?.to_comment()?);
-                }
-            }
-            Err(e) => {
-                return Err(anyhow!("failed to open comments relata table and retrieve the comment's replies: {}", e));
-            }
-        };
-        match rtx.open_table(COMMENT_CONTENTS) {
-            Ok(t) => {
-                if let Some(ag) = t.get(self.root)? {
-                    _contents = Some(ag.value().to_string());
-                } else {
-                    return Err(anyhow!("no comment content found"));
-                }
-            }
-            Err(e) => {
-                return Err(anyhow!("failed to open comment contents table and retrieve the comment's innerds: {}", e));
-            }
-        };
-
-        Ok(Comment{
-            id: self.root,
-            content: _contents.ok_or(anyhow!("no comment content found"))?,
-            likes,
-            replies
-        })
-    }
-    #[allow(dead_code)]
-    fn from_comment(c: &Comment) -> CommentTree {
-        let mut branches = Vec::new();
-        for r in &c.replies {
-            branches.push(CommentTree::from_comment(r));
-        }
-        CommentTree{root: c.id, branches}
-    }
-
-    fn build_comment_tree(&self, limit: usize) -> anyhow::Result<CommentTree> {
-        // when the self.root is not a comment, the second value will be zero, it needs to be handled differently, because it is a writ root comment
-        Ok(if self.root.1 == 0 {
-            // flesh out the branches
-            let mut branches = Vec::new();
-            let rtx = DB.begin_read()?;
-            let t = rtx.open_multimap_table(ROOT_COMMENTS)?;
-            let mut mmv = t.get(self.root.0)?;
-            while let Some(r) = mmv.next() {
-                branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
-                if branches.len() >= limit { break; }
-            }
-            CommentTree{root: self.root, branches}
-        } else {
-            let mut branches = Vec::new();
-            let rtx = DB.begin_read()?;
-            let t = rtx.open_multimap_table(COMMENTS_RELATA)?;
-            let mut mmv = t.get(self.root)?;
-            while let Some(r) = mmv.next() {
-                branches.push(CommentTree::build_from_comment(r?.value(), limit)?);
-                if branches.len() >= limit { break; }
-            }
-            CommentTree{root: self.root, branches}
-        })
-    }
-}
+}*/
 
 #[derive(Serialize, Deserialize)]
-struct Comment{
-    id: CID,
-    content: String,
-    likes: Vec<u64>,
-    replies: Vec<Comment>
-}
-
-#[derive(Serialize, Deserialize)]
-struct PutComment {
-    comment: Option<CID>,
-    content: String
-}
+struct PutComment {id: Option<CID>, content: String}
 
 #[handler]
 async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the comments_api");
             return;
         }
         let root = match &req.param::<u64>("writ") {
-            Some(id) => Root::Writ(*id),
+            Some(id) => *id,
             _ => {
                 brq(res, "missing writ param");
                 return;
@@ -552,68 +438,29 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
 
         match *req.method() {
             Method::GET => {
-                let limit = req.query::<usize>("l").unwrap_or(256);
-                if limit > 256 && !_is_admin {
+                let limit = req.query::<usize>("l").unwrap_or(512);
+                if limit > 512 && !_is_admin {
                     brq(res, "limit too high");
                     return;
                 }
-                let mut is_root = false;
-                let tree = match root {
-                    Root::Writ(id) => {
-                        is_root = true;
-                        CommentTree::build_from_writ_root(id, limit)
-                    },
-                    Root::Comment(cid) => CommentTree::build_from_comment(cid, limit)
-                };
-                match tree {
-                    Ok(tree) => {
-                        let tree = tree.build_comment_tree(limit);
-                        match tree {
-                            Ok(tree) => {
-                                if is_root {
-                                    match tree.branches.iter().map(|b| b.to_comment()).collect::<anyhow::Result<Vec<Comment>>>() {
-                                        Ok(comments) => {
-                                            jsn(res, json!({
-                                                "status": "ok",
-                                                "comments": comments,
-                                                "root": true
-                                            }));
-                                        }
-                                        Err(e) => {
-                                            brq(res, &format!("failed to get comment tree: {}", e));
-                                        }
-                                    };
-                                } else {
-                                    let tree = tree.to_comment();
-                                    match tree {
-                                        Ok(tree) => {
-                                            let comments = vec![tree];
-                                            jsn(res, json!({
-                                                "status": "ok",
-                                                "comments": comments
-                                            }));
-                                        }
-                                        Err(e) => {
-                                            brq(res, &format!("failed to get comment tree: {}", e));
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                brq(res, &format!("failed to build comment tree: {}", e));
-                            }
-                        }
+                match get_comments_for_writ(root, limit) {
+                    Ok(comments) => {
+                        jsn(res, json!({
+                            "status": "ok",
+                            "comments": comments
+                        }));
+                        return;
                     }
                     Err(e) => {
-                        brq(res, &format!("failed to build comment tree: {}", e));
+                        brq(res, &format!("failed to get comments: {}", e));
                     }
-                }
+                };
             }
             Method::POST => match req.parse_json_with_max_size::<PutComment>(30000).await {
                 Ok(pc) => {
-                    let root = match pc.comment {
+                    let root = match pc.id {
                         Some(cid) => Root::Comment(cid),
-                        None => root
+                        None => Root::Writ(root)
                     };
                     if let Err(e) = make_comment(root.clone(), owner, &pc.content) {
                         brq(res, &format!("failed to make comment: {}", e));
@@ -633,7 +480,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
             }
             Method::PUT => match req.parse_json_with_max_size::<PutComment>(30000).await {
                 Ok(pc) => {
-                    let cid = match pc.comment {
+                    let cid = match pc.id {
                         Some(cid) => cid,
                         None => {
                             brq(res, "missing comment param");
@@ -659,7 +506,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
                 }
             } 
             Method::DELETE => if let Some(ts) = req.param::<u64>("comment") {
-                if let Err(e) = delete_comment(root, (ts, owner)) {
+                if let Err(e) = delete_comment(Root::Writ(root), (ts, owner)) {
                     brq(res, &format!("failed to delete comment: {}", e));
                     return;
                 }
@@ -676,7 +523,7 @@ async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, 
 
 #[handler]
 async fn comment_liking_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, is_admin)) = api_auth_step(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the comments_api");
             return;
@@ -1571,11 +1418,9 @@ const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
 // token, account_id, expiry
 const SESSIONS: TableDefinition<&[u8], (u64, u64)> = TableDefinition::new("sessions");
-
 const SESSION_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("session_expiries");
 
-#[allow(dead_code)]
-fn expire_session(token: &str) -> anyhow::Result<()> {
+/*fn expire_session(token: &str) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
         let mut t = wrtx.open_table(SESSIONS)?;
@@ -1584,7 +1429,6 @@ fn expire_session(token: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-#[allow(dead_code)]
 fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
@@ -1593,7 +1437,7 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
         t.insert(expiry, tkh.as_slice())?;
     }
     Ok(())
-}
+}*/
 
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
     std::thread::spawn(|| {
@@ -1689,7 +1533,7 @@ fn register_resource_expiry(resource: &[u8], expiry: u64) -> anyhow::Result<()> 
     Ok(())
 }
 
-#[allow(dead_code)]
+/*#[allow(dead_code)]
 fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
     {
@@ -1698,7 +1542,7 @@ fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
     }
     wrtx.commit()?;
     Ok(())
-}
+}*/
 
 const SCOPED_VARIABLES: TableDefinition<(u64, &str), &[u8]> = TableDefinition::new("SCOPED_VARIABLES");
 const SCOPED_VARIABLE_OWNERSHIP_INDEX: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("SCOPED_VARIABLE_OWNERSHIP_INDEX");
@@ -1714,7 +1558,7 @@ struct ScopedVariableStore<T: Serialize + serde::de::DeserializeOwned + Clone> {
     pd: PhantomData<T>,
 }
                                                                       //  id,  pm, is_admin
-async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Option<u32>, bool)> {
+async fn api_auth_step(req: &mut Request, res: &mut Response) -> Option<(u64, Option<u32>, bool)> {
     let mut _pm: Option<u32> = None;
     let mut _owner: Option<u64> = None;
     let mut _is_admin = false;
@@ -1751,7 +1595,7 @@ async fn auth_step_svs(req: &mut Request, res: &mut Response) -> Option<(u64, Op
 #[handler]
 async fn svs_transaction_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     // svs.set_many, svs.rm_many    
-    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
             brq(res, "not authorized to use the scoped_variable_api");
             return;
@@ -1824,7 +1668,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
             return;
         }
     };
-    if let Some((owner, pm, _is_admin)) = auth_step_svs(req, res).await {
+    if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
         match *req.method() {
             Method::GET => {
                 if pm.is_some() && !pm.is_some_and(|pm| pm == u32::MAX || pm == u32::MAX - 1) {
@@ -1907,7 +1751,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         let pd = PhantomData::default();
         Ok(Self{owner, pd})
     }
-    #[allow(dead_code)]
+
     fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
         let wrtx = DB.begin_write()?;
         {
@@ -2527,7 +2371,7 @@ fn read_token(tkh: &[u8], db: &Database) -> Result<(u32, u64, u64, u64, Option<U
     Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Token not found.")))
 }
 
-#[allow(dead_code)]
+/*#[allow(dead_code)]
 fn update_token_state_field<F>(tkh: &[u8], db: &Database, closure: F) -> Result<(), redb::Error> where F: Fn(Option<&[u8]>) -> Option<U8s> {
     let wtx = db.begin_write()?;
     let mut was_none = true;
@@ -2564,7 +2408,7 @@ fn update_token_state_field<F>(tkh: &[u8], db: &Database, closure: F) -> Result<
         wtx.commit()?;
     }
     Ok(())
-}
+}*/
 
 async fn validate_token_under_permision_schema(
     tk: &str,
@@ -4476,12 +4320,14 @@ const WRIT_ACCESS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::
 
 fn add_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
     let wrtx = DB.begin_write()?;
-    {
-        let mut t = wrtx.open_multimap_table(WRIT_ACCESS)?;
-        for writ in writs {
-            t.insert(id, *writ)?;
-        }
-    }
+    match wrtx.open_multimap_table(WRIT_ACCESS) {
+        Ok(mut t) => {
+            for writ in writs {
+                t.insert(id, *writ)?;
+            }
+        },
+        Err(e) => return Err(anyhow!("failed to open writ access table: {}", e))
+    };
     wrtx.commit()?;
     Ok(())
 }
@@ -4504,17 +4350,19 @@ fn transfer_access_for(from: u64, to: u64, writs: &[u64]) -> anyhow::Result<()> 
 }
 
 fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let rtx = DB.begin_read()?;
-    {
-        let t = rtx.open_multimap_table(WRIT_ACCESS)?;
+    if let Ok(t) = DB.begin_read()?.open_multimap_table(WRIT_ACCESS) {
         let mut mmv = t.get(id)?;
+        let mut found = writs.len();
         while let Some(r) = mmv.next() {
-            if !writs.contains(&r?.value()) {
-                return Err(anyhow!("access denied"));
+            if writs.contains(&r?.value()) {
+                found -= 1;
             }
         }
+        if found == 0 {
+            return Ok(());
+        }
     }
-    Ok(())
+    Err(anyhow!("access denied"))
 }
 
 const SEARCH_INDEX_PATH: &str = "./search-index";
@@ -4755,7 +4603,7 @@ impl Writ {
     fn lookup_owner_moniker(&self) -> anyhow::Result<String> {
         Ok(Account::from_id(self.owner)?.moniker)
     }
-
+/*
     #[allow(dead_code)]
     fn is_owner(&self, id: u64) -> bool {
         self.owner == id
@@ -4764,7 +4612,7 @@ impl Writ {
     #[allow(dead_code)]
     fn likes(&self, limit: usize) -> anyhow::Result<Vec<u64>> {
         get_liked_by(self.ts, limit)
-    }
+    }*/
 
     fn purchase_access(&self, id: u64) -> anyhow::Result<()> {
         if self.owner == id {
@@ -4983,7 +4831,7 @@ impl Search{
                         }
                     };
 
-                    if (writ.price.is_some_and(|p| p > 0) || !writ.public) && !include_public_for_owner.is_some_and(|o| o != writ.owner || o != ADMIN_ID || id.is_some_and(|id| id != o)) {
+                    if (writ.price.is_some_and(|p| p > 0) || !writ.public) || !include_public_for_owner.is_some_and(|o| o != writ.owner && o != ADMIN_ID && id.is_some_and(|id| id != o)) {
                         if let Some(id) = id { // check if the owner has access to this writ
                             if let Err(e) = check_access_for(id, &[writ.ts]) {
                                 writ.content = e.to_string();
@@ -5000,10 +4848,10 @@ impl Search{
         }
     }
 
-    #[allow(dead_code)]
+    /*#[allow(dead_code)]
     fn build_150mb() -> tantivy::Result<Self> {
         Self::build(150_000_000)
-    }
+    }*/
 
     fn build_512mb() -> tantivy::Result<Self> {
         Self::build(512_000_000)
