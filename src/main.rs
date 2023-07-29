@@ -10,7 +10,7 @@ use serde_json::json;
 use sthash::Hasher;
 use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::Duration, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
-use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction, ReadOnlyMultimapTable, ReadOnlyTable};
+use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction, ReadOnlyMultimapTable, ReadOnlyTable, Table};
 use tantivy::{
     doc,
     collector::TopDocs,
@@ -193,9 +193,7 @@ fn get_followers(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let mut followers = Vec::new();
     while let Some(r) = mmv.next() {
         followers.push(r?.value());
-        if followers.len() >= limit {
-            break;
-        }
+        if followers.len() >= limit { break; }
     }
     Ok(followers)
 }
@@ -207,9 +205,7 @@ fn get_following(id: u64, limit: usize) -> anyhow::Result<Vec<u64>> {
     let mut following = Vec::new();
     while let Some(r) = mmv.next() {
         following.push(r?.value());
-        if following.len() >= limit {
-            break;
-        }
+        if following.len() >= limit { break; }
     }
     Ok(following)
 }
@@ -219,9 +215,7 @@ fn is_followed_by(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     let t = rtx.open_multimap_table(FOLLOWED_BY)?;
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
-        if r?.value() == follow_id {
-            return Ok(true);
-        }
+        if r?.value() == follow_id { return Ok(true); }
     }
     Ok(false)
 }
@@ -231,20 +225,238 @@ fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     let t = rtx.open_multimap_table(FOLLOWS)?;
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
-        if r?.value() == follow_id {
-            return Ok(true);
-        }
+        if r?.value() == follow_id { return Ok(true); }
     }
     Ok(false)
 }
+
+use bitpacking::{BitPacker4x, BitPacker};
+
+fn pack_u32s(u32s: &mut Vec<u32>) -> anyhow::Result<Vec<u8>> {
+    let bitpacker = BitPacker4x::new();
+    let num_bits = bitpacker.num_bits(&u32s);
+    let mut bytes = vec![];
+    let compressed_len = bitpacker.compress(u32s, &mut bytes, num_bits);
+    bytes.push(num_bits);
+    Ok(bytes)
+}
+
+fn unpack_u32s_from_bytes(compressed: &[u8]) -> anyhow::Result<Vec<u32>> {
+    let bitpacker = BitPacker4x::new();
+    let num_bits = compressed[compressed.len() - 1];
+    let mut u32s = vec![];
+    bitpacker.decompress(&compressed[..compressed.len() - 1], &mut u32s, num_bits);
+    Ok(u32s)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd)]
+struct ThreadAddress(u64, u64, u64, u64, u64);
+
+impl ThreadAddress {
+    fn as_bytes(&self) -> Vec<u8> {
+        let writ_ts = self.0.to_be_bytes();
+        let root_thread_maker = self.1.to_be_bytes();
+        let root_thread_ts = self.2.to_be_bytes();
+        let ts = self.3.to_be_bytes();
+        let maker = self.4.to_be_bytes();
+        let mut u32s = Vec::new();
+        u32s.push(u32::from_be_bytes([writ_ts[0], writ_ts[1], writ_ts[2], writ_ts[3]]));
+        u32s.push(u32::from_be_bytes([root_thread_maker[0], root_thread_maker[1], root_thread_maker[2], root_thread_maker[3]]));
+        u32s.push(u32::from_be_bytes([root_thread_ts[0], root_thread_ts[1], root_thread_ts[2], root_thread_ts[3]]));
+        u32s.push(u32::from_be_bytes([ts[0], ts[1], ts[2], ts[3]]));
+        u32s.push(u32::from_be_bytes([maker[0], maker[1], maker[2], maker[3]]));
+        pack_u32s(&mut u32s).unwrap()
+    }
+
+    fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
+        let u32s = unpack_u32s_from_bytes(b)?;
+        let writ_ts = u32s[0].to_be_bytes();
+        let root_thread_maker = u32s[1].to_be_bytes();
+        let root_thread_ts = u32s[2].to_be_bytes();
+        let ts = u32s[3].to_be_bytes();
+        let maker = u32s[4].to_be_bytes();
+        Ok(ThreadAddress(u64::from_be_bytes([writ_ts[0], writ_ts[1], writ_ts[2], writ_ts[3], writ_ts[4], writ_ts[5], writ_ts[6], writ_ts[7]]),
+        u64::from_be_bytes([root_thread_maker[0], root_thread_maker[1], root_thread_maker[2], root_thread_maker[3], root_thread_maker[4], root_thread_maker[5], root_thread_maker[6], root_thread_maker[7]]),
+        u64::from_be_bytes([root_thread_ts[0], root_thread_ts[1], root_thread_ts[2], root_thread_ts[3], root_thread_ts[4], root_thread_ts[5], root_thread_ts[6], root_thread_ts[7]]),
+        u64::from_be_bytes([ts[0], ts[1], ts[2], ts[3], ts[4], ts[5], ts[6], ts[7]]),
+        u64::from_be_bytes([maker[0], maker[1], maker[2], maker[3], maker[4], maker[5], maker[6], maker[7]])))
+    }
+}
+
+const THREADS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("threads");
+const THREAD_CONTENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("thread_contents");
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Thread {
+    // addr: ThreadAddress, // writ.ts, thread(ts, maker), ts, maker
+    h: Vec<ThreadAddress>,
+    d: Vec<ThreadAddress>,
+    moniker: Option<String>,
+    public: bool,
+    reads: Vec<u64>, // account ids
+    writes: Vec<u64>, // account ids
+    contents: u64
+}
+
+impl Thread {
+    fn open(addr: &ThreadAddress) -> anyhow::Result<Self> {
+        Self::open_internal(addr, &DB.begin_read()?.open_table(THREADS)?)
+    }
+
+    fn open_internal(addr: &ThreadAddress, th: &ReadOnlyTable<&[u8], &[u8]>) -> anyhow::Result<Self> {
+        if let Some(ag) = th.get(addr.as_bytes().as_slice())? {
+            Ok(serde_json::from_slice(ag.value())?)
+        } else {
+            Err(anyhow!("no thread found"))
+        }
+    }
+
+    fn add(&self, addr: &ThreadAddress, d: bool, contents: &[u8]) -> anyhow::Result<()> {
+        let wtx = DB.begin_write()?;
+        {
+            let mut t = wtx.open_table(THREADS)?;
+            let mut _host: Option<Thread> = None;
+            if let Some(ag) = t.get(addr.as_bytes().as_slice())? {
+                let mut h = Thread::from_bytes(ag.value())?;
+                if d {
+                    h.d.push(addr.clone());
+                } else {
+                    h.h.push(addr.clone());
+                }
+                _host = Some(h);
+            } else {
+                return Err(anyhow!("no thread found"));
+            }
+            match _host {
+                Some(h) => t.insert(addr.as_bytes().as_slice(), h.to_bytes().as_slice())?,
+                None => return Err(anyhow!("no thread found"))
+            };
+            t.insert(addr.as_bytes().as_slice(), self.to_bytes().as_slice())?;
+            let mut t = wtx.open_table(THREAD_CONTENTS)?;
+            t.insert(self.contents, contents)?;
+        }
+        wtx.commit()?;
+        Ok(())
+    }
+
+    fn open_from_addr_internal(addr: &ThreadAddress, th: &Table<&[u8], &[u8]>, tc: &Table<u64, &[u8]>) -> anyhow::Result<Self> {
+        if let Some(ag) = th.get(addr.as_bytes().as_slice())? {
+            return Ok(Thread::from_bytes(ag.value())?);
+        }
+        Err(anyhow!("no thread found"))
+    }
+
+    fn remove_internal(&self, addr: &ThreadAddress, th: &mut Table<&[u8], &[u8]>, tc: &mut Table<u64, &[u8]>) -> anyhow::Result<()> {
+        let mut _host: Option<Thread> = None;
+        if let Some(ag) = th.remove(addr.as_bytes().as_slice())? {
+            _host = Some(Thread::from_bytes(ag.value())?);
+        } else {
+            return Err(anyhow!("no thread found"));
+        }
+        match _host {
+            Some(h) => {
+                for a in h.h.iter() {
+                    let tr = Self::open_from_addr_internal(a, th, tc)?;
+                    tr.remove_internal(a, th, tc)?;
+                }
+                for a in h.d.iter() {
+                    let tr = Self::open_from_addr_internal(a, th, tc)?;
+                    tr.remove_internal(a, th, tc)?;
+                }
+                th.insert(addr.as_bytes().as_slice(), h.to_bytes().as_slice())?
+            },
+            None => return Err(anyhow!("no thread found"))
+        };
+        th.remove(addr.as_bytes().as_slice())?;
+        tc.remove(self.contents)?;
+        Ok(())
+    }
+
+    fn remove(&self, addr: &ThreadAddress) -> anyhow::Result<()> {
+        let wtx = DB.begin_write()?;
+        {
+            let mut th = wtx.open_table(THREADS)?;
+            let mut tc = wtx.open_table(THREAD_CONTENTS)?;
+            self.remove_internal(addr, &mut th, &mut tc)?;
+        }
+        wtx.commit()?;
+        Ok(())
+    }
+
+    fn contents(&self) -> anyhow::Result<Vec<u8>> {
+        let rtx = DB.begin_read()?;
+        let t = rtx.open_table(THREAD_CONTENTS)?;
+        if let Some(ag) = t.get(self.contents)? {
+            return Ok(ag.value().to_vec());
+        }
+        Err(anyhow!("no thread contents found"))
+    }
+
+    fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
+        Ok(serde_json::from_slice(b)?)
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap()
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FoundThread {
+    // addr: ThreadAddress, // writ.ts, thread(ts, maker), ts, maker
+    h: Vec<FoundThread>,
+    d: Vec<FoundThread>,
+    moniker: Option<String>,
+    public: bool,
+    reads: Vec<u64>, // account ids
+    writes: Vec<u64>, // account ids
+    contents: Vec<u8>
+}
+
+impl FoundThread {
+    fn open_internal(addr: &ThreadAddress, threads: &ReadOnlyTable<&[u8], &[u8]>, thread_contents: &ReadOnlyTable<u64, &[u8]>) -> anyhow::Result<Self> {
+        if let Some(ag) = threads.get(addr.as_bytes().as_slice())? {
+            let thread: Thread = serde_json::from_slice(ag.value())?;
+            let mut h = Vec::new();
+            let mut d = Vec::new();
+            for addr in thread.h {
+                h.push(FoundThread::open_internal(&addr, threads, thread_contents)?);
+            }
+            for addr in thread.d {
+                d.push(FoundThread::open_internal(&addr, threads, thread_contents)?);
+            }
+            return Ok(FoundThread{
+                h, d,
+                moniker: thread.moniker,
+                public: thread.public,
+                reads: thread.reads,
+                writes: thread.writes,
+                contents: match thread_contents.get(thread.contents)? {
+                    Some(ag) => ag.value().to_vec(),
+                    None => return Err(anyhow!("no thread contents found"))
+                }
+            });
+        }
+        Err(anyhow!("no thread found"))
+    }
+
+    pub fn open(addr: &ThreadAddress) -> anyhow::Result<Self> {
+        let rtx = DB.begin_read()?;
+        let threads = rtx.open_table(THREADS)?;
+        let thread_contents = rtx.open_table(THREAD_CONTENTS)?;
+        FoundThread::open_internal(addr, &threads, &thread_contents)
+    }
+}
+
 
 //          ts , owner
 type CID = (u64, u64);
 
 const ROOT_COMMENTS: MultimapTableDefinition<u64, CID> = MultimapTableDefinition::new("root_comments");
 const COMMENTS_RELATA: MultimapTableDefinition<CID, CID> = MultimapTableDefinition::new("sub_comments");
-const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
 const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
+const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
 
 #[derive(Clone, Debug)]
 enum Root {

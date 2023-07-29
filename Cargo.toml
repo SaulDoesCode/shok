@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
+bitpacking = "*"
 cocoon = "*"
 # crossbeam-channel = "*"
 dashmap = {version = "*"}
