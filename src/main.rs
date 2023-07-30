@@ -4860,7 +4860,7 @@ impl FoundWrit {
         })
     }
 
-    fn build_from_writs(writs: &[Writ], requester_id: Option<u64>) -> anyhow::Result<Vec<Self>> {
+    fn build_from_writs(writs: Vec<Writ>, requester_id: Option<u64>) -> anyhow::Result<Vec<Self>> {
         let mut found_writs = vec![];
         let rtx = DB.begin_read()?;
         let t_likes= rtx.open_multimap_table(LIKED_BY)?;
@@ -4908,16 +4908,16 @@ impl FoundWrit {
 
             found_writs.push(Self{
                 ts: w.ts,
-                kind: w.kind.clone(),
+                kind: w.kind,
                 owner_moniker,
                 owner,
                 public: w.public,
-                title: w.title.clone(),
-                content: w.content.clone(),
-                state: w.state.clone(),
+                title: w.title,
+                content: w.content,
+                state: w.state,
                 price: w.price,
                 sell_price: w.sell_price,
-                tags: w.tags.clone(),
+                tags: w.tags,
                 liked,
                 reposted,
                 repost_count,
@@ -4933,26 +4933,23 @@ impl FoundWrit {
 pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     let mut _is_admin = false;
     let mut _owner: Option<u64> = None; // authenticate
-    if session_check(req, Some(ADMIN_ID)).await.is_some() {
-        _is_admin = true;
-        _owner = Some(ADMIN_ID); // admin session
-    } else if let Some(id) = session_check(req, None).await { 
-        _owner = Some(id); // account session
-    } else {
-        if let Some(tk) = req.query::<String>("tk") {
-            if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
-                _owner = Some(o); // token session
-            } else if req.method() != Method::GET {
-                brq(res, "not authorized to use the search api");
-                return;
-            }
+    let is_get = req.method() == Method::GET;
+    if let Some(id) = session_check(req, None).await {
+        _is_admin = id == ADMIN_ID; // admin session
+        _owner = Some(id);
+    } else if let Some(tk) = req.query::<String>("tk") {
+        if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
+            _owner = Some(o); // token session
         } else if req.method() != Method::GET {
             brq(res, "not authorized to use the search api");
             return;
         }
+    } else if is_get {
+        brq(res, "not authorized to use the search api");
+        return;
     }
 
-    if req.method() == Method::GET { // serve public searchable items
+    if is_get { // serve public searchable items
         match req.query::<String>("q") {
             Some(q) => {
                 let page = match req.query::<usize>("p") {
@@ -4964,7 +4961,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     None => None,
                 };
                 match SEARCH.search(&q, 128, page, _owner, kind, _owner) {
-                    Ok(writs) => match FoundWrit::build_from_writs(&writs, _owner) {
+                    Ok(writs) => match FoundWrit::build_from_writs(writs, _owner) {
                         Ok(writs) => res.render(Json(writs)),
                         Err(e) => {
                             brqe(res, &e.to_string(), "failed to search");
@@ -5043,7 +5040,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             return;
                         }
 
-                        match FoundWrit::build_from_writs(&writs, _owner) {
+                        match FoundWrit::build_from_writs(writs, _owner) {
                             Ok(writs) => res.render(Json(writs)),
                             Err(e) => {
                                 brqe(res, &e.to_string(), "failed to search");
@@ -5059,7 +5056,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
     } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
             Ok(search_request) => match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
-                Ok(writs) => match FoundWrit::build_from_writs(&writs, _owner) {
+                Ok(writs) => match FoundWrit::build_from_writs(writs, _owner) {
                     Ok(writs) => res.render(Json(writs)),
                     Err(e) => {
                         brqe(res, &e.to_string(), "failed to search");
