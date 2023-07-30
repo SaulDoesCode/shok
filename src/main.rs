@@ -10,7 +10,7 @@ use serde_json::json;
 use sthash::Hasher;
 use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::Duration, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
-use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction, ReadOnlyMultimapTable, ReadOnlyTable, Table};
+use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
 use tantivy::{
     doc,
     collector::TopDocs,
@@ -230,570 +230,6 @@ fn is_following(id: u64, follow_id: u64) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-use bitpacking::{BitPacker4x, BitPacker};
-
-fn pack_u32s(u32s: &mut Vec<u32>) -> anyhow::Result<Vec<u8>> {
-    let bitpacker = BitPacker4x::new();
-    let num_bits = bitpacker.num_bits(&u32s);
-    let mut bytes = vec![];
-    let compressed_len = bitpacker.compress(u32s, &mut bytes, num_bits);
-    bytes.push(num_bits);
-    Ok(bytes)
-}
-
-fn unpack_u32s_from_bytes(compressed: &[u8]) -> anyhow::Result<Vec<u32>> {
-    let bitpacker = BitPacker4x::new();
-    let num_bits = compressed[compressed.len() - 1];
-    let mut u32s = vec![];
-    bitpacker.decompress(&compressed[..compressed.len() - 1], &mut u32s, num_bits);
-    Ok(u32s)
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, PartialOrd)]
-struct ThreadAddress(u64, u64, u64, u64, u64);
-
-impl ThreadAddress {
-    fn as_bytes(&self) -> Vec<u8> {
-        let writ_ts = self.0.to_be_bytes();
-        let root_thread_maker = self.1.to_be_bytes();
-        let root_thread_ts = self.2.to_be_bytes();
-        let ts = self.3.to_be_bytes();
-        let maker = self.4.to_be_bytes();
-        let mut u32s = Vec::new();
-        u32s.push(u32::from_be_bytes([writ_ts[0], writ_ts[1], writ_ts[2], writ_ts[3]]));
-        u32s.push(u32::from_be_bytes([root_thread_maker[0], root_thread_maker[1], root_thread_maker[2], root_thread_maker[3]]));
-        u32s.push(u32::from_be_bytes([root_thread_ts[0], root_thread_ts[1], root_thread_ts[2], root_thread_ts[3]]));
-        u32s.push(u32::from_be_bytes([ts[0], ts[1], ts[2], ts[3]]));
-        u32s.push(u32::from_be_bytes([maker[0], maker[1], maker[2], maker[3]]));
-        pack_u32s(&mut u32s).unwrap()
-    }
-
-    fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
-        let u32s = unpack_u32s_from_bytes(b)?;
-        let writ_ts = u32s[0].to_be_bytes();
-        let root_thread_maker = u32s[1].to_be_bytes();
-        let root_thread_ts = u32s[2].to_be_bytes();
-        let ts = u32s[3].to_be_bytes();
-        let maker = u32s[4].to_be_bytes();
-        Ok(ThreadAddress(u64::from_be_bytes([writ_ts[0], writ_ts[1], writ_ts[2], writ_ts[3], writ_ts[4], writ_ts[5], writ_ts[6], writ_ts[7]]),
-        u64::from_be_bytes([root_thread_maker[0], root_thread_maker[1], root_thread_maker[2], root_thread_maker[3], root_thread_maker[4], root_thread_maker[5], root_thread_maker[6], root_thread_maker[7]]),
-        u64::from_be_bytes([root_thread_ts[0], root_thread_ts[1], root_thread_ts[2], root_thread_ts[3], root_thread_ts[4], root_thread_ts[5], root_thread_ts[6], root_thread_ts[7]]),
-        u64::from_be_bytes([ts[0], ts[1], ts[2], ts[3], ts[4], ts[5], ts[6], ts[7]]),
-        u64::from_be_bytes([maker[0], maker[1], maker[2], maker[3], maker[4], maker[5], maker[6], maker[7]])))
-    }
-}
-
-const THREADS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("threads");
-const THREAD_CONTENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("thread_contents");
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Thread {
-    // addr: ThreadAddress, // writ.ts, thread(ts, maker), ts, maker
-    h: Vec<ThreadAddress>,
-    d: Vec<ThreadAddress>,
-    moniker: Option<String>,
-    public: bool,
-    reads: Vec<u64>, // account ids
-    writes: Vec<u64>, // account ids
-    contents: u64
-}
-
-impl Thread {
-    fn open(addr: &ThreadAddress) -> anyhow::Result<Self> {
-        Self::open_internal(addr, &DB.begin_read()?.open_table(THREADS)?)
-    }
-
-    fn open_internal(addr: &ThreadAddress, th: &ReadOnlyTable<&[u8], &[u8]>) -> anyhow::Result<Self> {
-        if let Some(ag) = th.get(addr.as_bytes().as_slice())? {
-            Ok(serde_json::from_slice(ag.value())?)
-        } else {
-            Err(anyhow!("no thread found"))
-        }
-    }
-
-    fn add(&self, addr: &ThreadAddress, d: bool, contents: &[u8]) -> anyhow::Result<()> {
-        let wtx = DB.begin_write()?;
-        {
-            let mut t = wtx.open_table(THREADS)?;
-            let mut _host: Option<Thread> = None;
-            if let Some(ag) = t.get(addr.as_bytes().as_slice())? {
-                let mut h = Thread::from_bytes(ag.value())?;
-                if d {
-                    h.d.push(addr.clone());
-                } else {
-                    h.h.push(addr.clone());
-                }
-                _host = Some(h);
-            } else {
-                return Err(anyhow!("no thread found"));
-            }
-            match _host {
-                Some(h) => t.insert(addr.as_bytes().as_slice(), h.to_bytes().as_slice())?,
-                None => return Err(anyhow!("no thread found"))
-            };
-            t.insert(addr.as_bytes().as_slice(), self.to_bytes().as_slice())?;
-            let mut t = wtx.open_table(THREAD_CONTENTS)?;
-            t.insert(self.contents, contents)?;
-        }
-        wtx.commit()?;
-        Ok(())
-    }
-
-    fn open_from_addr_internal(addr: &ThreadAddress, th: &Table<&[u8], &[u8]>, tc: &Table<u64, &[u8]>) -> anyhow::Result<Self> {
-        if let Some(ag) = th.get(addr.as_bytes().as_slice())? {
-            return Ok(Thread::from_bytes(ag.value())?);
-        }
-        Err(anyhow!("no thread found"))
-    }
-
-    fn remove_internal(&self, addr: &ThreadAddress, th: &mut Table<&[u8], &[u8]>, tc: &mut Table<u64, &[u8]>) -> anyhow::Result<()> {
-        let mut _host: Option<Thread> = None;
-        if let Some(ag) = th.remove(addr.as_bytes().as_slice())? {
-            _host = Some(Thread::from_bytes(ag.value())?);
-        } else {
-            return Err(anyhow!("no thread found"));
-        }
-        match _host {
-            Some(h) => {
-                for a in h.h.iter() {
-                    let tr = Self::open_from_addr_internal(a, th, tc)?;
-                    tr.remove_internal(a, th, tc)?;
-                }
-                for a in h.d.iter() {
-                    let tr = Self::open_from_addr_internal(a, th, tc)?;
-                    tr.remove_internal(a, th, tc)?;
-                }
-                th.insert(addr.as_bytes().as_slice(), h.to_bytes().as_slice())?
-            },
-            None => return Err(anyhow!("no thread found"))
-        };
-        th.remove(addr.as_bytes().as_slice())?;
-        tc.remove(self.contents)?;
-        Ok(())
-    }
-
-    fn remove(&self, addr: &ThreadAddress) -> anyhow::Result<()> {
-        let wtx = DB.begin_write()?;
-        {
-            let mut th = wtx.open_table(THREADS)?;
-            let mut tc = wtx.open_table(THREAD_CONTENTS)?;
-            self.remove_internal(addr, &mut th, &mut tc)?;
-        }
-        wtx.commit()?;
-        Ok(())
-    }
-
-    fn contents(&self) -> anyhow::Result<Vec<u8>> {
-        let rtx = DB.begin_read()?;
-        let t = rtx.open_table(THREAD_CONTENTS)?;
-        if let Some(ag) = t.get(self.contents)? {
-            return Ok(ag.value().to_vec());
-        }
-        Err(anyhow!("no thread contents found"))
-    }
-
-    fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
-        Ok(serde_json::from_slice(b)?)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap()
-    }
-}
-
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FoundThread {
-    // addr: ThreadAddress, // writ.ts, thread(ts, maker), ts, maker
-    h: Vec<FoundThread>,
-    d: Vec<FoundThread>,
-    moniker: Option<String>,
-    public: bool,
-    reads: Vec<u64>, // account ids
-    writes: Vec<u64>, // account ids
-    contents: Vec<u8>
-}
-
-impl FoundThread {
-    fn open_internal(addr: &ThreadAddress, threads: &ReadOnlyTable<&[u8], &[u8]>, thread_contents: &ReadOnlyTable<u64, &[u8]>) -> anyhow::Result<Self> {
-        if let Some(ag) = threads.get(addr.as_bytes().as_slice())? {
-            let thread: Thread = serde_json::from_slice(ag.value())?;
-            let mut h = Vec::new();
-            let mut d = Vec::new();
-            for addr in thread.h {
-                h.push(FoundThread::open_internal(&addr, threads, thread_contents)?);
-            }
-            for addr in thread.d {
-                d.push(FoundThread::open_internal(&addr, threads, thread_contents)?);
-            }
-            return Ok(FoundThread{
-                h, d,
-                moniker: thread.moniker,
-                public: thread.public,
-                reads: thread.reads,
-                writes: thread.writes,
-                contents: match thread_contents.get(thread.contents)? {
-                    Some(ag) => ag.value().to_vec(),
-                    None => return Err(anyhow!("no thread contents found"))
-                }
-            });
-        }
-        Err(anyhow!("no thread found"))
-    }
-
-    pub fn open(addr: &ThreadAddress) -> anyhow::Result<Self> {
-        let rtx = DB.begin_read()?;
-        let threads = rtx.open_table(THREADS)?;
-        let thread_contents = rtx.open_table(THREAD_CONTENTS)?;
-        FoundThread::open_internal(addr, &threads, &thread_contents)
-    }
-}
-
-
-//          ts , owner
-type CID = (u64, u64);
-
-const ROOT_COMMENTS: MultimapTableDefinition<u64, CID> = MultimapTableDefinition::new("root_comments");
-const COMMENTS_RELATA: MultimapTableDefinition<CID, CID> = MultimapTableDefinition::new("sub_comments");
-const COMMENT_LIKES: MultimapTableDefinition<CID, u64> = MultimapTableDefinition::new("comment_likes");
-const COMMENT_CONTENTS: TableDefinition<CID, &str> = TableDefinition::new("comment_contents");
-
-#[derive(Clone, Debug)]
-enum Root {
-    Writ(u64),
-    Comment(CID)
-}
-
-fn make_comment(root: Root, owner: u64, content: &str) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    let ts = now();
-    let cid: CID = (ts, owner);
-    { // let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?; t_cl.insert(cid, owner)?;
-        wtx.open_table(COMMENT_CONTENTS)?.insert(cid, content)?;
-        match root {
-            Root::Writ(id) => wtx.open_multimap_table(ROOT_COMMENTS)?.insert(id, cid)?,
-            Root::Comment(cid2) => wtx.open_multimap_table(COMMENTS_RELATA)?.insert(cid, cid2)?
-        };
-    }
-    wtx.commit()?;
-    Ok(())
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FoundComment {
-    id: CID,
-    content: String,
-    likes: Vec<u64>,
-    replies: Vec<FoundComment>
-}
-
-fn get_comments_for_writ(id: u64, limit: usize) -> anyhow::Result<Vec<FoundComment>> {
-    let rtx = DB.begin_read()?;
-    let rt = rtx.open_multimap_table(ROOT_COMMENTS)?;
-    let cr = rtx.open_multimap_table(COMMENTS_RELATA)?;
-    let cc = rtx.open_table(COMMENT_CONTENTS)?;
-    let cl = rtx.open_multimap_table(COMMENT_LIKES)?;
-    let mut mmv = rt.get(id)?;
-    let mut comments = Vec::new();
- 
-
-    while let Some(r) = mmv.next() {
-        comments.push(handle_comment_relata(&cr, &cc, &cl, r?.value(), limit)?);
-    }
-
-    if comments.len() == 0 {
-        return Err(anyhow!("no comments found"));
-    }
-    
-    Ok(comments)
-}
-
-/*fn get_subcomments_for_comment(cid: CID, limit: usize) -> anyhow::Result<Vec<FoundComment>> {
-    let rtx = DB.begin_read()?;
-    let cr = rtx.open_multimap_table(COMMENTS_RELATA)?;
-    let cc = rtx.open_table(COMMENT_CONTENTS)?;
-    let cl = rtx.open_multimap_table(COMMENT_LIKES)?;
-    let mut comments = Vec::new();
-    let mut mmv = cr.get(cid)?;
-    while let Some(r) = mmv.next() {
-        let fc = handle_comment_relata(&cr, &cc, &cl, r?.value(), limit)?;
-        comments.push(fc);
-    }
-    Ok(comments)
-}*/
-
-fn handle_comment_relata(cr: &ReadOnlyMultimapTable<CID, CID>, cc: &ReadOnlyTable<CID, &str>, cl: &ReadOnlyMultimapTable<CID, u64>, cid: CID, limit: usize) -> anyhow::Result<FoundComment> {
-    let mut likes = Vec::new();
-    let mut replies = Vec::new();
-    let mut mmv = cl.get(cid)?;
-    while let Some(r) = mmv.next() {
-        likes.push(r?.value());
-    }
-    let mut mmv = cr.get(cid)?;
-    let content = if let Some(ag) = cc.get(cid)? {
-        ag.value().to_string()
-    } else {
-        return Err(anyhow!("no comment content found"));
-    };
-    while let Some(r) = mmv.next() {
-        replies.push(handle_comment_relata(cr, cc, cl, r?.value(), limit)?);
-    }
-    Ok(FoundComment{id: cid, content, likes, replies})
-}
-
-fn edit_comment(cid: CID, content: &str) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    {
-        let mut t = wtx.open_table(COMMENT_CONTENTS)?;
-        t.insert(cid, content)?;
-    }
-    wtx.commit()?;
-    Ok(())
-}
-
-fn delete_comment(root: Root, cid: CID) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    {
-        delete_comment_internal(&wtx, root, cid)?;
-    }
-    wtx.commit()?;
-    Ok(())
-}
-
-fn delete_comment_internal(wtx: &WriteTransaction, root: Root, cid: CID) -> anyhow::Result<()> {
-    let mut t_cc = wtx.open_table(COMMENT_CONTENTS)?;
-    let mut t_cl = wtx.open_multimap_table(COMMENT_LIKES)?;
-    t_cc.remove(cid)?;
-    t_cl.remove_all(cid)?;
-    match root {
-        Root::Writ(id) => {
-            let mut t_rc = wtx.open_multimap_table(ROOT_COMMENTS)?;
-            let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
-            t_rc.remove(id, cid)?;
-            let mut mmv = t_cr.remove_all(cid)?;
-            while let Some(r) = mmv.next() {
-                delete_comment_internal(wtx, Root::Comment(cid), r?.value())?;
-            }
-        }
-        Root::Comment(cid2) => {
-            let mut t_cr = wtx.open_multimap_table(COMMENTS_RELATA)?;
-            t_cr.remove(cid2, cid)?;
-        }
-    };
-    Ok(())
-}
-
-fn like_comment(cid: CID, id: u64) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    {
-        let mut t = wtx.open_multimap_table(COMMENT_LIKES)?;
-        t.insert(cid, id)?;
-    }
-    wtx.commit()?;
-    Ok(())
-}
-
-fn unlike_comment(cid: CID, id: u64) -> anyhow::Result<()> {
-    let wtx = DB.begin_write()?;
-    {
-        let mut t = wtx.open_multimap_table(COMMENT_LIKES)?;
-        t.remove(cid, id)?;
-    }
-    wtx.commit()?;
-    Ok(())
-}
-
-fn get_comment_likes(cid: CID, limit: usize) -> anyhow::Result<Vec<u64>> {
-    let rtx = DB.begin_read()?;
-    let t = rtx.open_multimap_table(COMMENT_LIKES)?;
-    let mut mmv = t.get(cid)?;
-    let mut likes = Vec::new();
-    while let Some(r) = mmv.next() {
-        likes.push(r?.value());
-        if likes.len() >= limit {
-            break;
-        }
-    }
-    Ok(likes)
-}
-/*#[allow(dead_code)]
-fn get_comment_content(cid: CID) -> anyhow::Result<String> {
-    let rtx = DB.begin_read()?;
-    let t = rtx.open_table(COMMENT_CONTENTS)?;
-    let mut contents = None;
-    if let Some(ag) = t.get(cid)? {
-        contents = Some(ag.value().to_string());
-    }
-    match contents {
-        Some(s) => Ok(s),
-        None => Err(anyhow!("no comment content found"))
-    }
-}*/
-
-#[derive(Serialize, Deserialize)]
-struct PutComment {id: Option<CID>, content: String}
-
-#[handler]
-async fn comment_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
-        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
-            brq(res, "not authorized to use the comments_api");
-            return;
-        }
-        let root = match &req.param::<u64>("writ") {
-            Some(id) => *id,
-            _ => {
-                brq(res, "missing writ param");
-                return;
-            }
-        };
-
-        match *req.method() {
-            Method::GET => {
-                let limit = req.query::<usize>("l").unwrap_or(512);
-                if limit > 512 && !_is_admin {
-                    brq(res, "limit too high");
-                    return;
-                }
-                match get_comments_for_writ(root, limit) {
-                    Ok(comments) => {
-                        jsn(res, json!({
-                            "status": "ok",
-                            "comments": comments
-                        }));
-                        return;
-                    }
-                    Err(e) => {
-                        brq(res, &format!("failed to get comments: {}", e));
-                    }
-                };
-            }
-            Method::POST => match req.parse_json_with_max_size::<PutComment>(30000).await {
-                Ok(pc) => {
-                    let root = match pc.id {
-                        Some(cid) => Root::Comment(cid),
-                        None => Root::Writ(root)
-                    };
-                    if let Err(e) = make_comment(root.clone(), owner, &pc.content) {
-                        brq(res, &format!("failed to make comment: {}", e));
-                        return;
-                    }
-                    jsn(res, json!({
-                        "status": "ok",
-                        "root": match root {
-                            Root::Writ(id) => format!("{}", id),
-                            Root::Comment(cid) => format!("{},{}", cid.0, cid.1)
-                        }
-                    }));
-                }
-                Err(e) => {
-                    brq(res, &format!("failed to parse json: {}", e));
-                }
-            }
-            Method::PUT => match req.parse_json_with_max_size::<PutComment>(30000).await {
-                Ok(pc) => {
-                    let cid = match pc.id {
-                        Some(cid) => cid,
-                        None => {
-                            brq(res, "missing comment param");
-                            return;
-                        }
-                    };
-
-                    if cid.1 != owner {
-                        brq(res, "not authorized to edit another's comment");
-                        return;
-                    }
-
-                    if let Err(e) = edit_comment(cid, &pc.content) {
-                        brq(res, &format!("failed to edit comment: {}", e));
-                        return;
-                    }
-                    jsn(res, json!({
-                        "status": "ok"
-                    }));
-                }
-                Err(e) => {
-                    brq(res, &format!("failed to parse json: {}", e));
-                }
-            } 
-            Method::DELETE => if let Some(ts) = req.param::<u64>("comment") {
-                if let Err(e) = delete_comment(Root::Writ(root), (ts, owner)) {
-                    brq(res, &format!("failed to delete comment: {}", e));
-                    return;
-                }
-                jsn(res, json!({"status": "ok"}));
-            } else {
-                brq(res, "missing comment param");
-            }
-            _ => {
-                brq(res, "unsupported method");
-            }
-        }
-    }
-}
-
-#[handler]
-async fn comment_liking_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some((owner, pm, is_admin)) = api_auth_step(req, res).await {
-        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
-            brq(res, "not authorized to use the comments_api");
-            return;
-        }
-
-        let comment_owner = match &req.param::<u64>("acc") {
-            Some(wid) => *wid,
-            _ => {
-                brq(res, "missing writ param");
-                return;
-            }
-        };
-
-        let cid = if let Some(cid) = req.param::<u64>("comment") {
-            cid
-        } else {
-            brq(res, "missing comment param");
-            return;
-        };
-
-        match *req.method() {
-            Method::GET => match req.param::<&str>("op") {
-                Some("likes") => {
-                    if let Ok(likes) = get_comment_likes((cid, comment_owner), if is_admin { 2048 } else { 256 }) {
-                        jsn(res, likes);
-                    } else {
-                        brq(res, "failed to get likes");
-                    }
-                }
-                Some("like") => {
-                    if let Err(e) = like_comment((cid, comment_owner), owner) {
-                        brq(res, &format!("failed to like comment: {}", e));
-                        return;
-                    }
-                    jsn(res, json!({"status": "ok"}));
-                }
-                Some("unlike") => {
-                    if let Err(e) = unlike_comment((cid, comment_owner), owner) {
-                        brq(res, &format!("failed to unlike comment: {}", e));
-                        return;
-                    }
-                    jsn(res, json!({"status": "ok"}));
-                }
-                Some(other) => {
-                    brq(res, &format!("unsupported op: {}", other));
-                }
-                None => {
-                    brq(res, "missing op param");
-                }
-            } // Method::DELETE => {}
-            _ => {
-                brq(res, "unsupported method");
-                return;
-            }
-        }
-    }
-}
-
 const SV_CHANGE_WATCHERS: MultimapTableDefinition<u64, &str> = MultimapTableDefinition::new("sv_change_watchers");
 
 fn watch_changes(id: u64, key: &str) -> anyhow::Result<()> {
@@ -819,13 +255,9 @@ fn unwatch_changes(id: u64, key: &str) -> anyhow::Result<()> {
 fn internal_notify_changes(t: &redb::MultimapTable<u64, &str>, id: u64, key: &str, inserted: bool) -> anyhow::Result<()> {
     let mut mmv = t.get(id)?;
     while let Some(r) = mmv.next() {
-        if r?.value() == key {
-            auto_msg(if inserted {
-                format!("inserted: {key}")
-            } else {
-                format!("removed: {key}")
-            }).i(id);
-        }
+        if r?.value() != key { continue; }
+        let op = if inserted { "inserted" } else { "removed" };
+        auto_msg(format!("{key}: {op}")).i(id);
     }
     Ok(())
 }
@@ -1633,29 +1065,28 @@ const SESSIONS: TableDefinition<&[u8], (u64, u64)> = TableDefinition::new("sessi
 const SESSION_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("session_expiries");
 
 /*fn expire_session(token: &str) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(SESSIONS)?;
+        let mut t = wtx.open_table(SESSIONS)?;
         let tkh = TOKEN_HASHER.hash(token.as_bytes());
         t.remove(tkh.as_slice())?;
     }
     Ok(())
 }
 fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
+        let mut t = wtx.open_table(SESSION_EXPIRIES)?;
         let tkh = TOKEN_HASHER.hash(token.as_bytes());
         t.insert(expiry, tkh.as_slice())?;
     }
     Ok(())
 }*/
 
-pub fn expiry_checker() -> std::thread::JoinHandle<()> {
-    std::thread::spawn(|| {
+pub async fn expiry_checker() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {
         loop {
-            std::thread::sleep(Duration::from_secs(30));
-//            println!("expiry checker doing a sweep");
+            std::thread::sleep(Duration::from_secs(30));//            println!("expiry checker doing a sweep");
             match db_expiry_handler() {
                 Ok(()) => {},
                 Err(e) => {
@@ -1676,7 +1107,7 @@ pub fn expiry_checker() -> std::thread::JoinHandle<()> {
                 }
             }
 
-            if now() - *SINCE_START > 14400 { // if it has beeb more than 4 hours since the server started, restart the server
+            if now() - *SINCE_START > (14400 / 2) { // if it has been more than 4 hours since the server started, restart the server
                 println!("server has been running for more than 4 hours, restarting... hope for the best.. been real..");
                 Interaction::Broadcast("server has been running for more than 4 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
                 restart_server();
@@ -1707,39 +1138,39 @@ const RESOURCE_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("re
 
 fn db_expiry_handler() -> anyhow::Result<()> {
     {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
+            let mut t = wtx.open_table(RESOURCE_EXPIERIES)?;
             t.drain_filter(..now(), |_, v| Resource::delete(v).is_ok())?;
-            let mut exp_t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
+            let mut exp_t = wtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
             exp_t.drain_filter(..now(), |_, (_owner, _moniker)| true)?;
 
         // session & token expiry 
     
-            let mut t = wrtx.open_table(SESSION_EXPIRIES)?;
+            let mut t = wtx.open_table(SESSION_EXPIRIES)?;
             let mut df = t.drain_filter(..now(), |_, _v| true)?;
-            let mut st = wrtx.open_table(SESSIONS)?;
+            let mut st = wtx.open_table(SESSIONS)?;
             while let Some(r) = df.next() {
                 let (_, ag) = r?;
                 st.remove(ag.value())?;
             }
-            let mut t = wrtx.open_table(TOKEN_EXPIRIES)?;
+            let mut t = wtx.open_table(TOKEN_EXPIRIES)?;
             let mut df = t.drain_filter(..now(), |_, _v| true)?;
-            let mut st = wrtx.open_table(TOKENS)?;
+            let mut st = wtx.open_table(TOKENS)?;
             while let Some(r) = df.next() {
                 let (_, ag) = r?;
                 st.remove(ag.value())?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
     }
     Ok(())
 }
 
 fn register_resource_expiry(resource: &[u8], expiry: u64) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(RESOURCE_EXPIERIES)?;
+        let mut t = wtx.open_table(RESOURCE_EXPIERIES)?;
         t.insert(expiry, resource)?;
     }
     Ok(())
@@ -1747,12 +1178,12 @@ fn register_resource_expiry(resource: &[u8], expiry: u64) -> anyhow::Result<()> 
 
 /*#[allow(dead_code)]
 fn register_token_expiry(token: &[u8], expiry: u64) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(TOKEN_EXPIRIES)?;
+        let mut t = wtx.open_table(TOKEN_EXPIRIES)?;
         t.insert(expiry, token)?;
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }*/
 
@@ -1965,24 +1396,24 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
     }
 
     fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
+            let mut t = wtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
             t.insert(exp, (self.owner, name))?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
     fn rm_collection(&self, name: &str) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
             t.remove((self.owner, name), name)?;
             t2.remove(name, (self.owner, name))?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -1999,6 +1430,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(vars)
     }
+
     fn check_collection_membership(&self, name: &str, vars: &[&str]) -> anyhow::Result<bool> {
         let rtx = DB.begin_read()?;
         {
@@ -2013,60 +1445,63 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(true)
     }
+
     fn add_vars_to_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
             for var in vars {
                 t.insert((self.owner, name), var)?;
                 t2.insert(var, (self.owner, name))?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
     fn rm_vars_from_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
             for var in vars {
                 t.remove((self.owner, name), var)?;
                 t2.remove(var, (self.owner, name))?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
     fn set_tags(&self, key: &str, tags: &[&str]) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let mut t = wtx.open_multimap_table(SV_TAGS)?;
+            let mut t2 = wtx.open_multimap_table(SV_TAGS_INDEX)?;
             for tag in tags {
                 t.insert(tag, (self.owner, key))?;
                 t2.insert((self.owner, key), tag)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
+
     fn unset_tags(&self, key: &str, tags: &[&str]) -> anyhow::Result<()> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let mut t = wtx.open_multimap_table(SV_TAGS)?;
+            let mut t2 = wtx.open_multimap_table(SV_TAGS_INDEX)?;
             for tag in tags {
                 t.remove(tag, (self.owner, key))?;
                 t2.remove((self.owner, key), tag)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
+
     fn get_tags(&self, key: &str) -> anyhow::Result<Vec<String>> {
         let mut tags = vec![];
         let rtx = DB.begin_read()?;
@@ -2080,6 +1515,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(tags)
     }
+
     fn get_vars_with_tags(&self, tags: &[&str], limit: usize) -> anyhow::Result<Vec<(u64, String)>> {
         let mut vars = vec![];
         let rtx = DB.begin_read()?;
@@ -2106,11 +1542,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(vars)
     }
 
-    fn unset_all_tags_internal(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
+    fn unset_all_tags_internal(&self, key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
         {
-            let mut t = wrtx.open_multimap_table(SV_TAGS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_TAGS_INDEX)?;
-            let mut mmv = t2.remove_all((self.owner, key))?;
+            let mut t = wtx.open_multimap_table(SV_TAGS)?;
+            let mut ti = wtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let mut mmv = ti.remove_all((self.owner, key))?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 t.remove(ag.value(), (self.owner, key))?;
@@ -2119,11 +1555,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(())
     }
 
-    fn cleanup_collections_when_var_is_removed(&self, key: &str, wrtx: &WriteTransaction) -> anyhow::Result<()> {
+    fn cleanup_collections_when_var_is_removed(&self, key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
         {
-            let mut t = wrtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut t2 = wrtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
-            let mut mmv = t2.remove_all(key)?;
+            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut tl = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            let mut mmv = tl.remove_all(key)?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 t.remove(ag.value(), key)?;
@@ -2131,31 +1567,32 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(())
     }
+
     fn set(&self, name: &str, value: T) -> anyhow::Result<()> {
         let owner = self.owner;
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            wrtx.open_table(SCOPED_VARIABLES)?
+            wtx.open_table(SCOPED_VARIABLES)?
                 .insert(
                     (owner, name),
                     serialize_and_compress(value)?.as_slice()
                 )?;
-            wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
+            wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
                 .insert(owner, name)?;
 
-            internal_notify_changes(&wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, name, true)?;
+            internal_notify_changes(&wtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, name, true)?;
         }
-        wrtx.commit()?; // std::thread::spawn(move || {});
+        wtx.commit()?; // std::thread::spawn(move || {});
         Ok(())
     }
 
     fn set_many(&self, values: HashMap<String, T>) -> anyhow::Result<()> {
         let owner = self.owner;
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+            let mut t = wtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             for (name, value) in values.iter() {
                 t.insert(
                     (owner, name.as_str()),
@@ -2165,7 +1602,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 internal_notify_changes(&wt, owner, name.as_str(), true)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -2201,13 +1638,14 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         }
         Ok(data)
     }
+
     fn rm(&self, name: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+            let mut t = wtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             let old_data = t.remove((self.owner, name))?;
             ot.remove(self.owner, name)?;
             if let Some(ag) = old_data {
@@ -2216,20 +1654,20 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 data = Some(decompress_and_deserialize(&mut dt)?);
                 internal_notify_changes(&wt, self.owner, name, false)?;
             }
-            self.unset_all_tags_internal(name, &wrtx)?;
-            self.cleanup_collections_when_var_is_removed(name, &wrtx)?;
+            self.unset_all_tags_internal(name, &wtx)?;
+            self.cleanup_collections_when_var_is_removed(name, &wtx)?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(data)
     }
 
     fn rm_many(&self, monikers: Strings) -> anyhow::Result<Vec<Option<T>>> {
         let mut data = Vec::with_capacity(monikers.len());
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(SCOPED_VARIABLES)?;
-            let mut ot = wrtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            let wt = wrtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+            let mut t = wtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             for m in monikers {
                 let m = m.as_str();
                 if let Some(ag) = t.remove((self.owner, m))? {
@@ -2241,11 +1679,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                     data.push(None);
                 }
                 ot.remove(self.owner, m)?;
-                self.unset_all_tags_internal(m, &wrtx)?;
-                self.cleanup_collections_when_var_is_removed(m, &wrtx)?;
+                self.unset_all_tags_internal(m, &wtx)?;
+                self.cleanup_collections_when_var_is_removed(m, &wtx)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(data)
     }
 }
@@ -2421,20 +1859,20 @@ const DEFAULT_PERM_SCHEMAS: &[&str] = &[
 
 impl PermSchema {
     fn ensure_basic_defaults(db: &Database) {
-        let wrtx = db.begin_write().expect("db write failed");
+        let wtx = db.begin_write().expect("db write failed");
         {
-            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS).expect("db open permschema table failed");
+            let mut t = wtx.open_multimap_table(PERM_SCHEMAS).expect("db open permschema table failed");
             let mut pm = u32::MAX;
             for code in DEFAULT_PERM_SCHEMAS {
                 t.insert(pm, code).expect("db default permission schema insert failed");
                 pm -= 1;
             }
         }
-        wrtx.commit().expect("failed to insert basic default perm schemas");
+        wtx.commit().expect("failed to insert basic default perm schemas");
     }
 
     fn modify(add: Option<Strings>, rm: Option<Strings>, id: Option<u32>, db: &Database) -> Result<Self, redb::Error> {
-        let wrtx = db.begin_write()?;
+        let wtx = db.begin_write()?;
         let id = match id {
             Some(i) => i,
             None => {
@@ -2449,7 +1887,7 @@ impl PermSchema {
         };
         let mut perms = vec![];
         {
-            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
+            let mut t = wtx.open_multimap_table(PERM_SCHEMAS)?;
             if let Some(pms) = add {
                 for p in pms {
                     t.insert(id, p.as_str())?;
@@ -2465,7 +1903,7 @@ impl PermSchema {
                 }
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(Self(id, perms))
     }
 
@@ -2484,14 +1922,14 @@ impl PermSchema {
     }
 
     fn add_perms(pm: u32, perms: &[&str]) -> Result<(), redb::Error> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
+            let mut t = wtx.open_multimap_table(PERM_SCHEMAS)?;
             for p in perms {
                 t.insert(pm, p)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -2508,9 +1946,9 @@ impl PermSchema {
         Ok(perms)
     }
     fn rm_perms(pm: u32, perms: &[&str]) -> Result<(), redb::Error> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_multimap_table(PERM_SCHEMAS)?;
+            let mut t = wtx.open_multimap_table(PERM_SCHEMAS)?;
             for p in perms {
                 t.remove(pm, p)?;
             }
@@ -2519,7 +1957,7 @@ impl PermSchema {
                 t.remove_all(pm)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 }
@@ -2688,7 +2126,7 @@ async fn validate_token_under_permision_schema(
 
 #[handler]
 async fn action_token_handler(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    if let Some(action) = req.param::<&str>("action") {
+    if let Some(action) = req.param::<&str>("action") { // TODO: zup this up to a better standard
         if let Some(tk) = req.param::<&str>("tk") {
             if let Ok((pm, id, exp, _, state)) = validate_token_under_permision_schema(tk, &[], &DB).await { // (u32, u64, u64, u64, Option<U8s>)
                 match action {
@@ -2747,7 +2185,7 @@ async fn main() {
     
     PermSchema::ensure_basic_defaults(&DB);
 
-    let _expiry_checker = expiry_checker();
+    let expiry_checker = expiry_checker();
 
     let addr = ("0.0.0.0", 443);
     let config = load_config();
@@ -2800,18 +2238,6 @@ async fn main() {
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
                     .handle(search_api)
-                )
-                .push(
-                    Router::with_path("/comment/<writ>")
-                        .handle(comment_api)
-                )
-                .push(
-                    Router::with_path("/comment/<writ>/<comment>")
-                        .delete(comment_api)
-                )
-                .push(
-                    Router::with_path("/comment/<acc>/<cid>/<op>")
-                        .handle(comment_liking_api)
                 )
                 .push(
                     Router::with_path("/access/<ts>")
@@ -2898,7 +2324,8 @@ async fn main() {
                         .listing(true)
                 )
         );
-
+    
+    tokio::spawn(expiry_checker);
     let listener = TcpListener::new(addr.clone()).rustls(config.clone());
     let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
     Server::new(acceptor).serve(router).await;
@@ -2960,12 +2387,12 @@ impl Account {
             return Err(anyhow::Error::msg("Password must be between 3 and 120 characters long."));
         }
         self.pwd_hash = PWD.1.hash(pwd);
-        let wrtx = db.begin_write()?;
+        let wtx = db.begin_write()?;
         {
-            let mut t = wrtx.open_table(ACCOUNTS)?;
+            let mut t = wtx.open_table(ACCOUNTS)?;
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -3035,32 +2462,32 @@ impl Account {
         }
         self.balance -= amount;
         other.balance += amount;
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(ACCOUNTS)?;
+            let mut t = wtx.open_table(ACCOUNTS)?;
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
             t.insert(other.id, (other.moniker.as_str(), other.since, other.xp, other.balance, other.pwd_hash.as_slice()))?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
     pub fn increase_exp(&mut self, i: u64) -> Result<u64, redb::Error> {
         self.xp += i;
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         {
-            let mut t = wrtx.open_table(ACCOUNTS)?;
+            let mut t = wtx.open_table(ACCOUNTS)?;
             t.insert(self.id, (self.moniker.as_str(), self.since, self.xp, self.balance, self.pwd_hash.as_slice()))?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(self.xp)
     }
 
     pub fn save(&self, new_acc: bool) -> Result<(), redb::Error> {
-        let wrtx = DB.begin_write()?;
+        let wtx = DB.begin_write()?;
         let mut _assigned_moniker: Option<String> = None;
         {
-            let mut t = wrtx.open_table(ACCOUNTS)?;
+            let mut t = wtx.open_table(ACCOUNTS)?;
             if let Some(ag) = t.get(self.id)? {
                 // prevent clash see if there's a match already for moniker and id, if so, return error
                 let m = ag.value().0;
@@ -3076,7 +2503,7 @@ impl Account {
         }
         {
             let mut write_moniker = new_acc;
-            let mut t = wrtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
+            let mut t = wtx.open_table(ACCOUNT_MONIKER_LOOKUP)?;
             // prevent clash see if there's a match already for moniker if so, return error
             if let Some(ag) = t.get(self.moniker.as_str())? {
                 if ag.value() != self.id {
@@ -3088,7 +2515,7 @@ impl Account {
                 t.insert(self.moniker.as_str(), self.id)?;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -3171,14 +2598,14 @@ impl Session {
 
     pub fn save(&self, db: &Database) -> Result<(), redb::Error> {
         let tkh = TOKEN_HASHER.hash(self.0.as_bytes());
-        let wrtx = db.begin_write()?;
+        let wtx = db.begin_write()?;
         {
-            let mut t = wrtx.open_table(SESSIONS)?;
+            let mut t = wtx.open_table(SESSIONS)?;
             t.insert(tkh.as_slice(), (self.1, self.2))?;
-            let mut et = wrtx.open_table(SESSION_EXPIRIES)?;
+            let mut et = wtx.open_table(SESSION_EXPIRIES)?;
             et.insert(self.2, tkh.as_slice())?;
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -3196,13 +2623,13 @@ impl Session {
     }
 
     pub fn check(auth: &str, force_remove: bool, db: &Database) -> Result<Self, redb::Error> {
-        let wrtx = db.begin_write()?;
+        let wtx = db.begin_write()?;
         let mut expired = false;
         let mut exiry_timestamp = 0;
         let mut sid = None;
         let tkh = TOKEN_HASHER.hash(auth.as_bytes());
         {
-            let mut t = wrtx.open_table(SESSIONS)?;
+            let mut t = wtx.open_table(SESSIONS)?;
             if let Some(ag) = t.get(tkh.as_slice())? {
                 let (id, exp) = ag.value();
                 expired = exp < now();
@@ -3214,7 +2641,7 @@ impl Session {
                 sid = None;
             }
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         if expired {
             Err(io_err("Session expired"))
         } else if force_remove {
@@ -3808,8 +3235,7 @@ impl Resource {
     }
 
     pub fn save(&mut self, bump: bool) -> anyhow::Result<()> {
-        // if path doesn't exist create a directory for it
-        if !Path::new("./assets-state").exists() {
+        if !Path::new("./assets-state").exists() { // if path doesn't exist create a directory for it
             std::fs::create_dir("./assets-state")?;
         }
         if !Path::new("./assets").exists() {
@@ -4304,8 +3730,8 @@ pub fn uares(res: &mut Response, msg: &str) {
         "msg": msg
     })));
 }
-// not found 404
-pub fn nfr(res: &mut Response) {
+
+pub fn nfr(res: &mut Response) { // not found 404
     res.status_code(StatusCode::NOT_FOUND);
     res.render(Json(serde_json::json!({
         "err": "not found"
@@ -4382,9 +3808,9 @@ async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Res
 const CMD_ORDERS: TableDefinition<u64, &[u8]> = TableDefinition::new("cmd_orders"); 
 
 fn run_stored_commands() -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_table(CMD_ORDERS)?;
+        let mut t = wtx.open_table(CMD_ORDERS)?;
         let mut _df = t.drain_filter(..now(), |_when, raw| if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
             tokio::spawn(async move {
                 let res = cmd.run().await;
@@ -4404,7 +3830,7 @@ fn run_stored_commands() -> anyhow::Result<()> {
             false
         })?;
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
@@ -4421,13 +3847,13 @@ struct CMDRequest{
 impl CMDRequest {
     async fn save_to_run_later(&self, db: &Database) -> anyhow::Result<()> {
         let data = serde_json::to_vec(self)?;
-        let wrtx = db.begin_write()?;
+        let wtx = db.begin_write()?;
         {
-            let mut t = wrtx.open_table(CMD_ORDERS)?;
+            let mut t = wtx.open_table(CMD_ORDERS)?;
             t.insert( &self.when.unwrap_or_else(|| now() + 60), data.as_slice())?;
             forget(data);
         }
-        wrtx.commit()?;
+        wtx.commit()?;
         Ok(())
     }
 
@@ -4531,8 +3957,8 @@ fn validate_tags_string(tags: &str) -> Option<String> {
 const WRIT_ACCESS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("writ_access");
 
 fn add_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
-    match wrtx.open_multimap_table(WRIT_ACCESS) {
+    let wtx = DB.begin_write()?;
+    match wtx.open_multimap_table(WRIT_ACCESS) {
         Ok(mut t) => {
             for writ in writs {
                 t.insert(id, *writ)?;
@@ -4540,14 +3966,14 @@ fn add_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
         },
         Err(e) => return Err(anyhow!("failed to open writ access table: {}", e))
     };
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
 fn transfer_access_for(from: u64, to: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(WRIT_ACCESS)?;
+        let mut t = wtx.open_multimap_table(WRIT_ACCESS)?;
         for writ in writs {
             let had = t.remove(from, *writ)?;
             if had {
@@ -4557,7 +3983,7 @@ fn transfer_access_for(from: u64, to: u64, writs: &[u64]) -> anyhow::Result<()> 
             }
         }
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
@@ -4579,50 +4005,53 @@ fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
 
 const SEARCH_INDEX_PATH: &str = "./search-index";
 
+const AMBIENT_TIMELINE: TableDefinition<u64, &[u8]> = TableDefinition::new("ambienttimeline");
+const AMBIENT_TIMELINE_LOOKUP: TableDefinition<&[u8], u64> = TableDefinition::new("ambienttimeline_lookup");
+
 const TIMELINES: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("timelines");
 const REPOSTS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("reposts");
 
 fn repost(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(REPOSTS)?;
+        let mut t = wtx.open_multimap_table(REPOSTS)?;
         for writ in writs {
             t.insert(*writ, id)?;
         }
-        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        let mut t = wtx.open_multimap_table(TIMELINES)?;
         for writ in writs {
             t.insert(id, *writ)?;
         }
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
 fn unrepost(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(REPOSTS)?;
+        let mut t = wtx.open_multimap_table(REPOSTS)?;
         for writ in writs {
             t.remove(*writ, id)?;
         }
-        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        let mut t = wtx.open_multimap_table(TIMELINES)?;
         for writ in writs {
             t.remove(id, *writ)?;
         }
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
 fn add_to_timeline(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(TIMELINES)?;
+        let mut t = wtx.open_multimap_table(TIMELINES)?;
         for writ in writs {
             t.insert(id, *writ)?;
         }
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
@@ -4645,17 +4074,17 @@ fn get_reposters(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
 }
 
 fn rm_from_timeline(id: u64, writs: &[u64]) -> anyhow::Result<()> {
-    let wrtx = DB.begin_write()?;
+    let wtx = DB.begin_write()?;
     {
-        let mut t = wrtx.open_multimap_table(TIMELINES)?;
-        let mut trp = wrtx.open_multimap_table(REPOSTS)?;
+        let mut t = wtx.open_multimap_table(TIMELINES)?;
+        let mut trp = wtx.open_multimap_table(REPOSTS)?;
         for writ in writs {
             // add a handle to remove if it from reposts if it is in there
             trp.remove(*writ, id)?;
             t.remove(id, *writ)?;
         }
     }
-    wrtx.commit()?;
+    wtx.commit()?;
     Ok(())
 }
 
@@ -4675,6 +4104,156 @@ fn get_timeline(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
         }
         Ok(writs)
     }
+}
+
+#[allow(dead_code)]
+fn get_ambient_timeline(moniker: &[u8], start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
+    let rtx = DB.begin_read()?;
+    {   
+        let id = match rtx.open_table(AMBIENT_TIMELINE_LOOKUP)?.get(moniker)? {
+            Some(ag) => ag.value(),
+            None => return Err(anyhow!("no such moniker"))
+        };
+        let tl = rtx.open_multimap_table(TIMELINES)?;
+        let mut mmv = tl.get(id)?;
+        let mut writs = Vec::new();
+        let mut i = 0;
+        while let Some(r) = mmv.next() {
+            if i >= start && i < start + count {
+                let writ_id = r?.value();
+                writs.push(writ_id);
+            }
+            i += 1;
+        }
+        let rp = rtx.open_multimap_table(REPOSTS)?;
+        let mut mmv = rp.get(id)?;
+        while let Some(r) = mmv.next() {
+            if i >= start && i < start + count {
+                let writ_id = r?.value();
+                writs.push(writ_id);
+            }
+            i += 1;
+        }
+        // sort the writs by their timestamp
+        writs.sort_by(|a, b| a.cmp(b));
+        Ok(writs)
+    }
+}
+
+#[allow(dead_code)]
+fn add_to_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: bool) -> anyhow::Result<()> {
+    let id = match DB.begin_read()?.open_table(AMBIENT_TIMELINE_LOOKUP)?.get(moniker)? {
+        Some(ag) => ag.value(),
+        None => now()
+    };
+    let wtx = DB.begin_write()?;
+    {
+        let mut t_at = wtx.open_table(AMBIENT_TIMELINE)?;
+        let mut t_atl = wtx.open_table(AMBIENT_TIMELINE_LOOKUP)?;
+        let mut t_tl = wtx.open_multimap_table(TIMELINES)?;
+        let mut t_rp = wtx.open_multimap_table(REPOSTS)?;
+        
+        let mut set_bases = false; 
+        if let Some(ag) = t_atl.get(moniker)? {
+            if ag.value() != id {
+                return Err(anyhow!("moniker already taken"));
+            }
+        } else {
+            set_bases = true;
+        }
+        if !set_bases {
+            if let Some(ag) = t_at.get(id)? {
+                if ag.value() != moniker {
+                    return Err(anyhow!("id already taken"));
+                }
+            }
+            if t_tl.get(id)?.next().is_some() {
+                return Err(anyhow!("id already taken"));
+            }
+        } else {
+            t_atl.insert(moniker, id)?;
+            t_at.insert(id, moniker)?;
+        }
+        // insert the writs into the timelines table
+        for writ in writs {
+            if as_reposts {
+                t_rp.insert(id, *writ)?;
+            } else {
+                t_tl.insert(id, *writ)?;
+            }
+        }
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn rm_from_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: bool) -> anyhow::Result<()> {
+    let id = match DB.begin_read()?.open_table(AMBIENT_TIMELINE_LOOKUP)?.get(moniker)? {
+        Some(ag) => ag.value(),
+        None => return Err(anyhow!("no such moniker"))
+    };
+    let wtx = DB.begin_write()?;
+    {
+        let mut t_at = wtx.open_table(AMBIENT_TIMELINE)?;
+        let mut t_atl = wtx.open_table(AMBIENT_TIMELINE_LOOKUP)?;
+        let mut t_tl = wtx.open_multimap_table(TIMELINES)?;
+        let mut t_rp = wtx.open_multimap_table(REPOSTS)?;
+        
+        let mut set_bases = false; 
+        if let Some(ag) = t_atl.get(moniker)? {
+            if ag.value() != id {
+                return Err(anyhow!("moniker already taken"));
+            }
+        } else {
+            set_bases = true;
+        }
+        if !set_bases {
+            if let Some(ag) = t_at.get(id)? {
+                if ag.value() != moniker {
+                    return Err(anyhow!("id already taken"));
+                }
+            }
+            if t_tl.get(id)?.next().is_some() {
+                return Err(anyhow!("id already taken"));
+            }
+        } else {
+            t_atl.insert(moniker, id)?;
+            t_at.insert(id, moniker)?;
+        }
+        for writ in writs {
+            if as_reposts {
+                t_rp.remove(id, *writ)?;
+            } else {
+                t_tl.remove(id, *writ)?;
+            }
+        }
+    }
+    wtx.commit()?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn rm_ambient_timeline(moniker: &[u8]) -> anyhow::Result<()> {
+    let wtx = DB.begin_write()?;
+    {
+        let mut t_at = wtx.open_table(AMBIENT_TIMELINE)?;
+        let mut t_atl = wtx.open_table(AMBIENT_TIMELINE_LOOKUP)?;
+        let mut t_tl = wtx.open_multimap_table(TIMELINES)?;
+        let mut t_rp = wtx.open_multimap_table(REPOSTS)?;
+        
+        let id = match t_atl.get(moniker)? {
+            Some(ag) => ag.value(),
+            None => return Err(anyhow!("no such moniker"))
+        };
+
+        t_atl.remove(moniker)?;
+        t_at.remove(id)?;
+        t_tl.remove_all(id)?;
+        t_rp.remove_all(id)?;
+    }
+    wtx.commit()?;
+    Ok(())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -4826,7 +4405,7 @@ impl Writ {
         get_liked_by(self.ts, limit)
     }*/
 
-    fn purchase_access(&self, id: u64) -> anyhow::Result<()> {
+    fn purchase_access(&self, id: u64, gift: Option<u64>) -> anyhow::Result<()> {
         if self.owner == id {
             return Err(anyhow!("you already own this writ"));
         }
@@ -4838,13 +4417,27 @@ impl Writ {
             return Err(anyhow!("you don't have enough money to buy this writ"));
         }
         acc.transfer(&mut Account::from_id(self.owner)?, self.price.unwrap())?;
-        add_access_for(id, &[self.ts])?;
+        match gift {
+            Some(gift) => {
+                if gift == id {
+                    return Err(anyhow!("you can't gift yourself"));
+                }
+                add_access_for(id, &[gift])?
+            },
+            None => add_access_for(id, &[self.ts])?
+        };
         Ok(())
     }
 
     fn transfer_access(&self, from: u64, to: u64) -> anyhow::Result<()> {
-        transfer_access_for(from, to, &[self.ts])?;
-        Ok(())
+        match check_access_for(from, &[self.ts]) {
+            Ok(()) => transfer_access_for(from, to, &[self.ts]),
+            Err(e) => if !e.to_string().contains("no writ access") {
+                self.purchase_access(from, Some(to))
+            } else {
+                Err(e)
+            }
+        }
     }
 
     fn add_to_index(&self, index_writer: &mut IndexWriter, schema: &Schema) -> tantivy::Result<()> {
@@ -5043,7 +4636,7 @@ impl Search{
                         }
                     };
 
-                    if (writ.price.is_some_and(|p| p > 0) || !writ.public) || !include_public_for_owner.is_some_and(|o| o != writ.owner && o != ADMIN_ID && id.is_some_and(|id| id != o)) {
+                    if !writ.public || writ.price.is_some_and(|p| p > 0) || include_public_for_owner.is_some_and(|o| !(o == writ.owner || o == ADMIN_ID) || id.is_some_and(|id| id != o)) {
                         if let Some(id) = id { // check if the owner has access to this writ
                             if let Err(e) = check_access_for(id, &[writ.ts]) {
                                 writ.content = e.to_string();
@@ -5069,7 +4662,6 @@ impl Search{
         Self::build(512_000_000)
     }
 }
-
 
 pub async fn auth_step(req: &mut Request, res: &mut Response) -> Option<u64> {
     let mut _id: Option<u64> = None; // authenticate
@@ -5116,8 +4708,8 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
     };
 
     match req.param::<u64>("to") {
-        Some(id) => {
-            match writ.transfer_access(id, id) {
+        Some(to_id) => {
+            match writ.transfer_access(id, to_id) {
                 Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access transfered"})),
                 Err(e) => brqe(res, &e.to_string(), "failed to transfer access"),
             }
@@ -5126,7 +4718,21 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
         None => {}
     };
 
-    match writ.purchase_access(id) {
+    let gift: Option<u64> = match req.query::<u64>("for") {
+        Some(gift) => Some(gift),
+        None => match req.query::<String>("for") {
+            Some(gift) => match Account::from_moniker(&gift) {
+                Ok(acc) => Some(acc.id),
+                Err(e) => {
+                    brqe(res, &e.to_string(), "failed to get account to gift writ access to");
+                    return;
+                }
+            },
+            None => None
+        }
+    };
+
+    match writ.purchase_access(id, gift) {
         Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access purchased"})),
         Err(e) => brqe(res, &e.to_string(), "failed to purchase access"),
     }
