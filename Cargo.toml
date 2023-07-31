@@ -8,11 +8,10 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "*", features = ["backtrace"]}
 base64 = "^0.21"
-bitpacking = "*"
 cocoon = "*"
 # crossbeam-channel = "*"
 dashmap = {version = "*"}
-salvo = { version= "^0.49", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "sse", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
+salvo = { version= "0.49.1", features = ["rustls", "compression", "cors", "cache", "caching-headers", "serve-static", "sse", "size-limiter", "rate-limiter", "logging", "quinn", "proxy"]}
 serde = { version = "^1", features = ["derive"] }
 serde_json = "*"
 # surrealdb = { version = "1.0.0-beta.9+20230402", features = ["scripting", "http"]}

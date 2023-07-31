@@ -32,10 +32,32 @@ enum Message {
     Reply(String)
 }
 
-type Users = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
+type Accounts = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
 lazy_static!{
-    static ref ONLINE_USERS: Users = Users::new();
+    static ref IA: RwLock<Vec<PathBuf>> = RwLock::new(read_all_file_names_in_dir("./uploaded/ImageAssets/").expect("could not read image assets directory's paths all the way through.. too heavy perhaps, perhaps it is not there anymore"));
+    static ref SINCE_LAST_STATIC_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static ref STATIC_DIR_PATHS: parking_lot::RwLock<Vec<PathBuf>> = parking_lot::RwLock::new(read_all_file_names_in_dir(STATIC_DIR).expect("could not walk the static dir for some reason"));
+    static ref DB: Database = Database::create("./shok.db").expect("Oh no! Could not open the specified database. (./shok.db) :(");
+    static ref TOKEN_HASHER: sthash::Hasher = {
+        let key = PWD.0.as_slice();
+        sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"shok-tk")), Some(b"tokens"))
+    };
+    static ref RESOURCE_HASHER: sthash::Hasher = {
+        let key = PWD.0.as_slice();
+        sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"resources")), Some(b"insurance"))
+    };
+    static ref SEARCH: Search = Search::build_512mb().expect("Failed to build search.");
+    static ref SINCE_START: u64 = now();
+    static ref ONLINE_ACCOUNTS: Accounts = Accounts::new();
+    static ref B64: base64::engine::GeneralPurpose = {
+        let abc = base64::alphabet::Alphabet::new("+_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").expect("aplhabet was too much for base64, sorry");
+        base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
+    };
+    static ref PWD: (U8s, Hasher) = get_or_generate_admin_password();
 }
+const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
+const SEARCH_INDEX_PATH: &str = "./search-index";
+
 //                                   id, writ.ts
 const LIKES: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("likes");
 //                                   writ.ts, id
@@ -245,8 +267,8 @@ fn watch_changes(id: u64, key: &str) -> anyhow::Result<()> {
 fn unwatch_changes(id: u64, key: &str) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
-        let mut t = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
-        t.remove(id, key)?;
+        let mut wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+        wt.remove(id, key)?;
     }
     wtx.commit()?;
     Ok(())
@@ -311,7 +333,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     str_auto_msg("No such identity found").i(uid as u64);
                                 }
                             } else {
-                                auto_msg(format!("missing name")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid as u64);
                             }
                         }
                         "whoami" => {
@@ -337,7 +359,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot follow").i(uid as u64);
                                 }
                             } else {
-                                auto_msg(format!("missing name")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid as u64);
                             }
                         }
                         "unfollow" => {
@@ -352,7 +374,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot unfollow").i(uid as u64);
                                 }
                             } else {
-                                auto_msg(format!("missing name")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid as u64);
                             }
                         }
                         "transfer" => {
@@ -565,14 +587,14 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                         "collection" | "cl" => if let Some(op) = args.next() {
                             match op {
                                 "add" => {
-                                    // make a new svs collection if there isn't one, the next arg will be the name of the collection, the one after that is the name of the variable, if there's a value after that set the variable to that value
+                                    // make a new svs collection if there isn't one, the next arg will be the moniker of the collection, the one after that is the moniker of the variable, if there's a value after that set the variable to that value
                                     // use svs.add_vars_to_collection
-                                    if let Some(name) = args.next() {
+                                    if let Some(moniker) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
-                                            if let Ok(val) = svs.add_vars_to_collection(name, args.collect::<Vec<&str>>().as_slice()) {
-                                                auto_msg(format!("added to collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            if let Ok(val) = svs.add_vars_to_collection(moniker, args.collect::<Vec<&str>>().as_slice()) {
+                                                auto_msg(format!("added to collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
                                             } else {
-                                                auto_msg(format!("failed to add to collection {}", name)).i(uid as u64);
+                                                auto_msg(format!("failed to add to collection {}", moniker)).i(uid as u64);
                                             }
                                         } else {
                                             auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
@@ -582,16 +604,16 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 "rm" => {
                                     // remove a variable from a collection
                                     // use svs.rm_var_from_collection
-                                    if let Some(name) = args.next() {
+                                    if let Some(moniker) = args.next() {
                                         // if there are no more args, just remove the collection using svs.rm_collection
                                         // use svs.rm_collection
                                         let first_var = args.next();
                                         if first_var.is_none() {
                                             if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
-                                                if let Ok(val) = svs.rm_collection(name) {
-                                                    auto_msg(format!("removed collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                                if let Ok(val) = svs.rm_collection(moniker) {
+                                                    auto_msg(format!("removed collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
                                                 } else {
-                                                    auto_msg(format!("failed to remove collection {}", name)).i(uid as u64);
+                                                    auto_msg(format!("failed to remove collection {}", moniker)).i(uid as u64);
                                                 }
                                             } else {
                                                 auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
@@ -601,10 +623,10 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                                 let mut vars = args.collect::<Vec<&str>>();
                                                 // add the first_var back in
                                                 vars.insert(0, first_var.unwrap());
-                                                if let Err(e) = svs.rm_vars_from_collection(name, vars.as_slice()) {
-                                                    auto_msg(format!("failed to remove vars from collection {}, error: {}", name, e.to_string())).i(uid as u64);
+                                                if let Err(e) = svs.rm_vars_from_collection(moniker, vars.as_slice()) {
+                                                    auto_msg(format!("failed to remove vars from collection {}, error: {}", moniker, e.to_string())).i(uid as u64);
                                                 } else {
-                                                    auto_msg(format!("removed vars from collection {}: {}", name, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("removed vars from collection {}: {}", moniker, vars.join(", "))).i(uid as u64);
                                                 }
                                             } else {
                                                 auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
@@ -613,12 +635,12 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 }
                                 "get" => {
-                                    if let Some(name) = args.next() {
+                                    if let Some(moniker) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
-                                            if let Ok(val) = svs.get_collection(name) {
-                                                auto_msg(format!("collection {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            if let Ok(val) = svs.get_collection(moniker) {
+                                                auto_msg(format!("collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
                                             } else {
-                                                auto_msg(format!("failed to get collection {}", name)).i(uid as u64);
+                                                auto_msg(format!("failed to get collection {}", moniker)).i(uid as u64);
                                             }
                                         } else {
                                             auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
@@ -626,17 +648,17 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     }
                                 }
                                 "has" => {
-                                    if let Some(name) = args.next() {
+                                    if let Some(moniker) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
                                             let vars = args.collect::<Vec<&str>>();
-                                            if let Ok(val) = svs.check_collection_membership(name, vars.as_slice()) {
+                                            if let Ok(val) = svs.check_collection_membership(moniker, vars.as_slice()) {
                                                 if val {
-                                                    auto_msg(format!("collection {} has {}", name, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("collection {} has {}", moniker, vars.join(", "))).i(uid as u64);
                                                 } else {
-                                                    auto_msg(format!("collection {} does not have {}", name, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("collection {} does not have {}", moniker, vars.join(", "))).i(uid as u64);
                                                 }
                                             } else {
-                                                auto_msg(format!("failed to check collection membership {}", name)).i(uid as u64);
+                                                auto_msg(format!("failed to check collection membership {}", moniker)).i(uid as u64);
                                             }
                                         } else {
                                             auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
@@ -708,27 +730,83 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
                             }
                         }
-                        "register-expiry" => {
-                            if let Some(name) = args.next() {
+                        "exp" => {
+                            if let Some(moniker) = args.next() {
                                 if let Some(time) = args.next() {
-                                    if let Ok(time) = time.parse::<u64>() {
-                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
-                                            if let Ok(val) = svs.register_expiry(name, time) {
-                                                auto_msg(format!("registered expiry {}: {}", name, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
-                                            } else {
-                                                auto_msg(format!("failed to register expiry {}", name)).i(uid as u64);
-                                            }
+                                    let time: u64 = if time.ends_with("m") {
+                                        // minutes
+                                        let time = time.trim_end_matches("m");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + (time * 60)
                                         } else {
-                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
                                         }
+                                    } else if time.ends_with("s") {
+                                        // seconds
+                                        let time = time.trim_end_matches("s");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + time
+                                        } else {
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
+                                        }
+                                    } else if time.ends_with("h") {
+                                        // hours
+                                        let time = time.trim_end_matches("h");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + (time * 60 * 60)
+                                        } else {
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
+                                        }
+                                    } else if time.ends_with("d") {
+                                        // days
+                                        let time = time.trim_end_matches("d");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + (time * 60 * 60 * 24)
+                                        } else {
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
+                                        }
+                                    } else if time.ends_with("w") {
+                                        // weeks
+                                        let time = time.trim_end_matches("w");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + (time * 60 * 60 * 24 * 7)
+                                        } else {
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
+                                        }
+                                    } else if time.ends_with("y") {
+                                        // years
+                                        let time = time.trim_end_matches("y");
+                                        if let Ok(time) = time.parse::<u64>() {
+                                            now() + (time * 60 * 60 * 24 * 365)
+                                        } else {
+                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            return;
+                                        }
+                                    } else if let Ok(time) = time.parse::<u64>() {
+                                        time
                                     } else {
                                         auto_msg(format!("failed to parse time")).i(uid as u64);
+                                        return;
+                                    };
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        if let Ok(_) = svs.register_expiry(moniker, time) {
+                                            auto_msg(format!("registered expiry {}", moniker)).i(uid as u64);
+                                        } else {
+                                            auto_msg(format!("failed to register expiry {}", moniker)).i(uid as u64);
+                                        }
+                                    } else {
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
                                     }
                                 } else {
                                     auto_msg(format!("missing time")).i(uid as u64);
                                 }
                             } else {
-                                auto_msg(format!("missing name")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid as u64);
                             }
                         }
                         "perms" => {
@@ -837,14 +915,14 @@ async fn account_connected(req: &mut Request, res: &mut Response) {
         }
     } as usize;
 
-    tracing::info!("chat account came online: {}, req {:?}", uid, req);
+    tracing::info!("chat account came online: {}", uid);
 
     let (tx, rx) = mpsc::unbounded_channel();
     let rx = UnboundedReceiverStream::new(rx);
     
     tx.send(Message::UserId(uid)).unwrap();
 
-    ONLINE_USERS.insert(uid, tx);
+    ONLINE_ACCOUNTS.insert(uid, tx);
 
     let stream = rx.map(move |msg| match msg {
         Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("account").text(uid.to_string())),
@@ -913,25 +991,26 @@ fn interaction(id: u64, i: Interaction) {
             }
         },
         Interaction::Broadcast(msg) => {
-            ONLINE_USERS.retain(|i, tx| if id as usize == *i { true } else { // tracing::info!("account {} broadcast: {}", id, msg);
+            ONLINE_ACCOUNTS.retain(|i, tx| if id as usize == *i { true } else { // tracing::info!("account {} broadcast: {}", id, msg);
                 tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
             });
         },
         Interaction::Message(uid, msg) => {
             let uid = uid as usize; // tracing::info!("account {} message: {}", id, msg);
-            if let Some(s) = ONLINE_USERS.get(&uid) {
-                if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
-                    tracing::info!("failed to send message to account {}", id);
-                    ONLINE_USERS.remove(&uid);
+            if let Some(s) = ONLINE_ACCOUNTS.get(&uid) {
+                if let Err(e) = s.send(Message::Reply(format!("{id}:{msg}"))) {
+                    tracing::info!("failed to send message to account {}, err: {}", id, e);
+                    ONLINE_ACCOUNTS.remove(&uid);
                 }
             }
         },
         Interaction::AutoMessage(msg) => {
             tracing::info!("account {} auto message: {}", id, msg);
-            if let Some(s) = ONLINE_USERS.get(&(id as usize)) {
-                if s.send(Message::Reply(format!("{id}:{msg}"))).is_err() {
-                    tracing::info!("failed to send auto message to account {}", id);
-                    ONLINE_USERS.remove(&(id as usize));
+            let uid = id as usize;
+            if let Some(s) = ONLINE_ACCOUNTS.get(&uid) {
+                if let Err(e) = s.send(Message::Reply(format!("{id}:{msg}"))) {
+                    tracing::info!("failed to send message to account {}, err: {}", id, e);
+                    ONLINE_ACCOUNTS.remove(&uid);
                 }
             }
         }
@@ -970,16 +1049,6 @@ fn get_or_generate_admin_password() -> (U8s, Hasher) {
             (s.as_bytes().to_vec(), phsr)
         }
     }
-}
-
-const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
-
-lazy_static!{
-    static ref B64: base64::engine::GeneralPurpose = {
-        let abc = base64::alphabet::Alphabet::new("+_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").expect("aplhabet was too much for base64, sorry");
-        base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
-    };
-    static ref PWD: (U8s, Hasher) = get_or_generate_admin_password();
 }
 
 fn check_admin_password(pwd: &[u8]) -> bool {
@@ -1054,10 +1123,6 @@ fn decrypt<'a, T: serde::de::DeserializeOwned>(
     }
 }
 
-lazy_static!{
-    static ref SINCE_START: u64 = now();
-}
-
 const ADMIN_ID: u64 = 1997;
 const STATIC_DIR: &'static str = "./static/";
 // token, account_id, expiry
@@ -1083,10 +1148,10 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     Ok(())
 }*/
 
-pub async fn expiry_checker() -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async {
+pub fn expiry_checker() -> std::thread::JoinHandle<()> {
+    std::thread::spawn(|| {
         loop {
-            std::thread::sleep(Duration::from_secs(30));//            println!("expiry checker doing a sweep");
+            std::thread::sleep(Duration::from_secs(15));//            println!("expiry checker doing a sweep");
             match db_expiry_handler() {
                 Ok(()) => {},
                 Err(e) => {
@@ -1107,9 +1172,9 @@ pub async fn expiry_checker() -> tokio::task::JoinHandle<()> {
                 }
             }
 
-            if now() - *SINCE_START > (14400 / 2) { // if it has been more than 4 hours since the server started, restart the server
-                println!("server has been running for more than 4 hours, restarting... hope for the best.. been real..");
-                Interaction::Broadcast("server has been running for more than 4 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
+            if now() - *SINCE_START > (14400 / 2) {
+                println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
+                Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
                 restart_server();
             }
         }
@@ -1127,7 +1192,7 @@ fn restart_server() {
     std::process::exit(0);
 }
 
-// Accounts             name, since, xp, balance, pwd_hash
+// Accounts             moniker, since, xp, balance, pwd_hash
 const ACCOUNTS: TableDefinition<u64, (&str, u64, u64, u64, &[u8])> = TableDefinition::new("accounts");
 const ACCOUNT_MONIKER_LOOKUP: TableDefinition<&str, u64> = TableDefinition::new("account_moniker_lookup");
 // Tokens                            perm_schema, account_id, expiry, uses, state
@@ -1143,10 +1208,20 @@ fn db_expiry_handler() -> anyhow::Result<()> {
             let mut t = wtx.open_table(RESOURCE_EXPIERIES)?;
             t.drain_filter(..now(), |_, v| Resource::delete(v).is_ok())?;
             let mut exp_t = wtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
-            exp_t.drain_filter(..now(), |_, (_owner, _moniker)| true)?;
+            let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+            let mut svt = wtx.open_table(SCOPED_VARIABLES)?;
+            let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
+            for r in exp_t.drain_filter(..now(), |_, (_owner, _moniker)| {true})? {
+                let (_, ag) = r?;
+                let (owner, moniker) = ag.value();
+                svt.remove((owner, moniker))?;
+                ot.remove(owner, moniker)?;
+                svs_unset_all_tags_internal(owner, moniker, &wtx)?;
+                svs_cleanup_collections_when_var_is_removed(moniker, &wtx)?;
+                internal_notify_changes(&wt, owner, moniker, false)?;
+                tracing::info!("removing scoped variable: ({}, {})", owner, moniker);
+            }
 
-        // session & token expiry 
-    
             let mut t = wtx.open_table(SESSION_EXPIRIES)?;
             let mut df = t.drain_filter(..now(), |_, _v| true)?;
             let mut st = wtx.open_table(SESSIONS)?;
@@ -1227,12 +1302,12 @@ async fn api_auth_step(req: &mut Request, res: &mut Response) -> Option<(u64, Op
         }
     }
 
-    if _owner.is_none() {
-        brq(res, "not authorized to use this api, no owner");
-        return None;
+    if let Some(o) = _owner {
+        Some((o, _pm, _is_admin))
+    } else {
+        brq(res, "not authorized to use this api, no valid session or token");
+        None
     }
-
-    Some((_owner.unwrap(), _pm, _is_admin))
 }
 
 #[handler]
@@ -1335,7 +1410,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                         }
                     }
                 } else {
-                    brq(res, "invalid password");
+                    uares(res, "invalid password");
                 }
             },
             Method::POST => {
@@ -1379,7 +1454,7 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
                     jsn(res, json!({"ok": true}));
                 }
             } else {
-                brq(res, "invalid password");
+                uares(res, "invalid password");
                 return;
             },
             _ => {
@@ -1389,40 +1464,66 @@ async fn scoped_variable_store_api(req: &mut Request, _depot: &mut Depot, res: &
     }
 }
 
+fn svs_unset_all_tags_internal(owner: u64, key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
+    {
+        let mut t = wtx.open_multimap_table(SV_TAGS)?;
+        let mut ti = wtx.open_multimap_table(SV_TAGS_INDEX)?;
+        let mut mmv = ti.remove_all((owner, key))?;
+        while let Some(r) = mmv.next() {
+            let ag = r?;
+            t.remove(ag.value(), (owner, key))?;
+        }
+    }
+    Ok(())
+}
+
+fn svs_cleanup_collections_when_var_is_removed(key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
+    {
+        let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
+        let mut tl = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+        let mut mmv = tl.remove_all(key)?;
+        while let Some(r) = mmv.next() {
+            let ag = r?;
+            t.remove(ag.value(), key)?;
+        }
+    }
+    Ok(())
+}
+
 impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> {
     fn open(owner: u64) -> anyhow::Result<Self> {
         let pd = PhantomData::default();
         Ok(Self{owner, pd})
     }
 
-    fn register_expiry(&self, name: &str, exp: u64) -> anyhow::Result<()> {
+    fn register_expiry(&self, moniker: &str, exp: u64) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
         {
             let mut t = wtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
-            t.insert(exp, (self.owner, name))?;
+            t.insert(exp, (self.owner, moniker))?;
         }
         wtx.commit()?;
         Ok(())
     }
 
-    fn rm_collection(&self, name: &str) -> anyhow::Result<()> {
+    fn rm_collection(&self, moniker: &str) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
         {
-            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
-            t.remove((self.owner, name), name)?;
-            t2.remove(name, (self.owner, name))?;
+            let mut tc = wtx.open_multimap_table(SV_COLLECTIONS)?;
+            let mut tcl = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            tc.remove((self.owner, moniker), moniker)?;
+            tcl.remove(moniker, (self.owner, moniker))?;
         }
         wtx.commit()?;
         Ok(())
     }
 
-    fn get_collection(&self, name: &str) -> anyhow::Result<Vec<String>> {
+    fn get_collection(&self, moniker: &str) -> anyhow::Result<Vec<String>> {
         let mut vars = vec![];
         let rtx = DB.begin_read()?;
         {
             let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut mmv = t.get((self.owner, name))?;
+            let mut mmv = t.get((self.owner, moniker))?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 vars.push(ag.value().to_string());
@@ -1431,11 +1532,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(vars)
     }
 
-    fn check_collection_membership(&self, name: &str, vars: &[&str]) -> anyhow::Result<bool> {
+    fn check_collection_membership(&self, moniker: &str, vars: &[&str]) -> anyhow::Result<bool> {
         let rtx = DB.begin_read()?;
         {
             let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut mmv = t.get((self.owner, name))?;
+            let mut mmv = t.get((self.owner, moniker))?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 if !vars.contains(&ag.value()) {
@@ -1446,28 +1547,28 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(true)
     }
 
-    fn add_vars_to_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
+    fn add_vars_to_collection(&self, moniker: &str, vars: &[&str]) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
         {
             let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
             for var in vars {
-                t.insert((self.owner, name), var)?;
-                t2.insert(var, (self.owner, name))?;
+                t.insert((self.owner, moniker), var)?;
+                t2.insert(var, (self.owner, moniker))?;
             }
         }
         wtx.commit()?;
         Ok(())
     }
 
-    fn rm_vars_from_collection(&self, name: &str, vars: &[&str]) -> anyhow::Result<()> {
+    fn rm_vars_from_collection(&self, moniker: &str, vars: &[&str]) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
         {
             let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
             for var in vars {
-                t.remove((self.owner, name), var)?;
-                t2.remove(var, (self.owner, name))?;
+                t.remove((self.owner, moniker), var)?;
+                t2.remove(var, (self.owner, moniker))?;
             }
         }
         wtx.commit()?;
@@ -1542,45 +1643,19 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(vars)
     }
 
-    fn unset_all_tags_internal(&self, key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
-        {
-            let mut t = wtx.open_multimap_table(SV_TAGS)?;
-            let mut ti = wtx.open_multimap_table(SV_TAGS_INDEX)?;
-            let mut mmv = ti.remove_all((self.owner, key))?;
-            while let Some(r) = mmv.next() {
-                let ag = r?;
-                t.remove(ag.value(), (self.owner, key))?;
-            }
-        }
-        Ok(())
-    }
-
-    fn cleanup_collections_when_var_is_removed(&self, key: &str, wtx: &WriteTransaction) -> anyhow::Result<()> {
-        {
-            let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
-            let mut tl = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
-            let mut mmv = tl.remove_all(key)?;
-            while let Some(r) = mmv.next() {
-                let ag = r?;
-                t.remove(ag.value(), key)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn set(&self, name: &str, value: T) -> anyhow::Result<()> {
+    fn set(&self, moniker: &str, value: T) -> anyhow::Result<()> {
         let owner = self.owner;
         let wtx = DB.begin_write()?;
         {
             wtx.open_table(SCOPED_VARIABLES)?
                 .insert(
-                    (owner, name),
+                    (owner, moniker),
                     serialize_and_compress(value)?.as_slice()
                 )?;
             wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
-                .insert(owner, name)?;
+                .insert(owner, moniker)?;
 
-            internal_notify_changes(&wtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, name, true)?;
+            internal_notify_changes(&wtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, moniker, true)?;
         }
         wtx.commit()?; // std::thread::spawn(move || {});
         Ok(())
@@ -1593,24 +1668,24 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut t = wtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
-            for (name, value) in values.iter() {
+            for (moniker, value) in values.iter() {
                 t.insert(
-                    (owner, name.as_str()),
+                    (owner, moniker.as_str()),
                     serialize_and_compress(value)?.as_slice()
                 )?;
-                ot.insert(owner, name.as_str())?;
-                internal_notify_changes(&wt, owner, name.as_str(), true)?;
+                ot.insert(owner, moniker.as_str())?;
+                internal_notify_changes(&wt, owner, moniker.as_str(), true)?;
             }
         }
         wtx.commit()?;
         Ok(())
     }
 
-    fn get(&self, name: &str) -> anyhow::Result<Option<T>> {
+    fn get(&self, moniker: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
         let rtx = DB.begin_read()?;
         {
-            if let Some(ag) = rtx.open_table(SCOPED_VARIABLES)?.get((self.owner, name))? {
+            if let Some(ag) = rtx.open_table(SCOPED_VARIABLES)?.get((self.owner, moniker))? {
                 let mut dt = ag.value().to_vec();
                 data = Some(decompress_and_deserialize(&mut dt)?);
             }
@@ -1618,17 +1693,17 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         match data {
             Some(d) => Ok(Some(d)),
             None => Err(
-                anyhow::anyhow!("scoped variable {} not found", name)
+                anyhow::anyhow!("scoped variable {} not found", moniker)
             )
         }
     }
 
-    fn get_many(&self, names: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
-        let mut data = Vec::with_capacity(names.len());
+    fn get_many(&self, monikers: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
+        let mut data = Vec::with_capacity(monikers.len());
         let rtx = DB.begin_read()?;
         let t = rtx.open_table(SCOPED_VARIABLES)?;
-        for name in names {
-            if let Some(ag) = t.get((self.owner, name.as_str()))? {
+        for moniker in monikers {
+            if let Some(ag) = t.get((self.owner, moniker.as_str()))? {
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data.push(decompress_and_deserialize(&mut dt)?);
@@ -1639,23 +1714,23 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(data)
     }
 
-    fn rm(&self, name: &str) -> anyhow::Result<Option<T>> {
+    fn rm(&self, moniker: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
         let wtx = DB.begin_write()?;
         {
             let mut t = wtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
-            let old_data = t.remove((self.owner, name))?;
-            ot.remove(self.owner, name)?;
+            let old_data = t.remove((self.owner, moniker))?;
+            ot.remove(self.owner, moniker)?;
             if let Some(ag) = old_data {
                 let mut dt = ag.value().to_vec();
                 forget(ag);
                 data = Some(decompress_and_deserialize(&mut dt)?);
-                internal_notify_changes(&wt, self.owner, name, false)?;
+                internal_notify_changes(&wt, self.owner, moniker, false)?;
             }
-            self.unset_all_tags_internal(name, &wtx)?;
-            self.cleanup_collections_when_var_is_removed(name, &wtx)?;
+            svs_unset_all_tags_internal(self.owner, moniker, &wtx)?;
+            svs_cleanup_collections_when_var_is_removed(moniker, &wtx)?;
         }
         wtx.commit()?;
         Ok(data)
@@ -1679,8 +1754,8 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                     data.push(None);
                 }
                 ot.remove(self.owner, m)?;
-                self.unset_all_tags_internal(m, &wtx)?;
-                self.cleanup_collections_when_var_is_removed(m, &wtx)?;
+                svs_unset_all_tags_internal(self.owner, m, &wtx)?;
+                svs_cleanup_collections_when_var_is_removed(m, &wtx)?;
             }
         }
         wtx.commit()?;
@@ -2159,33 +2234,16 @@ async fn action_token_handler(req: &mut Request, _depot: &mut Depot, res: &mut R
     }
 }
 
-lazy_static! {
-    static ref DB: Database = {
-        let db = Database::create("./shok.db").expect("Failed to open database.");
-        db
-    };
-    static ref TOKEN_HASHER: sthash::Hasher = {
-        let key = PWD.0.as_slice();
-        sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"shok-tk")), Some(b"tokens"))
-    };
-    static ref RESOURCE_HASHER: sthash::Hasher = {
-        let key = PWD.0.as_slice();
-        sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"resources")), Some(b"insurance"))
-    };
-    static ref SEARCH: Search = Search::build_512mb().expect("Failed to build search.");
-}
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
-    //let db = init_surrealdb_connection().await?;
     
     let sp = PathBuf::new().join(STATIC_DIR);
     println!("Static files dir: exists - {:?}, {}", sp.exists(), sp.into_os_string().into_string().unwrap_or("bad path".to_string()));
     
     PermSchema::ensure_basic_defaults(&DB);
 
-    let expiry_checker = expiry_checker();
+    let _exps = expiry_checker();
 
     let addr = ("0.0.0.0", 443);
     let config = load_config();
@@ -2240,9 +2298,8 @@ async fn main() {
                     .handle(search_api)
                 )
                 .push(
-                    Router::with_path("/access/<ts>")
-                    .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
-                    .get(writ_access_purchase_gateway_api)
+                    Router::with_path("/tl/<op>")
+                    .handle(timeline_api)
                 )
                 .push(
                     Router::with_path("chat")
@@ -2254,6 +2311,11 @@ async fn main() {
                 .push(
                     Router::with_path("/search/<ts>")
                         .delete(search_api)
+                )
+                .push(
+                    Router::with_path("/access/<ts>")
+                    .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
+                    .get(writ_access_purchase_gateway_api)
                 )
                 .push(
                     Router::with_path("/perms")
@@ -2325,7 +2387,6 @@ async fn main() {
                 )
         );
     
-    tokio::spawn(expiry_checker);
     let listener = TcpListener::new(addr.clone()).rustls(config.clone());
     let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
     Server::new(acceptor).serve(router).await;
@@ -2728,11 +2789,6 @@ pub fn dedupe_and_merge<T: PartialEq + Clone>(host: &mut Vec<T>, other: &[T]) {
     }
 }
 
-lazy_static!{
-    static ref SINCE_LAST_STATIC_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    static ref STATIC_DIR_PATHS: parking_lot::RwLock<Vec<PathBuf>> = parking_lot::RwLock::new(read_all_file_names_in_dir(STATIC_DIR).expect("could not walk the static dir for some reason"));
-}
-
 fn update_static_dir_paths() {
     if SINCE_LAST_STATIC_CHECK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 6 {
         SINCE_LAST_STATIC_CHECK.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2844,11 +2900,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
     }
 }
 
-const UPLOAD_FORM_HTML: &'static str = "<section class=\"upload\"><form action=\"/api/upload\" method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\" /><input type=\"submit\" value=\"Upload\" /></form></section>";
-
-lazy_static!{
-    static ref IA: RwLock<Vec<PathBuf>> = RwLock::new(read_all_file_names_in_dir("./uploaded/ImageAssets/").expect("could not read image assets directory's paths all the way through.. too heavy perhaps, perhaps it is not there anymore"));
-}
+const UPLOAD_FORM_HTML: &'static str = "<section class=\"upload\"><form action=\"/api/upload\" method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" moniker=\"file\" /><input type=\"submit\" value=\"Upload\" /></form></section>";
 
 #[handler]
 async fn list_uploads(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
@@ -2986,7 +3038,7 @@ const DICT: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 #[handler]
 async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
-    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(14086).await {
+    if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(4086).await {
         if ar.moniker.len() < 3 || ar.pwd.len() < 3 || ar.pwd.len() > 128 || ar.moniker.len() > 42 {
             res.status_code(StatusCode::BAD_REQUEST);
             res.render(Json(serde_json::json!({"err":"moniker and password must be at least 3 characters long"})));
@@ -3008,16 +3060,11 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 res.render(Json(serde_json::json!({"err":"general auth check says: bad password"})));
                 return;
             } else {
-                println!("a new account is trying to join: {}", &ar.moniker);
+                tracing::info!("auth successful for {}", acc.moniker);
                 _acc = Some(acc);
             },
-            Err(e) => {
-                println!("new account not seen before, also moniker lookup error because of this: {:?}", e);
-                /*res.status_code(StatusCode::UNAUTHORIZED);
-                res.render(Json(serde_json::json!({"err":"no such account on the system"})));
-                return;*/
-            }
-        }
+            Err(e) => tracing::info!("new account: {}; hence {}", ar.moniker, e)
+        };
         let mut admin_xp = None;
         // random session token
         let session_token = rand::thread_rng()
@@ -3026,11 +3073,9 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             .map(char::from)
             .collect::<String>();
 
-        if ar.moniker == "admin" {
-            // check if admin exists
-            match Account::from_id(ADMIN_ID) {
-                Ok(mut acc) => if acc.check_password(ar.pwd.as_bytes()) {
-                   // verified admin 
+        if ar.moniker == "admin" { // check if admin exists
+            match Account::from_id(ADMIN_ID) { 
+                Ok(mut acc) => if acc.check_password(ar.pwd.as_bytes()) { // verified admin 
                    acc.xp += 1;
                    admin_xp = Some(acc.xp);
                    if let Err(e) = acc.save(false) {
@@ -3046,9 +3091,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                     let pwd_hash = PWD.1.hash(ar.pwd.as_bytes());
                     let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
                     match na.save(true) {
-                        Ok(_) => {
-                            // new admin
-                        },
+                        Ok(_) => {}, // new admin
                         Err(e) => {
                             brqe(res, &e.to_string(), "failed to save new admin account");
                             return;
@@ -3062,9 +3105,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 let mut c = cookie::Cookie::new("auth", session_token.clone());
                 let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
                 c.set_expires(exp);
-                c.set_domain(
-                    req.uri().host().unwrap_or("localhost").to_string()
-                );
+                c.set_domain(req.uri().host().unwrap_or("localhost").to_string());
                 c.set_path("/");
                 res.add_cookie(c);
                 if admin_xp.is_none() {
@@ -3422,22 +3463,42 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     }
                 }
                 "like" => match acc.like(other) {
-                    Ok(()) => {
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "msg": "liked"
-                        }));
+                    Ok(()) => match get_writ_likes(other, 1000) {
+                        Ok(likes) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "liked",
+                                "likes": likes
+                            }));
+                        },
+                        Err(e) => {
+                            tracing::error!("like - failed to get likes for writ({}) for user - {}: {}", other, acc.moniker, e);
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "liked"
+                            }));
+                        }
                     },
                     Err(e) => {
                         brqe(res, &e.to_string(), "failed to like");
                     }
                 }
                 "unlike" => match acc.unlike(other) {
-                    Ok(()) => {
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "msg": "unliked"
-                        }));
+                    Ok(()) => match get_writ_likes(other, 1000) {
+                        Ok(likes) => {
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "unliked",
+                                "likes": likes
+                            }));
+                        },
+                        Err(e) => {
+                            tracing::error!("unlike - failed to get likes for writ({}) for user - {}: {}", other, acc.moniker, e);
+                            jsn(res, serde_json::json!({
+                                "status": "ok",
+                                "msg": "unliked"
+                            }));
+                        }
                     },
                     Err(e) => {
                         brqe(res, &e.to_string(), "failed to unlike");
@@ -3474,6 +3535,71 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     },
                     Err(e) => {
                         brqe(res, &e.to_string(), "failed to unrepost");
+                    }
+                }
+                "timeline" => match acc.timeline(other, req.query("l").unwrap_or(256)) {
+                    Ok(timeline) => {
+                        let mut writs = Vec::new();
+                        for wid in timeline {
+                            tracing::info!("getting writ for timeline: {}", wid);
+                            match SEARCH.get_doc(wid) {
+                                Ok(doc) => {
+                                    if let Ok(w) = Writ::from_doc(&doc, req.query("k")) {
+                                        match FoundWrit::build_from_writ(&w, acc.id) {
+                                            Ok(fw) => {
+                                                writs.push(fw);
+                                            },
+                                            Err(e) => {
+                                                brqe(res, &e.to_string(), "failed to build found writ");
+                                                return;
+                                            }
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    // brqe(res, &e.to_string(), "failed to get writ");
+                                    // return;
+                                    tracing::error!("failed to get timeline writ for user - {}: {}", acc.moniker, e);
+                                }
+                            };
+                        }
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "writs": writs
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to get timeline");
+                    }
+                }
+                "reposts" => match acc.timeline(other, req.query("l").unwrap_or(256)) {
+                    Ok(timeline) => {
+                        // lookup/filter the writ ids that do not belong to the owner
+                        let mut reposts = Vec::new();
+                        for wid in timeline {
+                            match SEARCH.get_doc(wid) {
+                                Ok(doc) => {
+                                    if let Ok(w) = Writ::from_doc(&doc, req.query("k")) {
+                                        if w.owner != id {
+                                            reposts.push(wid);
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    // brqe(res, &e.to_string(), "failed to get writ");
+                                    // return;
+                                    tracing::error!("failed to get timeline writ({}) for user - {}: {}", wid, acc.moniker, e);
+                                }
+                            };
+                        }
+
+                        jsn(res, serde_json::json!({
+                            "status": "ok",
+                            "reposts": reposts
+                        }));
+                    },
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "failed to get timeline");
                     }
                 }
                 _ => {
@@ -3987,12 +4113,14 @@ fn transfer_access_for(from: u64, to: u64, writs: &[u64]) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
+fn check_access_for(id: u64, writs: &[u64], shared_now: Option<u64>) -> anyhow::Result<()> {
+    let n = shared_now.unwrap_or_else(|| now());
     if let Ok(t) = DB.begin_read()?.open_multimap_table(WRIT_ACCESS) {
         let mut mmv = t.get(id)?;
         let mut found = writs.len();
         while let Some(r) = mmv.next() {
-            if writs.contains(&r?.value()) {
+            let wid = r?.value(); // if the writ was made in the future it will be available then
+            if wid < n && writs.contains(&wid) {
                 found -= 1;
             }
         }
@@ -4003,10 +4131,8 @@ fn check_access_for(id: u64, writs: &[u64]) -> anyhow::Result<()> {
     Err(anyhow!("access denied"))
 }
 
-const SEARCH_INDEX_PATH: &str = "./search-index";
-
-const AMBIENT_TIMELINE: TableDefinition<u64, &[u8]> = TableDefinition::new("ambienttimeline");
-const AMBIENT_TIMELINE_LOOKUP: TableDefinition<&[u8], u64> = TableDefinition::new("ambienttimeline_lookup");
+const AMBIENT_TIMELINE: TableDefinition<u64, &[u8]> = TableDefinition::new("ambient_timeline");
+const AMBIENT_TIMELINE_LOOKUP: TableDefinition<&[u8], u64> = TableDefinition::new("ambient_timeline_lookup");
 
 const TIMELINES: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("timelines");
 const REPOSTS: MultimapTableDefinition<u64, u64> = MultimapTableDefinition::new("reposts");
@@ -4188,7 +4314,7 @@ fn add_to_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: bool) -> a
 }
 
 #[allow(dead_code)]
-fn rm_from_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: bool) -> anyhow::Result<()> {
+fn rm_from_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: Option<bool>) -> anyhow::Result<()> {
     let id = match DB.begin_read()?.open_table(AMBIENT_TIMELINE_LOOKUP)?.get(moniker)? {
         Some(ag) => ag.value(),
         None => return Err(anyhow!("no such moniker"))
@@ -4222,9 +4348,14 @@ fn rm_from_ambient_timeline(moniker: &[u8], writs: &[u64], as_reposts: bool) -> 
             t_at.insert(id, moniker)?;
         }
         for writ in writs {
-            if as_reposts {
-                t_rp.remove(id, *writ)?;
+            if let Some(ar) = as_reposts {
+                if ar {
+                    t_rp.remove(id, *writ)?;
+                } else {
+                    t_tl.remove(id, *writ)?;
+                }
             } else {
+                t_rp.remove(id, *writ)?;
                 t_tl.remove(id, *writ)?;
             }
         }
@@ -4325,7 +4456,7 @@ impl Writ {
         doc
     }
 
-    fn from_doc(doc: &Document, prefered_kind: Option<String>) -> anyhow::Result<Self> {
+    fn from_doc(doc: &Document, prefered_kind: Option<&str>) -> anyhow::Result<Self> {
         let mut ts: u64 = 0;
         let mut title = None;
         let mut content = String::new();
@@ -4349,8 +4480,8 @@ impl Writ {
                     title = val.as_text().map(|s| s.to_string());
                 }
                 "kind" => if let Some(k) = val.as_text() {
-                    if prefered_kind.is_some() && prefered_kind.as_ref().unwrap() != k {
-                        continue;
+                    if prefered_kind.is_some_and(|pk| pk != k) {
+                        continue;   
                     }
                     kind = k.to_string();
                 }
@@ -4386,6 +4517,13 @@ impl Writ {
             }
         }
         if kind.len() == 0 || content.len() == 0 || tags.len() == 0 {
+            // remove the document from the index
+            let mut index_writer = SEARCH.index_writer.write();
+            index_writer.delete_term(Term::from_field_date(
+                SEARCH.schema.get_field("ts")?,
+                DateTime::from_timestamp_secs(ts as i64)
+            ));
+            index_writer.commit()?;
             return Err(anyhow!("kind, content, and tags must be set"));
         }
         Ok(Self{ts, kind, owner, public, title, content, state, price, sell_price, tags})
@@ -4430,7 +4568,7 @@ impl Writ {
     }
 
     fn transfer_access(&self, from: u64, to: u64) -> anyhow::Result<()> {
-        match check_access_for(from, &[self.ts]) {
+        match check_access_for(from, &[self.ts], None) {
             Ok(()) => transfer_access_for(from, to, &[self.ts]),
             Err(e) => if !e.to_string().contains("no writ access") {
                 self.purchase_access(from, Some(to))
@@ -4540,6 +4678,13 @@ impl Search{
         let searcher = reader.searcher();
         let term_query = TermQuery::new(term, IndexRecordOption::Basic);
         let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
+        if top_docs.len() == 0 {
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("no such writ")
+                )
+            );
+        }
         let doc_address = top_docs[0].1;
         let doc = searcher.doc(doc_address)?;
         Ok(doc)
@@ -4612,12 +4757,13 @@ impl Search{
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
-    fn search(&self, query: &str, limit: usize, page: usize, include_public_for_owner: Option<u64>, prefered_kind: Option<String>, id: Option<u64>) -> anyhow::Result<Vec<Writ>> {
+    fn search(&self, query: &str, limit: usize, page: usize, prefered_kind: Option<&str>, id: Option<u64>) -> anyhow::Result<Vec<Writ>> {
         match Writ::search_for(query, limit, page, self) {
             Ok(results) => {
                 let mut writs = vec![];
+                let n = now();
                 for (_s, d) in results {
-                    let mut writ = match Writ::from_doc(&d, prefered_kind.clone()) {
+                    let mut writ = match Writ::from_doc(&d, prefered_kind) {
                         Ok(writ) => writ,
                         Err(e) => {
                             writs.push(Writ{
@@ -4636,10 +4782,12 @@ impl Search{
                         }
                     };
 
-                    if !writ.public || writ.price.is_some_and(|p| p > 0) || include_public_for_owner.is_some_and(|o| !(o == writ.owner || o == ADMIN_ID) || id.is_some_and(|id| id != o)) {
+                    if !writ.public || writ.price.is_some_and(|p| p > 0) {
                         if let Some(id) = id { // check if the owner has access to this writ
-                            if let Err(e) = check_access_for(id, &[writ.ts]) {
-                                writ.content = e.to_string();
+                            if writ.owner != id {
+                                if let Err(e) = check_access_for(id, &[writ.ts], Some(n)) {
+                                    writ.content = e.to_string();
+                                }
                             }
                         } else {
                             writ.content = String::new();
@@ -4829,6 +4977,11 @@ struct FoundWrit{
 
 impl FoundWrit {
     fn build_from_writ(w: &Writ, requester_id: u64) -> anyhow::Result<Self> {
+        if !(w.public || w.price.is_some_and(|p| p > 0)) && !(w.owner == requester_id || w.owner == ADMIN_ID || check_access_for(requester_id, &[w.ts], None).is_err()) {
+            return Err(anyhow!("you don't have access to this writ"));
+        } else {
+            tracing::info!("writ({}) is prived/not-public and received priviledged access from acc: ({requester_id})", w.ts);
+        }
         let mut liked = false;
         let mut reposted = false;
         let mut repost_count = 0;
@@ -4860,20 +5013,25 @@ impl FoundWrit {
         })
     }
 
-    fn build_from_writs(writs: Vec<Writ>, requester_id: Option<u64>) -> anyhow::Result<Vec<Self>> {
+    fn build_from_writs(writs: Vec<Writ>, requester_id: Option<u64>, null_on_perm_issue: bool) -> anyhow::Result<Vec<Self>> {
         let mut found_writs = vec![];
         let rtx = DB.begin_read()?;
         let t_likes= rtx.open_multimap_table(LIKED_BY)?;
         let t_accounts = rtx.open_table(ACCOUNTS)?;
         let t_reposts = match rtx.open_multimap_table(REPOSTS) {
             Ok(t) => Some(t),
-            Err(_e) => { // for if there haven't been reposts yet
-                None
-            }
+            Err(_e) => None // for if there haven't been reposts yet
         };
-        
+        let n: u64 = now();
         // do manual lookup in a single read transaction for likes, owner_monikers, and reposts
         for w in writs {
+            let mut nulled = false;
+            if !(w.public || w.price.is_none()) && !requester_id.is_some_and(|ri| w.owner == ri || (w.price.is_some_and(|p| p > 0) && check_access_for(ri, &[w.ts], Some(n)).is_ok())) {
+                if !null_on_perm_issue {
+                    return Err(anyhow!("you don't have access to this writ"));
+                }
+                nulled = true;
+            }
             let mut liked = false;
             let mut reposted = false;
             let mut repost_count = 0;
@@ -4913,7 +5071,7 @@ impl FoundWrit {
                 owner,
                 public: w.public,
                 title: w.title,
-                content: w.content,
+                content: if nulled { String::new() } else { w.content },
                 state: w.state,
                 price: w.price,
                 sell_price: w.sell_price,
@@ -4944,9 +5102,6 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             brq(res, "not authorized to use the search api");
             return;
         }
-    } else if is_get {
-        brq(res, "not authorized to use the search api");
-        return;
     }
 
     if is_get { // serve public searchable items
@@ -4956,17 +5111,35 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     Some(p) => p,
                     None => 0,
                 };
-                let kind = match req.query::<String>("k") {
+                let limit = match req.query::<usize>("l") {
+                    Some(l) => match l {
+                        0 => 128,
+                        l if l > 256 => 256,
+                        _ => l,
+                    },
+                    None => 128,
+                };
+                let kind = match req.query::<&str>("k") {
                     Some(k) => Some(k),
                     None => None,
                 };
-                match SEARCH.search(&q, 128, page, _owner, kind, _owner) {
-                    Ok(writs) => match FoundWrit::build_from_writs(writs, _owner) {
-                        Ok(writs) => res.render(Json(writs)),
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to search");
-                            return;
-                        }
+                match SEARCH.search(&q, limit, page, kind, _owner) {
+                    Ok(writs) => match FoundWrit::build_from_writs(writs, _owner, true) {
+                        Ok(mut writs) => {
+                            let include_nulled = req.query::<&str>("inc").is_some_and(|n| n.contains("nils"));
+                            let exclude_priced = req.query::<&str>("exc").is_some_and(|n| n.contains("priced"));
+                            let mut i = 0;
+                            if writs.len() == i { return nfr(res); }
+                            while i < writs.len() {
+                                if writs[i].content.len() == 0 && !(include_nulled || (!exclude_priced && writs[i].price.is_some_and(|p| p > 0))) {
+                                    writs.remove(i);
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            res.render(Json(writs));
+                        },
+                        Err(e) => return brqe(res, &e.to_string(), "failed to search")
                     },
                     Err(e) => brqe(res, &e.to_string(), "failed to search"),
                 }
@@ -4974,7 +5147,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             None => {
                 if let Some(ts) = req.query::<u64>("ts") { // if there's a ts param serve that one writ
                     match SEARCH.get_doc(ts) {
-                        Ok(doc) => match Writ::from_doc(&doc, None) {
+                        Ok(doc) => match Writ::from_doc(&doc, req.query("k")) {
                             Ok(writ) => match FoundWrit::build_from_writ(&writ, _owner.unwrap()) {
                                 Ok(writ) => res.render(Json(writ)),
                                 Err(e) => {
@@ -5017,7 +5190,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                                         }
                                     };
                                     match Writ::from_doc(&retrieved_doc, None) {
-                                        Ok(writ) => writs.push(writ),
+                                        Ok(writ) => {
+                                            let include_nulled = req.query::<&str>("inc").is_some_and(|n| n.contains("nils"));
+                                            let exclude_priced = req.query::<&str>("exc").is_some_and(|n| n.contains("priced"));
+                                            if include_nulled || (!exclude_priced && writ.price.is_some_and(|p| p > 0)) {
+                                                writs.push(writ)
+                                            }
+                                        },
                                         Err(e) => {
                                             if e.to_string().contains("must be set") {
                                                 continue;
@@ -5040,7 +5219,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             return;
                         }
 
-                        match FoundWrit::build_from_writs(writs, _owner) {
+                        match FoundWrit::build_from_writs(writs, _owner, true) {
                             Ok(writs) => res.render(Json(writs)),
                             Err(e) => {
                                 brqe(res, &e.to_string(), "failed to search");
@@ -5055,12 +5234,32 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         }
     } else if req.method() == Method::POST {
         match req.parse_json::<SearchRequest>().await {
-            Ok(search_request) => match SEARCH.search(&search_request.query, search_request.limit, search_request.page, _owner, search_request.kind, _owner) {
-                Ok(writs) => match FoundWrit::build_from_writs(writs, _owner) {
-                    Ok(writs) => res.render(Json(writs)),
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to search");
+            Ok(search_request) => match SEARCH.search(
+                &search_request.query,
+                search_request.limit,
+                search_request.page,
+                search_request.kind.as_deref(),
+                 _owner
+            ) {
+                Ok(mut writs) => {
+                    let include_nulled = req.query::<&str>("inc").is_some_and(|n| n.contains("nils"));
+                    let exclude_priced = req.query::<&str>("exc").is_some_and(|n| n.contains("priced"));
+                    for i in 0..writs.len() {
+                        if writs[i].content.len() == 0 && !(include_nulled || (!exclude_priced && writs[i].price.is_some_and(|p| p > 0))) {
+                            writs.remove(i);
+                        }
+                    }
+
+                    if writs.len() == 0 {
+                        brq(res, "no writs found");
                         return;
+                    }
+                    match FoundWrit::build_from_writs(writs, _owner, true) {
+                        Ok(writs) => res.render(Json(writs)),
+                        Err(e) => {
+                            brqe(res, &e.to_string(), "failed to search");
+                            return;
+                        }
                     }
                 },
                 Err(e) => brqe(res, &e.to_string(), "failed to search"),
@@ -5109,7 +5308,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 }
 
                 // ensure writ.kind is valid
-                if writ.kind.len() > 64 {
+                if writ.kind.len() > 256 {
                     brq(res, "kind is too long");
                     return;
                 }
@@ -5122,7 +5321,6 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     }
                 }
 
-                println!("adding writ to index: {:?}", writ);
                 if writ.owner != _owner.unwrap() {
                     brq(res, "not authorized to add posts to the index without the right credentials");
                     return;
@@ -5153,13 +5351,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             return;
                         },
                     };
-                    // try to update existing documet
+                    tracing::info!("updating writ: {:?}", writ);
                     match SEARCH.update_doc(&writ) {
                         Ok(()) => res.render(Json(serde_json::json!({"ok": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to update index"),
                     }
                 } else {
-                    // add the writ to the index
+                    tracing::info!("adding writ to index: {:?}", writ);
                     match SEARCH.add_doc(&writ) {
                         Ok(()) => res.render(Json(serde_json::json!({"ok": true}))),
                         Err(e) => brqe(res, &e.to_string(), "failed to add to index"),
@@ -5277,5 +5475,194 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         }
     } else {
         brqe(res, "method not allowed", "method not allowed");
+    }
+}
+
+#[handler]
+pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {    
+    if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
+        if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
+            brq(res, "not authorized to use the timeline api");
+            return;
+        }
+        let op = match req.param::<&str>("op") {
+            Some(op) => op,
+            None => {
+                brq(res, "no op param provided");
+                return;
+            }
+        };
+
+        match *req.method() {
+            Method::GET => {
+                let start = match req.query::<u64>("p") {
+                    Some(s) => s,
+                    None => 0
+                };
+                let count = match req.query::<u64>("c") {
+                    Some(c) => c,
+                    None => 512
+                };
+
+                match op {
+                    "r" | "a" => {
+                        let only_reposts = op == "r";
+                        match get_timeline(req.query("tl").unwrap_or(owner), start, count) {
+                            Ok(writs) => {
+                                let pk = req.query("k");
+                                let mut found_writs = vec![];
+                                for ts in &writs {
+                                    match SEARCH.get_doc(*ts) {
+                                        Ok(doc) => match Writ::from_doc(&doc, pk) {
+                                            Ok(writ) => {
+                                                if only_reposts && writ.owner == owner { continue; }
+                                                match FoundWrit::build_from_writ(&writ, owner) {
+                                                    Ok(writ) => found_writs.push(writ),
+                                                    Err(e) => {
+                                                        tracing::error!("failed to get writ({}) for {}, err: {}", *ts, owner, e);
+                                                    }
+                                                }
+                                            },
+                                            Err(e) => if !(e.to_string().contains("found") || e.to_string().contains("be set")) {
+                                                tracing::error!("failed to get writ({}) for {}, err: {}", *ts, owner, e);
+                                            } else {
+                                                brqe(res, &e.to_string(), "failed to get writ");
+                                                return;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            if rm_from_timeline(req.query("tl").unwrap_or(owner), &[*ts]).is_ok() {
+
+                                            }
+                                            tracing::error!("failed to get writ({}) for {}, err: {}", *ts, owner, e);
+                                        }
+                                    }
+                                }
+                                if found_writs.len() == 0 {
+                                    brq(res, "no writs found");
+                                    return;
+                                }
+                                jsn(res, found_writs);
+                            },
+                            Err(e) => brqe(res, &e.to_string(), "failed to get timeline"),
+                        }
+                    },
+                    _ => {
+                        match get_ambient_timeline(op.as_bytes(), start, count) {
+                            Ok(writs) => {
+                                let pk = req.query("k");
+                                let mut found_writs = vec![];
+                                for ts in &writs {
+                                    match SEARCH.get_doc(*ts) {
+                                        Ok(doc) => match Writ::from_doc(&doc, pk) {
+                                            Ok(writ) => match FoundWrit::build_from_writ(&writ, owner) {
+                                                Ok(writ) => found_writs.push(writ),
+                                                Err(e) => {
+                                                    brqe(res, &e.to_string(), "failed to get writ");
+                                                    return;
+                                                }
+                                            },
+                                            Err(e) => {
+                                                brqe(res, &e.to_string(), "failed to get writ");
+                                                return;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            if rm_from_ambient_timeline(op.as_bytes(), &[*ts], None).is_ok() {}
+                                            tracing::error!("failed to get writ({}) for {}, err: {}", *ts, owner, e);
+                                        }
+                                    }
+                                }
+                                jsn(res, found_writs);
+                            },
+                            Err(e) => {
+                                tracing::info!("failed to get ambient timeline, err: {}", e.to_string());
+                                if !ctrl.call_next(req, depot, res).await {
+                                    brq(res, "invalid op param provided");
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+            Method::POST => {        
+                match op {
+                    "add" => {
+                        let wids = if let Some(wid) = req.query_or_form::<u64>("writ").await {
+                            vec![wid]
+                        } else if let Some(wids) = req.query_or_form::<Vec<u64>>("writs").await {
+                            wids
+                        } else {
+                            brq(res, "no writ id/s provided");
+                            return;
+                        };
+                        for wid in wids {
+                            let d = SEARCH.get_doc(wid);
+                            if d.is_err() {
+                                brqe(res, &d.err().unwrap().to_string(), "failed to find writ/s, can't repost");
+                                return;
+                            }
+                            if let Ok(writ) = Writ::from_doc(&d.unwrap(), req.query("k")) {
+                                if writ.owner != owner {
+                                    match repost(owner, &[wid]) {
+                                        Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "reposted"})),
+                                        Err(e) => brqe(res, &e.to_string(), "failed to repost"),
+                                    }
+                                } else {
+                                    match add_to_timeline(owner, &[wid]) {
+                                        Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "added to timeline"})),
+                                        Err(e) => brqe(res, &e.to_string(), "failed to add to timeline"),
+                                    }
+                                }
+                            } else {
+                                brq(res, "failed to get writ");
+                            }
+                        }
+                    },
+                    "rm" => {
+                        let wids = if let Some(wid) = req.query_or_form::<u64>("writ").await {
+                            vec![wid]
+                        } else if let Some(wids) = req.query_or_form::<Vec<u64>>("writs").await {
+                            wids
+                        } else {
+                            brq(res, "no writ id/s provided");
+                            return;
+                        };
+                        let pk = req.query("k");
+                        for wid in wids {
+                            let d = SEARCH.get_doc(wid);
+                            if d.is_err() {
+                                // if the writ doesn't exist in the index then it's already been removed from the timeline
+                                continue;
+                            }
+                            if let Ok(writ) = Writ::from_doc(&d.unwrap(), pk.clone()) {
+                                if writ.owner != owner {
+                                    match unrepost(owner, &[wid]) {
+                                        Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "unreposted"})),
+                                        Err(e) => brqe(res, &e.to_string(), "failed to unrepost"),
+                                    }
+                                } else {
+                                    match rm_from_timeline(owner, &[wid]) {
+                                        Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "removed from timeline"})),
+                                        Err(e) => brqe(res, &e.to_string(), "failed to remove from timeline"),
+                                    }
+                                }
+                            } else {
+                                brq(res, "failed to get writ");
+                            }
+                        }
+                    }
+                    _ => {  //if !ctrl.call_next(req, depot, res).await {
+                        brq(res, "invalid op param provided");
+                    }
+                }
+            }
+            _ => { // if !ctrl.call_next(req, depot, res).await {
+                uares(res, "method not allowed");
+            }
+        }
+    } else {
+        uares(res, "not authorized to use the timeline api");
+        return;
     }
 }
