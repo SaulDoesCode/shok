@@ -447,11 +447,11 @@ input[type="search"] {
     border-radius: 2mm;
     padding: 1.4mm .8mm ;
     margin: .8mm;
-    width: min-content;
+    width: fit-content;
     filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
-.interactions .like-button {
+.interactions button {
     display: inline-flex;
     justify-content: center;
     align-content: center;
@@ -465,4 +465,43 @@ input[type="search"] {
     width: min-content;
     cursor: pointer;
     filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+}
+
+.comment {
+    background: #fff;
+    color: #422c35;
+    border-radius: 2mm;
+    margin: .8mm 1.8mm;
+    padding: 1mm;
+    width: fit-content;
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+}
+
+.comment .comment {
+    border-left: 2px solid #cb296a;
+}
+
+span.owner, span.time {
+    background: #fff;
+    padding: 0 .3mm;
+}
+
+span.time {
+    display: inline-block;
+    margin: .2em;
+    font-size: .888em;
+    border-radius: .5em;
+    text-shadow: 0 0 .1em rgba(74, 20, 37, 0.5);
+    box-shadow: 0 0 3px -1px rgba(0, 0, 0, 0.25);
+    filter: drop-shadow(0 0 .25em rgba(0, 0, 0, 0.25));
+}
+
+span.owner {
+    display: inline-block;
+    margin: .2em;
+    font-size: .888em;
+    border-radius: .5em;
+    text-shadow: 0 0 .1em rgba(74, 20, 37, 0.5);
+    box-shadow: 0 0 3px -1px rgba(0, 0, 0, 0.25);
+    filter: drop-shadow(0 0 .25em rgba(0, 0, 0, 0.25));
 }

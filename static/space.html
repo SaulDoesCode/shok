@@ -35,16 +35,6 @@
         const {query, queryEach, render, domfn} = d
         const {section, div, button, span, p, header, article, input, textarea, html} = domfn
 
-        const svsapi = '/api/svs/', svs = new Proxy({
-            async get(m) { return await http.get(svsapi+m) },
-            async set(m, v) { return await http.post(svsapi+m, v) },
-            async delete(m) { return await http.del(svsapi+m) }
-        }, {
-            async get(m, k) { return k in m ? m[k] : (await m.get(k)).value },
-            async set(m, k, v) { return await m.set(k, v) },
-            async deleteProperty(m, k) { return await m.delete(k) }
-        })
-
         const displayObjectText = obj => {
             let text = ''
             for (const key in obj) text += `${key}: ${obj[key]}\n`
@@ -54,15 +44,15 @@
         const authenticate = async () => {
             const ae = query('.auth')
             try {
+                const moniker = query('[type="text"]', ae).value.trim()
                 const data = await http.post('/auth', {
-                    moniker: query('[type="text"]', ae).value.trim(),
+                    moniker,
                     pwd: query('[type="password"]', ae).value.trim()
                 })
-                // display the result then remove the auth form
                 if (data.err == null) {
                     ae.innerHTML = `<p>Authenticated</p><p>Info: ${displayObjectText(data)}</p>`
                     setTimeout(() => { ae.remove() }, 4200)
-                    localStorage.setItem('auth', 'true')
+                    localStorage.setItem('auth', moniker)
                 }
             } catch(e) {
                 const errMsg = html`<p class="auth-err">Authentication Failed, error: ${e}</p>`[0][0]
@@ -103,7 +93,8 @@
         const si = query('input[type=search]')
 
         const views = Object.create(null)
-        const view = (title, v) => {
+        let activeView
+        const view = async (title, v) => {
             if (v != null) {
                 views[title] = v
                 return vs.appendChild(span({
@@ -111,9 +102,13 @@
                     onpointerdown(e) {(e.preventDefault(), view(title))}
                 }))
             }
+            if (title == activeView) return
             main.innerHTML = ''
             localStorage.setItem('av', title)
-            render(views[avd.textContent = title], main)
+            v = views[activeView = avd.textContent = title]
+            if (v.constructor.name == 'AsyncFunction') views[title] = v = await v()
+            else if (typeof v == 'function') views[title] = v = v()
+            render(v, main)
         }
 
         const divider = "<span class=\"divider\"> | </span>"
@@ -137,6 +132,65 @@
             return res.ok
         }
 
+        const makeComment = c => {
+           const likesView = span.likes('likes: ', c.likes.length)
+           const delBtn = localStorage.getItem('auth') == c.owner_moniker ? button({async onpointerdown() {
+               const status = await http.del('/api/search/' + c.ts)
+               if (!status.err) cmt.remove()
+           }}, 'delete') : ''
+           const likeBtn = button({async onpointerdown() {
+               c.liked = !c.liked
+               if (c.liked) {
+                    const res = await http.get(`/api/unlike/${c.ts}`)
+                    likesView.innerHTML = 'likes: ' + res.likes.length
+               } else {
+                    const res = await http.get(`/api/like/${c.ts}`)
+                    likesView.innerHTML = 'likes: ' + res.likes.length
+               }
+           }}, c.liked ? '👎' : '👍') 
+           const cmt = article.comment(header(span.owner(c.owner_moniker), likesView), section.content(c.content), div.interface(
+                delBtn,
+                likeBtn
+           ))
+           return cmt
+        }
+
+        window.fetchComments = async (ts, el) => {
+            try {
+                const comments = await http.get(`/api/search?q=tags:"comment ${ts}"&k=comment`)
+                const $ = el.parentNode.parentNode.parentNode
+                const commentsEl = $.querySelector('.comments')
+                if (commentsEl) {
+                    commentsEl.remove()
+                } else {
+                    if (comments.length == 0) showMessage('error', 'no comments found')
+                    const commentWriter = () => {
+                        const commentInput = textarea({attr: {placeholder: 'comment'}})
+                        const commentBtn = button({onpointerdown() {
+                            const content = commentInput.value.trim()
+                            if (content.length == 0) return
+                            writeWrit({
+                                content,
+                                kind: 'comment',
+                                tags: 'comment ' + ts,
+                                public: true,
+                                price: 0,
+                                state: '{}'
+                            })
+                            commentInput.value = ''
+                        }}, 'comment')
+                        return section.comment_writer(commentInput, commentBtn)
+                    }
+                    const commentsEl = article.comments({$},
+                        commentWriter(),
+                        section.comments(...comments.map(makeComment))
+                    )
+                }
+            } catch(e) {
+                showMessage('error', 'comments failed to load: ' + e)
+            }
+        }
+
         const blog = section.blog()
         let lastSearchQuery = '', page = 0
         //let cachedWrits = JSON.parse(localStorage.getItem('cachedWrits') || '{}')
@@ -153,8 +207,7 @@
                 for (const writ of writs) {
                     // cachedWrits[writ.ts] = writ
                     // localStorage.setItem('cachedWrits', JSON.stringify(cachedWrits))
-                    blog.append(article.writ(html`
-<header>
+                    const we = article.writ(html`<header>
     <h2>${writ.title}</h2>
     <div>
         <span data-ts="${writ.ts}">${niceTime(writ.ts)}</span>
@@ -165,9 +218,10 @@
     </div>
 </header>
 <section>
-    <pre>
-${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(this, \`${writ.ts}\`)">Paid post, Buy Access</button>' : 'no content found')}
-    </pre>
+    <pre>${ writ.content || (writ.price > 0 ? 
+        `<button class="pw" onclick="buyWritAccess(this, ${writ.ts})">Paid post, Buy Access</button>` :
+        'no content found'
+    )}</pre>
 </section>
 <footer>
     <p class="tags">
@@ -176,8 +230,10 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
     <p class="interactions">
         <span class="likes">${writ.likes.length}</span>
         <button class="like-button" onclick="likeWrit('${writ.ts}', this)">👍</button>
+        <button class="fetch-comments" onclick="fetchComments('${writ.ts}', this)">🗨️</button>
     </p>
-</footer>`))
+</footer>`)
+                    blog.append(we)
                 }
             } else {
                 const nf = span.nothing_found({$:si.parentNode}, 404)
@@ -242,13 +298,13 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
 
         view('blog', blog)
 
-        let editing
-        const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title (optional)'}})
-        const wContent = textarea({attr: {required: true, placeholder: 'content (required)'}})
-        const wTags = input({attr: {type: 'text', pattern: '[a-zA-Z0-9 ]+', placeholder: 'tags (required)', required: true}})
-        const wPrice = input({attr: {type: 'number', min: 0, max: 1000000, title: 'price (optional)'}})
+        let editing, opt = ' (optional)', req = ' (required)'
+        const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title'+opt}})
+        const wContent = textarea({attr: {required: true, placeholder: 'content'+req}})
+        const wTags = input({attr: {type: 'text', pattern: '[a-zA-Z0-9 -]+', placeholder: 'tags'+req, required: true}})
+        const wPrice = input({attr: {type: 'number', min: 0, max: 1000000, title: 'price'+opt}})
         const wPublic = input({attr: {type: 'checkbox', checked: true, title: 'public'}})
-        const wState = input({attr: {type: 'text', required: false, placeholder: 'json statefield (optional)'}})
+        const wState = input({attr: {type: 'text', required: false, placeholder: 'json statefield'+opt, title: 'statefield'}})
         
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 
@@ -262,11 +318,17 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
                     price: Number(wPrice.value) || undefined,
                     state: wState.value.trim() || '{}'
                 }
-                if (editing != null) {
-                    w.ts = Number(editing)
-                } 
+                if (editing != null) w.ts = Number(editing)
                 writeWrit(w)
-            }}, 'save')
+            }}, 'save'),
+            button({onpointerdown() {
+                editing = undefined
+                wTitle.value = ''
+                wContent.value = ''
+                wTags.value = ''
+                wPrice.value = ''
+                wState.value = ''
+            }}, 'clear')
         )
         view('writer', wwRoot)
 
@@ -287,44 +349,11 @@ ${writ.content || (writ.price > 0 ? '<button class="pw" onclick="buyWritAccess(t
             view('blog')
         }
 
-        view('about', section.about(p("Homespun server and frontend"), html`
-<article>
-Welcome to kurshok.space, a new blog and platform for philosophical content and paid posts. Kurshok.space is more than just a website, it is a community of thinkers, writers, and readers who share a passion for exploring the big questions of life.
-
-Kurshok.space is powered by Rust, a fast and reliable programming language that ensures high performance and security. Rust also enables us to create social features akin to Twitter, such as search, timelines, likes, and reposting. You can follow your favorite authors, interact with their posts, and discover new perspectives on various topics.
-
-Kurshok.space is also a publishing platform (WIP) that will allow you to monetize your content with points on the website that can be purchased/fundged from the admin, who is contactable at saul@kurshok.space. You can create your own blog, choose your subscription model, and earn money from your loyal readers.
-
-Kurshok.space is a place where you can express yourself freely, learn from others, and grow as a person. Whether you are interested in ethics, metaphysics, logic, or anything in between, you will find something that sparks your curiosity and challenges your mind.
-</article>
-<article>
-<header>
-    Privacy Policy: 
-</header>
-    We do not collect any personal information from you. We do not use cookies or any other tracking technology. We do not share your data with third parties. We do not sell your data to advertisers. We do not store your data on our servers. We do not store your data on your device. We do not store your data anywhere. We do not store data you did not enter here to be stored, like moniker and posts. 
-    We use a cookie for auth, there are no stats on the backend, and the frontend is practically static.
-    Chat messages are not stored on the server, they are persisted only on localStorage.
-    Private posts are accessible only to the admin and the author. All posts can be deleted by the author or the admin, as need be.
-    The admin is contactable at saul@kurshok.space
-    The code is open source, so you can see for yourself how things are handled, no surprises.
-    The server is privately hosted, and the domain is privately owned, tls encryption is used.
-</article>
-<article>
-<header>
-Terms of Use:
-</header>
-Don't spam, don't be a doos/asshole. Be respectful of the server's capacity. Don't use the server for anything illegal.
-</article>
-</article>
-<article>
-<header>
-Liability:
-</header>
-Seeing as this is less than a spaza shop at this point, and run by me sometimes. Please save whatever needs saved, contact me if there are issues.
-I am not responsible for what you get up to on this server, I do not take accountablility for what you say or publish here.
-By using the site, you agree to these conditions, respectfully.
-</article>
-        `))
+        view('about', async () => {
+            const about = section.about()
+            about.innerHTML = await http.get('/about.html')
+            return about
+        })
 
         view(localStorage.getItem('av') || 'blog')
 
@@ -351,16 +380,29 @@ By using the site, you agree to these conditions, respectfully.
         }
         const chatRoot = section.chat({$: 'body'}, status, chatMessages, chatInput)
 
+        const getWho = async who => {
+            if (who == 'me') return 'me'
+            if (who == null) return null
+            if (who == 'error') return who
+            if (whos[who] == null) {
+                whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
+                localStorage.setItem('whos', JSON.stringify(whos))
+            }
+            return whos[who]
+        }
+
         const makeMessage = async (who, data) => {
             if (who != 'me') {
                 if (who != null && whos[who] == null) {
                     if (who == 'error') {
                         return showMessage('error', 'probably not authenticated right')
+                    } else if (who != 'me') {
+                        whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
+                        localStorage.setItem('whos', JSON.stringify(whos))
                     }
-                    whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
-                    localStorage.setItem('whos', JSON.stringify(whos))
                 }
             }
+            if (who == undefined) who = 'me'
             const msg = article.message({$: chatMessages}, span.who[whos[who]](whos[who] || 'me'), p(data))
             if (who == 'me') msg.classList.add('me')
             const msgs = [...(JSON.parse(localStorage.getItem('c') || '[]')), [who, data]]
@@ -375,12 +417,15 @@ By using the site, you agree to these conditions, respectfully.
             localStorage.setItem('c', JSON.stringify([...msgs]))
         }
         const showMessage = async (who, data) => {
-            // santize the who, no html space characters
-            who = who.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            data = data.replace(/</g, '&lt;').replace(/>/g, '&gt;')
             if (typeof who == 'string' && who.includes('error')) {
                 status.classList.add('error')
-                status.innerHTML = who + ': ' + data
+                if (data.includes('found')) {
+                    setTimeout(() => {
+                        status.classList.remove('error')
+                        status.innerHTML = "Connected!"
+                    }, 3500)
+                }
+                status.innerHTML = who + ': ' + data || ''
                 return
             }
             if (data == null && who.includes(":")) {
@@ -395,12 +440,11 @@ By using the site, you agree to these conditions, respectfully.
         }
         JSON.parse(localStorage.getItem('c') || '[]').forEach(wd => makeMessage(...wd))
         try {
-            let tries = (localStorage.getItem('auth') || '').includes('true') ? 10 : 0
+            let tries = (localStorage.getItem('auth') || '').length ? 10 : 0
             const startSSE = () => {
                 if (tries-- <= 0) {
                     status.innerHTML = "Lost the connection!"
                     status.classList.add('error')
-                    // add a once listener on the status element that will retry to connect
                     status.onpointerdown = e => {
                         status.onpointerdown = null
                         status.classList.remove('error')
@@ -415,7 +459,10 @@ By using the site, you agree to these conditions, respectfully.
                 let sse = new EventSource(`/api/chat`), sid
                 sse.addEventListener("account", e => sid = e.data)
                 sse.addEventListener("message", e => showMessage(e.data))
-                sse.addEventListener("open", () => status.innerHTML = "Connected!")
+                sse.addEventListener("open", () => {
+                    status.classList.remove('error')
+                    status.innerHTML = "Connected!"
+                })
                 sse.addEventListener("error", async e => {
                     sse.close()
                     status.innerHTML = "Disconnected!"
@@ -429,8 +476,8 @@ By using the site, you agree to these conditions, respectfully.
                 })
                 return sse
             }
-            console.log(tries)
             if (tries == 0) {
+                status.classList.remove('error')
                 status.innerHTML = "Not authenticated, chat disabled"
             } else {
                 startSSE()
