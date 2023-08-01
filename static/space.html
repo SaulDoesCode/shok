@@ -308,13 +308,11 @@
         const wPublic = input({attr: {type: 'checkbox', checked: true, title: 'public'}})
         const wState = input({attr: {type: 'text', required: false, placeholder: 'json statefield'+opt, title: 'statefield'}})
 
-        wTags.onkeydown = e => {
-            wTags.value = [...wTags.value]
-                .filter(c => ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '—' || c == '_' || c == '.' || c == ' ' || c == ',' || c == '!' || c == '?' || c == '&' || c == '(' || c == ')' || c == ':' || c == ';' || c == '"' || c == '\'' || c == '*' || c == '@' || c == '+' || c == '/' || c == ']' || c == '[' || c == '=')).join('')
-                .replace('  ', ' ').replace('--', '—').split(' ')
-                .filter((t, i, a) => a.indexOf(t) == i).filter((t, i, a) => a.findIndex(t2 => t2.toLowerCase() == t.toLowerCase()) == i)
-                .join(' ')
-        }
+        wTags.onkeydown = e => wTags.value = [...wTags.value]
+            .filter(c => ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '—' || c == '_' || c == '.' || c == ' ' || c == ',' || c == '!' || c == '?' || c == '&' || c == '(' || c == ')' || c == ':' || c == ';' || c == '"' || c == '\'' || c == '*' || c == '@' || c == '+' || c == '/' || c == ']' || c == '[' || c == '=')).join('')
+            .replace('  ', ' ').replace('--', '—').split(' ')
+            .filter((t, i, a) => a.indexOf(t) == i).filter((t, i, a) => a.findIndex(t2 => t2.toLowerCase() == t.toLowerCase()) == i)
+            .join(' ')
 
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 

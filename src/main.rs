@@ -2243,10 +2243,7 @@ async fn main() {
     
     PermSchema::ensure_basic_defaults(&DB);
 
-    let _exps = expiry_checker();
-
-    let addr = ("0.0.0.0", 443);
-    let config = load_config();
+    let _exps = expiry_checker();    
 
     let api_limiter = RateLimiter::new(
         FixedGuard::new(),
@@ -2387,8 +2384,9 @@ async fn main() {
                 )
         );
     
-    let listener = TcpListener::new(addr.clone()).rustls(config.clone());
-    let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
+    let addr = ("0.0.0.0", 443);
+    //let acceptor = QuinnListener::new(config, addr).join(listener).bind().await;
+    let acceptor = TcpListener::new(addr).rustls(load_config()).bind().await;
     Server::new(acceptor).serve(router).await;
 }
 
