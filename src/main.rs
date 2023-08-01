@@ -4071,9 +4071,13 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
     }
 }
 
-fn validate_tags_string(tags: &str) -> Option<String> {
-    let mut tags = tags.to_string();
-    tags.retain(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
+fn validate_tags_string(mut tags: String) -> Option<String> {
+    tags.retain(|c| {
+        match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '—' | '_' | '.' | ' ' | ',' | '!' | '?' | '&' | '(' | ')' | ':' | ';' | '"' | '\'' | '*' | '@' | '+' | '/' | ']' | '[' | '=' => true,
+            _ => false,
+        }
+    });
     if tags.len() > 0 {
         return Some(tags);
     }
@@ -5284,7 +5288,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     state: pw.state,
                     price: pw.price,
                     sell_price: pw.sell_price,
-                    tags: if let Some(tags) = validate_tags_string(pw.tags.as_str()) {
+                    tags: if let Some(tags) = validate_tags_string(pw.tags) {
                         tags
                     } else {
                         brq(res, "invalid tags");
@@ -5424,7 +5428,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     state: pw.state,
                     price: pw.price,
                     sell_price: pw.sell_price,
-                    tags: if let Some(tags) = validate_tags_string(&pw.tags) {
+                    tags: if let Some(tags) = validate_tags_string(pw.tags) {
                         tags
                     } else {
                         brq(res, "tags are invalid, can't update writ");
