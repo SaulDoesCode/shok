@@ -156,38 +156,40 @@
         }
 
         window.fetchComments = async (ts, el) => {
+            let comments
             try {
-                const comments = await http.get(`/api/search?q=tags:"comment ${ts}"&k=comment`)
-                const $ = el.parentNode.parentNode.parentNode
-                const commentsEl = $.querySelector('.comments')
-                if (commentsEl) {
-                    commentsEl.remove()
-                } else {
-                    if (comments.length == 0) showMessage('error', 'no comments found')
-                    const commentWriter = () => {
-                        const commentInput = textarea({attr: {placeholder: 'comment'}})
-                        const commentBtn = button({onpointerdown() {
-                            const content = commentInput.value.trim()
-                            if (content.length == 0) return
-                            writeWrit({
-                                content,
-                                kind: 'comment',
-                                tags: 'comment ' + ts,
-                                public: true,
-                                price: 0,
-                                state: '{}'
-                            })
-                            commentInput.value = ''
-                        }}, 'comment')
-                        return section.comment_writer(commentInput, commentBtn)
-                    }
-                    const commentsEl = article.comments({$},
-                        commentWriter(),
-                        section.comments(...comments.map(makeComment))
-                    )
-                }
+                comments = await http.get(`/api/search?q=tags:"comment ${ts}"&k=comment`)
             } catch(e) {
                 showMessage('error', 'comments failed to load: ' + e)
+            }
+
+            const $ = el.parentNode.parentNode.parentNode
+            const commentsEl = $.querySelector('.comments')
+            if (commentsEl) {
+                commentsEl.remove()
+            } else {
+                if (comments && comments.length == 0) showMessage('error', 'no comments found')
+                const commentWriter = () => {
+                    const commentInput = textarea({attr: {placeholder: 'comment'}})
+                    const commentBtn = button({onpointerdown() {
+                        const content = commentInput.value.trim()
+                        if (content.length == 0) return
+                        writeWrit({
+                            content,
+                            kind: 'comment',
+                            tags: 'comment ' + ts,
+                            public: true,
+                            price: 0,
+                            state: '{}'
+                        })
+                        commentInput.value = ''
+                    }}, 'comment')
+                    return section.comment_writer(commentInput, commentBtn)
+                }
+                const commentsEl = article.comments({$},
+                    commentWriter(),
+                    section.comments(...(comments || []).map(makeComment))
+                )
             }
         }
 
@@ -301,11 +303,19 @@
         let editing, opt = ' (optional)', req = ' (required)'
         const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title'+opt}})
         const wContent = textarea({attr: {required: true, placeholder: 'content'+req}})
-        const wTags = input({attr: {type: 'text', pattern: '[a-zA-Z0-9 -]+', placeholder: 'tags'+req, required: true}})
+        const wTags = input({attr: {type: 'text', placeholder: 'tags'+req, required: true}})
         const wPrice = input({attr: {type: 'number', min: 0, max: 1000000, title: 'price'+opt}})
         const wPublic = input({attr: {type: 'checkbox', checked: true, title: 'public'}})
         const wState = input({attr: {type: 'text', required: false, placeholder: 'json statefield'+opt, title: 'statefield'}})
-        
+
+        wTags.onkeydown = e => {
+            wTags.value = [...wTags.value]
+                .filter(c => ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '—' || c == '_' || c == '.' || c == ' ' || c == ',' || c == '!' || c == '?' || c == '&' || c == '(' || c == ')' || c == ':' || c == ';' || c == '"' || c == '\'' || c == '*' || c == '@' || c == '+' || c == '/' || c == ']' || c == '[' || c == '=')).join('')
+                .replace('  ', ' ').replace('--', '—').split(' ')
+                .filter((t, i, a) => a.indexOf(t) == i).filter((t, i, a) => a.findIndex(t2 => t2.toLowerCase() == t.toLowerCase()) == i)
+                .join(' ')
+        }
+
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 
             button({onpointerdown() {
@@ -313,7 +323,7 @@
                     title: wTitle.value.trim(),
                     content: wContent.value.trim(),
                     kind: 'post',
-                    tags: 'post ' + wTags.value.trim(),
+                    tags: 'post ' + wTags.value.trim().replace('  ', ' ').replace('post', ''),
                     public: wPublic.checked,
                     price: Number(wPrice.value) || undefined,
                     state: wState.value.trim() || '{}'
@@ -419,7 +429,7 @@
         const showMessage = async (who, data) => {
             if (typeof who == 'string' && who.includes('error')) {
                 status.classList.add('error')
-                if (data.includes('found')) {
+                if (data && data.includes && data.includes('found')) {
                     setTimeout(() => {
                         status.classList.remove('error')
                         status.innerHTML = "Connected!"
