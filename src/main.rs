@@ -292,7 +292,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
             uares(res, "not logged in");
             return;
         }
-    } as usize;
+    };
     if let Ok(b) = req.payload().await {
         if let Ok(mut msg) = std::str::from_utf8(b) {
             if msg.len() > 2048 {
@@ -309,9 +309,9 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             msg.push_str(arg);
                             msg.push(' ');
                         }
-                        str_msg(acc.id, &msg).i(uid as u64);
+                        str_msg(acc.id, &msg).i(uid);
                     } else {
-                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid as u64);
+                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid);
                     }
                 }
             } else if msg.starts_with("/") {
@@ -321,60 +321,56 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                 if let Some(cmd) = args.next() {
                     match cmd {
                         "help" => {
-                            auto_msg(format!("commands: /help, /transfer to:u64 amount:u64 ?when:u64, /broadcast msg:str, /msg id:u64 msg:str")).i(uid as u64);
+                            auto_msg(format!("commands: /help, /transfer to:u64 amount:u64 ?when:u64, /broadcast msg:str, /msg id:u64 msg:str")).i(uid);
                         }
-                        "whois" => {
-                            if let Some(moniker) = args.next() {
-                                if moniker == "me" || moniker == "I" {
-                                    auto_msg(format!("{} is {}", moniker, uid)).i(uid as u64);
-                                } else if let Ok(acc) = Account::from_moniker(moniker) {
-                                    auto_msg(format!("{} is {}", moniker, acc.id)).i(uid as u64);
-                                } else {
-                                    str_auto_msg("No such identity found").i(uid as u64);
-                                }
+                        "whois" => if let Some(moniker) = args.next() {
+                            if moniker == "me" || moniker == "I" {
+                                auto_msg(format!("{} is {}", moniker, uid)).i(uid);
+                            } else if let Ok(acc) = Account::from_moniker(moniker) {
+                                auto_msg(format!("{} is {}", moniker, acc.id)).i(uid);
                             } else {
-                                auto_msg(format!("missing moniker")).i(uid as u64);
+                                str_auto_msg("No such identity found").i(uid);
                             }
+                        } else {
+                            auto_msg(format!("missing moniker")).i(uid);
                         }
                         "whoami" => {
-                            auto_msg(format!("you are {}", uid)).i(uid as u64);
+                            auto_msg(format!("you are {}", uid)).i(uid);
                         }
-                        "restart" => {
-                            if uid == ADMIN_ID as usize {
-                                auto_msg(format!("restarting server")).i(uid as u64);
-                                restart_server();
-                            } else {
-                                auto_msg(format!("not admin")).i(uid as u64);
-                            }
+                        "restart" => if uid == ADMIN_ID {
+                            auto_msg(format!("restarting server")).i(uid);
+                            restart_server();
+                        } else {
+                            auto_msg(format!("not admin")).i(uid);
                         }
                         "follow" => {
                             if let Some(moniker) = args.next() {
                                 if let Ok(acc) = Account::from_moniker(moniker) {
-                                    if let Err(e) = follow_account(uid as u64, acc.id) {
-                                        auto_msg(format!("failed to follow {}: {}", moniker, e)).i(uid as u64);
+                                    if let Err(e) = follow_account(uid, acc.id) {
+                                        auto_msg(format!("failed to follow {}: {}", moniker, e)).i(uid);
                                     } else {
-                                        auto_msg(format!("followed {}", moniker)).i(uid as u64);
+                                        auto_msg(format!("followed {}", moniker)).i(uid);
                                     }
                                 } else {
-                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot follow").i(uid as u64);
+                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot follow").i(uid);
                                 }
                             } else {
-                                auto_msg(format!("missing moniker")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid);
                             }
                         }
                         "unfollow" => {
                             if let Some(moniker) = args.next() {
                                 if let Ok(acc) = Account::from_moniker(moniker) {
-                                    if let Err(e) = unfollow_account(uid as u64, acc.id) {
-                                        auto_msg(format!("failed to unfollow {}: {}", moniker, e)).i(uid as u64);
+                                    if let Err(e) = unfollow_account(uid, acc.id) {
+                                        auto_msg(format!("failed to unfollow {}: {}", moniker, e)).i(uid);
                                     } else {
-                                        auto_msg(format!("unfollowed {}", moniker)).i(uid as u64);
+                                        auto_msg(format!("unfollowed {}", moniker)).i(uid);
                                     }
                                 } else {
-                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot unfollow").i(uid as u64);
+                                    str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot unfollow").i(uid);
                                 }
                             } else {
-                                auto_msg(format!("missing moniker")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid);
                             }
                         }
                         "transfer" => {
@@ -383,66 +379,66 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     if let Some(amount) = args.next() {
                                         if let Ok(amount) = amount.parse::<u64>() {
                                             let when = args.next().map(|s| s.parse::<u64>().ok()).flatten();
-                                            auto_msg(format!("transfer {} to {} at {:?}", amount, to, when)).i(uid as u64);
-                                            interaction(uid as u64, Interaction::Transfer(acc.id, amount, when));
+                                            auto_msg(format!("transfer {} to {} at {:?}", amount, to, when)).i(uid);
+                                            interaction(uid, Interaction::Transfer(acc.id, amount, when));
                                         } else {
-                                            auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                            auto_msg(format!("failed to parse amount")).i(uid);
                                         }
                                     } else {
-                                        auto_msg(format!("missing amount")).i(uid as u64);
+                                        auto_msg(format!("missing amount")).i(uid);
                                     }
                                 } else {
                                     if let Ok(to) = to.parse::<u64>() {
                                         if let Some(amount) = args.next() {
                                             if let Ok(amount) = amount.parse::<u64>() {
                                                 let when = args.next().map(|s| s.parse::<u64>().ok()).flatten();
-                                                auto_msg(format!("transfer {} to {} at {:?}", amount, to, when.unwrap_or_else(|| now()))).i(uid as u64);
-                                                interaction(uid as u64, Interaction::Transfer(to, amount, when));
+                                                auto_msg(format!("transfer {} to {} at {:?}", amount, to, when.unwrap_or_else(|| now()))).i(uid);
+                                                interaction(uid, Interaction::Transfer(to, amount, when));
                                             } else {
-                                                auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                                auto_msg(format!("failed to parse amount")).i(uid);
                                             }
                                         } else {
-                                            auto_msg(format!("missing amount")).i(uid as u64);
+                                            auto_msg(format!("missing amount")).i(uid);
                                         }
                                     } else {
-                                        auto_msg(format!("failed to parse to")).i(uid as u64);
+                                        auto_msg(format!("failed to parse to")).i(uid);
                                     }
                                 }
                             } else {
-                                auto_msg(format!("missing to")).i(uid as u64);
+                                auto_msg(format!("missing to")).i(uid);
                             }
                         }
                         "balance" | "b" => {
                             // if there is a next arg that can be read as a u64 ammount then if the account is admin add balance
                             if let Some(amount) = args.next() {
                                 if let Ok(amount) = amount.parse::<u64>() {
-                                    if let Ok(mut acc) = Account::from_id(uid as u64) {
+                                    if let Ok(mut acc) = Account::from_id(uid) {
                                         if acc.id == ADMIN_ID {
-                                            auto_msg(format!("adding {} to balance", amount)).i(uid as u64);
+                                            auto_msg(format!("adding {} to balance", amount)).i(uid);
                                             acc.balance += amount;
                                             match acc.save(false) {
                                                 Ok(_) => {
-                                                    auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
+                                                    auto_msg(format!("balance: {}", acc.balance)).i(uid);
                                                 }
                                                 Err(e) => {
-                                                    auto_msg(format!("failed to save balance: {}", e)).i(uid as u64);
+                                                    auto_msg(format!("failed to save balance: {}", e)).i(uid);
                                                 }
                                             }
                                         } else {
-                                            auto_msg(format!("not admin")).i(uid as u64);
+                                            auto_msg(format!("not admin")).i(uid);
                                         }
                                     } else {
-                                        auto_msg(format!("failed to get balance")).i(uid as u64);
+                                        auto_msg(format!("failed to get balance")).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to parse amount")).i(uid as u64);
+                                    auto_msg(format!("failed to parse amount")).i(uid);
                                 }
                             }
                             // check own balance using id to get account
-                            if let Ok(acc) = Account::from_id(uid as u64) {
-                                auto_msg(format!("balance: {}", acc.balance)).i(uid as u64);
+                            if let Ok(acc) = Account::from_id(uid) {
+                                auto_msg(format!("balance: {}", acc.balance)).i(uid);
                             } else {
-                                auto_msg(format!("failed to get balance")).i(uid as u64);
+                                auto_msg(format!("failed to get balance")).i(uid);
                             }
                         }
                         "broadcast" | "bc" => {
@@ -453,38 +449,38 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     msg.push_str(arg);
                                     msg.push(' ');
                                 }
-                                auto_msg(format!("broadcasted: {}", msg)).i(uid as u64);
-                                Interaction::Broadcast(msg).i(uid as u64);
+                                auto_msg(format!("broadcasted: {}", msg)).i(uid);
+                                Interaction::Broadcast(msg).i(uid);
                             } else {
-                                auto_msg(format!("missing message")).i(uid as u64);
+                                auto_msg(format!("missing message")).i(uid);
                             }
                         }
                         "server-timestamp" => {
-                            auto_msg(format!("server time: {}", now())).i(uid as u64);
+                            auto_msg(format!("server time: {}", now())).i(uid);
                         }
                         "cmd" => {
-                            if let Ok(acc) = Account::from_id(uid as u64) {
+                            if let Ok(acc) = Account::from_id(uid) {
                                 if acc.id == ADMIN_ID {
                                     if let Some(cmd) = args.next() {
                                         let args = args.collect::<Vec<&str>>();
-                                        auto_msg(format!("running cmd: {}", cmd)).i(uid as u64);
+                                        auto_msg(format!("running cmd: {}", cmd)).i(uid);
                                         // run the command on the machine and return the output
                                         match std::process::Command::new(cmd).args(args).output() {
                                             Ok(output) => {
-                                                auto_msg(format!("output: {}", String::from_utf8_lossy(&output.stdout))).i(uid as u64);
+                                                auto_msg(format!("output: {}", String::from_utf8_lossy(&output.stdout))).i(uid);
                                             }
                                             Err(e) => {
-                                                auto_msg(format!("failed to run cmd: {}", e)).i(uid as u64);
+                                                auto_msg(format!("failed to run cmd: {}", e)).i(uid);
                                             }
                                         }
                                     } else {
-                                        auto_msg(format!("missing cmd")).i(uid as u64);
+                                        auto_msg(format!("missing cmd")).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("not admin")).i(uid as u64);
+                                    auto_msg(format!("not admin")).i(uid);
                                 }
                             } else {
-                                auto_msg(format!("failed to get account")).i(uid as u64);
+                                auto_msg(format!("failed to get account")).i(uid);
                             }
                         }
                         "msg" | "m" => {
@@ -497,10 +493,10 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                         msg.push(' ');
                                     }
                                     if msg == "" {
-                                        auto_msg(format!("missing message")).i(uid as u64);
+                                        auto_msg(format!("missing message")).i(uid);
                                     } else {
-                                        auto_msg(format!("sending message to {}: {}", to, msg)).i(uid as u64);
-                                        Interaction::Message(to, msg.to_string()).i(uid as u64);
+                                        auto_msg(format!("sending message to {}: {}", to, msg)).i(uid);
+                                        Interaction::Message(to, msg.to_string()).i(uid);
                                     }
                                 } else {
                                     // handle moniker use instead of id
@@ -510,13 +506,13 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                             msg.push_str(arg);
                                             msg.push(' ');
                                         }
-                                        str_msg(acc.id, &msg).i(uid as u64);
+                                        str_msg(acc.id, &msg).i(uid);
                                     } else {
-                                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid as u64);
+                                        str_auto_msg("No such identity found, failed to parse id as number, tried as a moniker, both failed, cannot send message").i(uid);
                                     }
                                 }
                             } else {
-                                auto_msg(format!("missing to")).i(uid as u64);
+                                auto_msg(format!("missing to")).i(uid);
                             }
                         }
                         "set" => {
@@ -527,60 +523,60 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     msg.push(' ');
                                 }
                                 if msg == "" {
-                                    auto_msg(format!("missing message")).i(uid as u64);
+                                    auto_msg(format!("missing message")).i(uid);
                                 } else if  let Ok(val) = serde_json::from_str::<serde_json::Value>(&msg) {
-                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                         match svs.set(key, val) {
                                             Ok(_) => {
-                                                auto_msg(format!("set {} to {}", key, msg)).i(uid as u64);
+                                                auto_msg(format!("set {} to {}", key, msg)).i(uid);
                                             },
                                             Err(e) => {
-                                                auto_msg(format!("failed to set {} to {}, error: {}", key, msg, e.to_string())).i(uid as u64);
+                                                auto_msg(format!("failed to set {} to {}, error: {}", key, msg, e.to_string())).i(uid);
                                             }
                                         }
                                     } else {
-                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid);
                                     }
                                 }
                             }
                         }
                         "get" => {
                             if let Some(key) = args.next() {
-                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                     if let Ok(val) = svs.get(key) {
-                                        auto_msg(format!("{}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        auto_msg(format!("{}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                     } else {
-                                        auto_msg(format!("failed to get {}", key)).i(uid as u64);
+                                        auto_msg(format!("failed to get {}", key)).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid);
                                 }
                             }
                         }
                         "rm" => {
                             if let Some(key) = args.next() {
-                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                     if let Ok(val) = svs.rm(key) {
-                                        auto_msg(format!("removed {}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        auto_msg(format!("removed {}: {}", key, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                     } else {
-                                        auto_msg(format!("failed to remove {}", key)).i(uid as u64);
+                                        auto_msg(format!("failed to remove {}", key)).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid);
                                 }
                             }
                         }
                         "watch" => {
                             if let Some(key) = args.next() {
-                                if let Err(e) = watch_changes(uid as u64, key) {
-                                    auto_msg(format!("failed to add a watcher for {}; error: {}", key, e)).i(uid as u64);
+                                if let Err(e) = watch_changes(uid, key) {
+                                    auto_msg(format!("failed to add a watcher for {}; error: {}", key, e)).i(uid);
                                 }
                             }
                         }
                         "unwatch" => {
                             if let Some(key) = args.next() {
-                                if let Err(e) = unwatch_changes(uid as u64, key) {
-                                    auto_msg(format!("failed to remove a watcher for {}; error: {}", key, e)).i(uid as u64);
+                                if let Err(e) = unwatch_changes(uid, key) {
+                                    auto_msg(format!("failed to remove a watcher for {}; error: {}", key, e)).i(uid);
                                 }
                             }
                         }
@@ -590,14 +586,14 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     // make a new svs collection if there isn't one, the next arg will be the moniker of the collection, the one after that is the moniker of the variable, if there's a value after that set the variable to that value
                                     // use svs.add_vars_to_collection
                                     if let Some(moniker) = args.next() {
-                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                             if let Ok(val) = svs.add_vars_to_collection(moniker, args.collect::<Vec<&str>>().as_slice()) {
-                                                auto_msg(format!("added to collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                                auto_msg(format!("added to collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                             } else {
-                                                auto_msg(format!("failed to add to collection {}", moniker)).i(uid as u64);
+                                                auto_msg(format!("failed to add to collection {}", moniker)).i(uid);
                                             }
                                         } else {
-                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid);
                                         }
                                     }
                                 }
@@ -609,204 +605,198 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                         // use svs.rm_collection
                                         let first_var = args.next();
                                         if first_var.is_none() {
-                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                                 if let Ok(val) = svs.rm_collection(moniker) {
-                                                    auto_msg(format!("removed collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                                    auto_msg(format!("removed collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                                 } else {
-                                                    auto_msg(format!("failed to remove collection {}", moniker)).i(uid as u64);
+                                                    auto_msg(format!("failed to remove collection {}", moniker)).i(uid);
                                                 }
                                             } else {
-                                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                                auto_msg(format!("failed to open scoped variable store")).i(uid);
                                             }
                                         } else {
-                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                                 let mut vars = args.collect::<Vec<&str>>();
                                                 // add the first_var back in
                                                 vars.insert(0, first_var.unwrap());
                                                 if let Err(e) = svs.rm_vars_from_collection(moniker, vars.as_slice()) {
-                                                    auto_msg(format!("failed to remove vars from collection {}, error: {}", moniker, e.to_string())).i(uid as u64);
+                                                    auto_msg(format!("failed to remove vars from collection {}, error: {}", moniker, e.to_string())).i(uid);
                                                 } else {
-                                                    auto_msg(format!("removed vars from collection {}: {}", moniker, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("removed vars from collection {}: {}", moniker, vars.join(", "))).i(uid);
                                                 }
                                             } else {
-                                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                                auto_msg(format!("failed to open scoped variable store")).i(uid);
                                             }
                                         }
                                     }
                                 }
                                 "get" => {
                                     if let Some(moniker) = args.next() {
-                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                             if let Ok(val) = svs.get_collection(moniker) {
-                                                auto_msg(format!("collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                                auto_msg(format!("collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                             } else {
-                                                auto_msg(format!("failed to get collection {}", moniker)).i(uid as u64);
+                                                auto_msg(format!("failed to get collection {}", moniker)).i(uid);
                                             }
                                         } else {
-                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid);
                                         }
                                     }
                                 }
                                 "has" => {
                                     if let Some(moniker) = args.next() {
-                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                        if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                             let vars = args.collect::<Vec<&str>>();
                                             if let Ok(val) = svs.check_collection_membership(moniker, vars.as_slice()) {
                                                 if val {
-                                                    auto_msg(format!("collection {} has {}", moniker, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("collection {} has {}", moniker, vars.join(", "))).i(uid);
                                                 } else {
-                                                    auto_msg(format!("collection {} does not have {}", moniker, vars.join(", "))).i(uid as u64);
+                                                    auto_msg(format!("collection {} does not have {}", moniker, vars.join(", "))).i(uid);
                                                 }
                                             } else {
-                                                auto_msg(format!("failed to check collection membership {}", moniker)).i(uid as u64);
+                                                auto_msg(format!("failed to check collection membership {}", moniker)).i(uid);
                                             }
                                         } else {
-                                            auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                            auto_msg(format!("failed to open scoped variable store")).i(uid);
                                         }
                                     }
                                 }
                                 _ => {
-                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                         if let Ok(val) = svs.get_collection(op) {
-                                            auto_msg(format!("collection {}: {}", op, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                            auto_msg(format!("collection {}: {}", op, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                         } else {
-                                            auto_msg(format!("failed to get collection {}", op)).i(uid as u64);
+                                            auto_msg(format!("failed to get collection {}", op)).i(uid);
                                         }
                                     } else {
-                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid);
                                     }
                                 }
                             }
                         }
                         "set-tags" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                     if let Ok(val) = svs.set_tags(moniker, args.collect::<Vec<&str>>().as_slice()) {
-                                        auto_msg(format!("set tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        auto_msg(format!("set tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                     } else {
-                                        auto_msg(format!("failed to set tags on {}", moniker)).i(uid as u64);
+                                        auto_msg(format!("failed to set tags on {}", moniker)).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid);
                                 }
                             }
                         }
                         "get-tags" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                     if let Ok(val) = svs.get_tags(moniker) {
-                                        auto_msg(format!("tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        auto_msg(format!("tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                     } else {
-                                        auto_msg(format!("failed to get tags on {}", moniker)).i(uid as u64);
+                                        auto_msg(format!("failed to get tags on {}", moniker)).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid);
                                 }
                             }
                         }
                         "unset-tags" => {
                             if let Some(moniker) = args.next() {
-                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                     if let Ok(val) = svs.unset_tags(moniker, args.collect::<Vec<&str>>().as_slice()) {
-                                        auto_msg(format!("unset tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                                        auto_msg(format!("unset tags on {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                     } else {
-                                        auto_msg(format!("failed to unset tags on {}", moniker)).i(uid as u64);
+                                        auto_msg(format!("failed to unset tags on {}", moniker)).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                    auto_msg(format!("failed to open scoped variable store")).i(uid);
                                 }
                             }
                         }
                         "vars-with-tags" => {
                             // the next args are tags, use svs.get_vars_with_tags to find them
                             let tags = args.collect::<Vec<&str>>();
-                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
-                                if let Ok(val) = svs.get_vars_with_tags(tags.as_slice(), if uid as u64 == ADMIN_ID { 2048 } else { 256 }) {
-                                    auto_msg(format!("vars with tags {}: {}", tags.join(", "), serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid as u64);
+                            if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
+                                if let Ok(val) = svs.get_vars_with_tags(tags.as_slice(), if uid == ADMIN_ID { 2048 } else { 256 }) {
+                                    auto_msg(format!("vars with tags {}: {}", tags.join(", "), serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                 } else {
-                                    auto_msg(format!("failed to get vars with tags {}", tags.join(", "))).i(uid as u64);
+                                    auto_msg(format!("failed to get vars with tags {}", tags.join(", "))).i(uid);
                                 }
                             } else {
-                                auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                auto_msg(format!("failed to open scoped variable store")).i(uid);
                             }
                         }
                         "exp" => {
                             if let Some(moniker) = args.next() {
                                 if let Some(time) = args.next() {
-                                    let time: u64 = if time.ends_with("m") {
-                                        // minutes
+                                    let time: u64 = if time.ends_with("m") { // minutes
                                         let time = time.trim_end_matches("m");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + (time * 60)
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
-                                    } else if time.ends_with("s") {
-                                        // seconds
+                                    } else if time.ends_with("s") { // seconds
                                         let time = time.trim_end_matches("s");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + time
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
-                                    } else if time.ends_with("h") {
-                                        // hours
+                                    } else if time.ends_with("h") { // hours
                                         let time = time.trim_end_matches("h");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + (time * 60 * 60)
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
-                                    } else if time.ends_with("d") {
-                                        // days
+                                    } else if time.ends_with("d") { // days
                                         let time = time.trim_end_matches("d");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + (time * 60 * 60 * 24)
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
-                                    } else if time.ends_with("w") {
-                                        // weeks
+                                    } else if time.ends_with("w") { // weeks
                                         let time = time.trim_end_matches("w");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + (time * 60 * 60 * 24 * 7)
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
-                                    } else if time.ends_with("y") {
-                                        // years
+                                    } else if time.ends_with("y") { // years
                                         let time = time.trim_end_matches("y");
                                         if let Ok(time) = time.parse::<u64>() {
                                             now() + (time * 60 * 60 * 24 * 365)
                                         } else {
-                                            auto_msg(format!("failed to parse time")).i(uid as u64);
+                                            auto_msg(format!("failed to parse time")).i(uid);
                                             return;
                                         }
                                     } else if let Ok(time) = time.parse::<u64>() {
                                         time
                                     } else {
-                                        auto_msg(format!("failed to parse time")).i(uid as u64);
+                                        auto_msg(format!("failed to parse time")).i(uid);
                                         return;
                                     };
-                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid as u64) {
+                                    if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
                                         if let Ok(_) = svs.register_expiry(moniker, time) {
-                                            auto_msg(format!("registered expiry {}", moniker)).i(uid as u64);
+                                            auto_msg(format!("registered expiry {}", moniker)).i(uid);
                                         } else {
-                                            auto_msg(format!("failed to register expiry {}", moniker)).i(uid as u64);
+                                            auto_msg(format!("failed to register expiry {}", moniker)).i(uid);
                                         }
                                     } else {
-                                        auto_msg(format!("failed to open scoped variable store")).i(uid as u64);
+                                        auto_msg(format!("failed to open scoped variable store")).i(uid);
                                     }
                                 } else {
-                                    auto_msg(format!("missing time")).i(uid as u64);
+                                    auto_msg(format!("missing time")).i(uid);
                                 }
                             } else {
-                                auto_msg(format!("missing moniker")).i(uid as u64);
+                                auto_msg(format!("missing moniker")).i(uid);
                             }
                         }
                         "perms" => {
@@ -815,7 +805,7 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                             let op = match args.next() {
                                 Some(op) => op,
                                 None => {
-                                    auto_msg(format!("missing op")).i(uid as u64);
+                                    auto_msg(format!("missing op")).i(uid);
                                     return;
                                 }
                             };
@@ -824,12 +814,12 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 Some(pm) => match pm.parse::<u32>() {
                                     Ok(pm) => pm,
                                     Err(e) => {
-                                        auto_msg(format!("failed to parse perm_schema id: {}", e)).i(uid as u64);
+                                        auto_msg(format!("failed to parse perm_schema id: {}", e)).i(uid);
                                         return;
                                     }
                                 },
                                 None => {
-                                    auto_msg(format!("missing perm_schema id")).i(uid as u64);
+                                    auto_msg(format!("missing perm_schema id")).i(uid);
                                     return;
                                 }
                             };
@@ -839,10 +829,10 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     let perms = args.collect::<Vec<&str>>();
                                     match PermSchema::add_perms(pm, &perms) {
                                         Ok(_) => {
-                                            auto_msg(format!("added perms to perm_schema {}", pm)).i(uid as u64);
+                                            auto_msg(format!("added perms to perm_schema {}", pm)).i(uid);
                                         }
                                         Err(e) => {
-                                            auto_msg(format!("failed to add perms to perm_schema {}: {}", pm, e)).i(uid as u64);
+                                            auto_msg(format!("failed to add perms to perm_schema {}: {}", pm, e)).i(uid);
                                         }
                                     }
                                 }
@@ -850,19 +840,19 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     let perms = args.collect::<Vec<&str>>();
                                     match PermSchema::rm_perms(pm, &perms) {
                                         Ok(_) => {
-                                            auto_msg(format!("removed perms from perm_schema {}", pm)).i(uid as u64);
+                                            auto_msg(format!("removed perms from perm_schema {}", pm)).i(uid);
                                         }
                                         Err(e) => {
-                                            auto_msg(format!("failed to remove perms from perm_schema {}: {}", pm, e)).i(uid as u64);
+                                            auto_msg(format!("failed to remove perms from perm_schema {}: {}", pm, e)).i(uid);
                                         }
                                     }
                                 }
                                 "get" => match PermSchema::get_perms(pm) {
                                     Ok(perms) => {
-                                        auto_msg(format!("perms on perm_schema {}: {}", pm, perms.join(", "))).i(uid as u64);
+                                        auto_msg(format!("perms on perm_schema {}: {}", pm, perms.join(", "))).i(uid);
                                     }
                                     Err(e) => {
-                                        auto_msg(format!("failed to get perms on perm_schema {}: {}", pm, e)).i(uid as u64);
+                                        auto_msg(format!("failed to get perms on perm_schema {}: {}", pm, e)).i(uid);
                                     }
                                 }
                                 "check" => {
@@ -870,31 +860,31 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                     match PermSchema::check_for(pm, &perms) {
                                         Ok(val) => {
                                             if val {
-                                                auto_msg(format!("perm_schema {} has perms {}", pm, perms.join(", "))).i(uid as u64);
+                                                auto_msg(format!("perm_schema {} has perms {}", pm, perms.join(", "))).i(uid);
                                             } else {
-                                                auto_msg(format!("perm_schema {} does not have perms {}", pm, perms.join(", "))).i(uid as u64);
+                                                auto_msg(format!("perm_schema {} does not have perms {}", pm, perms.join(", "))).i(uid);
                                             }
                                         }
                                         Err(e) => {
-                                            auto_msg(format!("failed to check perms on perm_schema {}: {}", pm, e)).i(uid as u64);
+                                            auto_msg(format!("failed to check perms on perm_schema {}: {}", pm, e)).i(uid);
                                         }
                                     }
                                 }
                                 _ => {
-                                    auto_msg(format!("unrecognized op: {}", op)).i(uid as u64);
+                                    auto_msg(format!("unrecognized op: {}", op)).i(uid);
                                 }
                             }
                         }
                         _ => {
-                            auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid as u64);
+                            auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid);
                         }
                     }
                 } else {
-                    auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid as u64);
+                    auto_msg(format!("unrecognized command; commands: /help, /transfer, /broadcast, /msg")).i(uid);
                 }
 
             } else {
-                interaction(uid as u64, Interaction::Broadcast(msg.to_string()));
+                interaction(uid, Interaction::Broadcast(msg.to_string()));
             }
             jsn(res, json!({"status": "ok"}));
         } else {
