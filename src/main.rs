@@ -8,7 +8,7 @@ use salvo::{conn::rustls::{Keycert, RustlsConfig}, http::{*}, prelude::*, rate_l
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use sthash::Hasher;
-use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::Duration, mem::forget, collections::HashMap};
+use std::{io::{Read, Write}, fs::File, path::{Path, PathBuf}, marker::PhantomData, sync::Arc, time::{Duration, SystemTime}, mem::forget, collections::HashMap};
 use rand::{thread_rng, distributions::Alphanumeric, Rng};
 use redb::{Database, ReadableTable, TableDefinition, MultimapTableDefinition, ReadableMultimapTable, WriteTransaction};
 use tantivy::{
@@ -48,7 +48,7 @@ lazy_static!{
         sthash::Hasher::new(sthash::Key::from_seed(key, Some(b"resources")), Some(b"insurance"))
     };
     static ref SEARCH: Search = Search::build_512mb().expect("Failed to build search.");
-    static ref SINCE_START: u64 = now();
+    static ref SINCE_START: SystemTime = SystemTime::now();
     static ref B64: base64::engine::GeneralPurpose = {
         let abc = base64::alphabet::Alphabet::new("+_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").expect("aplhabet was too much for base64, sorry");
         base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
@@ -1137,7 +1137,8 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
 }*/
 
 pub fn run_expiry_loop_once() {
-    let n = now(); //            println!("expiry checker doing a sweep");
+    let t = SystemTime::now();
+    let n = t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(); //            println!("expiry checker doing a sweep");
     let s15 = Duration::from_secs(15);
     if CHECK_LOOP_TIMEOUT.read().gt(&s15) {
         *CHECK_LOOP_TIMEOUT.write() = s15;
@@ -1156,10 +1157,10 @@ pub fn run_expiry_loop_once() {
         }
     }
 
-    if now() - *SINCE_START > (14400 / 2) {
+    if t > *SINCE_START + Duration::from_secs(60 * 60 * 2) {
         println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
         Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
-        tracing::info!("the server time is currently {}, server started {}.. going down.. {}", readable_time(n), readable_time(*SINCE_START), readable_time(now()));
+        tracing::info!("the server time is currently {:?}, server started {:?}.. going down now..", ts_to_readable_date(n), ts_to_readable_date(SINCE_START.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
         restart_server();
     }
 
@@ -1171,29 +1172,34 @@ pub fn run_expiry_loop_once() {
     }
 }
 
-fn readable_time(n: u64) -> String {
-    let mut y = 0;
-    let mut d = 0;
+fn ts_to_readable_date(mut ts: u64) -> String {
+    let mut y = 1970;
+    let mut m = 1;
+    let mut d = 1;
     let mut h = 0;
-    let mut m = 0;
-    let mut n = n;
-    if n >= 31536000 {
-        y = n / 31536000;
-        n -= y * 31536000;
+    let mut min = 0;
+    // convert the timestamp
+    while ts >= 31536000 {
+        ts -= 31536000;
+        y += 1;
     }
-    if n >= 86400 {
-        d = n / 86400;
-        n -= d * 86400;
+    while ts >= 2592000 {
+        ts -= 2592000;
+        m += 1;
     }
-    if n >= 3600 {
-        h = n / 3600;
-        n -= h * 3600;
+    while ts >= 86400 {
+        ts -= 86400;
+        d += 1;
     }
-    if n >= 60 {
-        m = n / 60;
-        n -= m * 60;
+    while ts >= 3600 {
+        ts -= 3600;
+        h += 1;
     }
-    format!("{}y {}d {}h {}m {}s", y, d, h, m, n)
+    while ts >= 60 {
+        ts -= 60;
+        min += 1;
+    }
+    format!("{}-{}-{} {}:{}:{}", y, m, d, h, min, ts)
 }
 
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
@@ -2754,7 +2760,7 @@ fn io_err(msg: &str) -> redb::Error {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
 
 fn read_as_bytes(path: &str) -> U8s {
