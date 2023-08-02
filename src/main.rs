@@ -1156,7 +1156,7 @@ pub fn run_expiry_loop_once() {
         }
     }
 
-    if n - *SINCE_START > (14400 / 2) {
+    if now() - *SINCE_START > (14400 / 2) {
         println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
         Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
         tracing::info!("the server time is currently {}, server started {}.. going down.. {}", readable_time(n), readable_time(*SINCE_START), readable_time(now()));
