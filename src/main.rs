@@ -1136,40 +1136,71 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
     Ok(())
 }*/
 
+pub fn run_expiry_loop_once() {
+    let n = now(); //            println!("expiry checker doing a sweep");
+    let s15 = Duration::from_secs(15);
+    if CHECK_LOOP_TIMEOUT.read().gt(&s15) {
+        *CHECK_LOOP_TIMEOUT.write() = s15;
+    }
+    match db_expiry_handler(n) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("failed to carry out the db expiry process: {:?}", e);
+        }
+    }
+    update_static_dir_paths();
+    match run_contracts(n) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("failed to run contracts: {:?}", e);
+        }
+    }
+
+    if n - *SINCE_START > (14400 / 2) {
+        println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
+        Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
+        tracing::info!("the server time is currently {}, server started {}.. going down.. {}", readable_time(n), readable_time(*SINCE_START), readable_time(now()));
+        restart_server();
+    }
+
+    match run_stored_commands(n) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("failed to run stored commands: {:?}", e);
+        }
+    }
+}
+
+fn readable_time(n: u64) -> String {
+    let mut y = 0;
+    let mut d = 0;
+    let mut h = 0;
+    let mut m = 0;
+    let mut n = n;
+    if n >= 31536000 {
+        y = n / 31536000;
+        n -= y * 31536000;
+    }
+    if n >= 86400 {
+        d = n / 86400;
+        n -= d * 86400;
+    }
+    if n >= 3600 {
+        h = n / 3600;
+        n -= h * 3600;
+    }
+    if n >= 60 {
+        m = n / 60;
+        n -= m * 60;
+    }
+    format!("{}y {}d {}h {}m {}s", y, d, h, m, n)
+}
+
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
     std::thread::spawn(|| {
         loop {
-            let n = now();
-            std::thread::sleep(*CHECK_LOOP_TIMEOUT.read());//            println!("expiry checker doing a sweep");
-            let s15 = Duration::from_secs(15);
-            if CHECK_LOOP_TIMEOUT.read().lt(&s15) {
-                *CHECK_LOOP_TIMEOUT.write() = s15;
-            }
-            match db_expiry_handler(n) {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to carry out the db expiry process: {:?}", e);
-                }
-            }
-            update_static_dir_paths();
-            match run_contracts(n) {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to run contracts: {:?}", e);
-                }
-            }
-            match run_stored_commands(n) {
-                Ok(()) => {},
-                Err(e) => {
-                    println!("failed to run stored commands: {:?}", e);
-                }
-            }
-
-            if n - *SINCE_START > (14400 / 2) {
-                println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
-                Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
-                restart_server();
-            }
+            std::thread::sleep(*CHECK_LOOP_TIMEOUT.read());
+            run_expiry_loop_once();
         }
     })
 }
@@ -2343,6 +2374,10 @@ async fn main() {
                     .handle(scoped_variable_store_api)
                 )
                 .push(
+                    Router::with_path("/expire")
+                    .get(run_exp_loop)
+                )
+                .push(
                     Router::with_path("/resource")
                     .post(resource_api)
                     .path("/<hash>")
@@ -2979,6 +3014,20 @@ async fn health(res: &mut Response){
     res.render(Json(serde_json::json!({
         "status": "ok"
     })));
+}
+
+#[handler]
+async fn run_exp_loop(res: &mut Response, req: &mut Request) {
+    if let Some((_owner, _pm, is_admin)) = api_auth_step(req, res).await {
+        if is_admin {
+            run_expiry_loop_once();
+            res.render(Json(serde_json::json!({
+                "status": "ok"
+            })));
+        } else {
+            uares(res, "you need to be logged in as admin to do that");
+        }
+    }
 }
 
 #[handler]
