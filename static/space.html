@@ -219,7 +219,7 @@
                 let i = -1
                 for (const writ of writs) {
                     if (writ.content.trim() == 'access denied' || (writ.content == '' && writ.price > 0)) {
-                        writ.content = `<button class="pw" onclick="buyWritAccess(this, ${writ.ts}, "${writ.tags}")">Paid post, Buy Access for ${writ.price} shok space shekels</button>`
+                        writ.content = `<button class="pw" onclick="buyWritAccess(this, ${writ.ts}, \`${writ.tags}\`)">Paid post, Buy Access for ${writ.price} shok space shekels</button>`
                     }
                     // cachedWrits[writ.ts] = writ
                     // localStorage.setItem('cachedWrits', JSON.stringify(cachedWrits))
@@ -287,12 +287,12 @@
             view('blog')
         }
 
-        window.buyWritAccess = async function buyWritAccess(btn, ts, tags) {
-            await searchForWrits('post tags:"' + tags + '"')
+        window.buyWritAccess = async (btn, ts, tags) => {
             const res = await http.get('/api/access/' + ts)
             if (res.ok) {
                 btn.remove()
                 showMessage('me', 'access granted to writ: ' + ts)
+                setTimeout(() => searchForWrits('post tags:"' + tags + '"'), 700)
             } else {
                 showMessage('error', 'could not buy access to writ: ' + ts)
             }
