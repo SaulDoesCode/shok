@@ -28,12 +28,13 @@ type Strings = Vec<String>;
 
 #[derive(Debug)]
 enum Message {
-    UserId(usize),
+    UserId(u64),
     Reply(String)
 }
 
-type Accounts = dashmap::DashMap<usize, mpsc::UnboundedSender<Message>>;
+type Accounts = dashmap::DashMap<u64, mpsc::UnboundedSender<Message>>;
 lazy_static!{
+    static ref ONLINE_ACCOUNTS: Accounts = Accounts::new();
     static ref IA: RwLock<Vec<PathBuf>> = RwLock::new(read_all_file_names_in_dir("./uploaded/ImageAssets/").expect("could not read image assets directory's paths all the way through.. too heavy perhaps, perhaps it is not there anymore"));
     static ref SINCE_LAST_STATIC_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static ref STATIC_DIR_PATHS: parking_lot::RwLock<Vec<PathBuf>> = parking_lot::RwLock::new(read_all_file_names_in_dir(STATIC_DIR).expect("could not walk the static dir for some reason"));
@@ -48,7 +49,6 @@ lazy_static!{
     };
     static ref SEARCH: Search = Search::build_512mb().expect("Failed to build search.");
     static ref SINCE_START: u64 = now();
-    static ref ONLINE_ACCOUNTS: Accounts = Accounts::new();
     static ref B64: base64::engine::GeneralPurpose = {
         let abc = base64::alphabet::Alphabet::new("+_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").expect("aplhabet was too much for base64, sorry");
         base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
@@ -913,7 +913,7 @@ async fn account_connected(req: &mut Request, res: &mut Response) {
             uares(res, "failed to get account id");
             return;
         }
-    } as usize;
+    };
 
     tracing::info!("chat account came online: {}", uid);
 
@@ -991,12 +991,11 @@ fn interaction(id: u64, i: Interaction) {
             }
         },
         Interaction::Broadcast(msg) => {
-            ONLINE_ACCOUNTS.retain(|i, tx| if id as usize == *i { true } else { // tracing::info!("account {} broadcast: {}", id, msg);
+            ONLINE_ACCOUNTS.retain(|i, tx| if id == *i { true } else { // tracing::info!("account {} broadcast: {}", id, msg);
                 tx.send(Message::Reply(format!("{id}:{msg}"))).is_ok()
             });
         },
-        Interaction::Message(uid, msg) => {
-            let uid = uid as usize; // tracing::info!("account {} message: {}", id, msg);
+        Interaction::Message(uid, msg) => { // tracing::info!("account {} message: {}", id, msg);
             if let Some(s) = ONLINE_ACCOUNTS.get(&uid) {
                 if let Err(e) = s.send(Message::Reply(format!("{id}:{msg}"))) {
                     tracing::info!("failed to send message to account {}, err: {}", id, e);
@@ -1004,13 +1003,11 @@ fn interaction(id: u64, i: Interaction) {
                 }
             }
         },
-        Interaction::AutoMessage(msg) => {
-            tracing::info!("account {} auto message: {}", id, msg);
-            let uid = id as usize;
-            if let Some(s) = ONLINE_ACCOUNTS.get(&uid) {
+        Interaction::AutoMessage(msg) => { // tracing::info!("account {} auto message: {}", id, msg);
+            if let Some(s) = ONLINE_ACCOUNTS.get(&id) {
                 if let Err(e) = s.send(Message::Reply(format!("{id}:{msg}"))) {
                     tracing::info!("failed to send message to account {}, err: {}", id, e);
-                    ONLINE_ACCOUNTS.remove(&uid);
+                    ONLINE_ACCOUNTS.remove(&id);
                 }
             }
         }
