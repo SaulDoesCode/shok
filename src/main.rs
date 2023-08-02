@@ -54,6 +54,7 @@ lazy_static!{
         base64::engine::GeneralPurpose::new(&abc, base64::engine::general_purpose::GeneralPurposeConfig::new().with_encode_padding(false).with_decode_allow_trailing_bits(true))
     };
     static ref PWD: (U8s, Hasher) = get_or_generate_admin_password();
+    static ref CHECK_LOOP_TIMEOUT: Arc<RwLock<Duration>> = Arc::new(RwLock::new(Duration::from_secs(15)));
 }
 const ADMIN_PWD_FILE_PATH: &str = "./secrets/ADMIN_PWD.txt";
 const SEARCH_INDEX_PATH: &str = "./search-index";
@@ -1138,28 +1139,33 @@ fn register_session_expiry(token: &str, expiry: u64) -> anyhow::Result<()> {
 pub fn expiry_checker() -> std::thread::JoinHandle<()> {
     std::thread::spawn(|| {
         loop {
-            std::thread::sleep(Duration::from_secs(15));//            println!("expiry checker doing a sweep");
-            match db_expiry_handler() {
+            let n = now();
+            std::thread::sleep(*CHECK_LOOP_TIMEOUT.read());//            println!("expiry checker doing a sweep");
+            let s15 = Duration::from_secs(15);
+            if CHECK_LOOP_TIMEOUT.read().lt(&s15) {
+                *CHECK_LOOP_TIMEOUT.write() = s15;
+            }
+            match db_expiry_handler(n) {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to carry out the db expiry process: {:?}", e);
                 }
             }
             update_static_dir_paths();
-            match run_contracts() {
+            match run_contracts(n) {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to run contracts: {:?}", e);
                 }
             }
-            match run_stored_commands() {
+            match run_stored_commands(n) {
                 Ok(()) => {},
                 Err(e) => {
                     println!("failed to run stored commands: {:?}", e);
                 }
             }
 
-            if now() - *SINCE_START > (14400 / 2) {
+            if n - *SINCE_START > (14400 / 2) {
                 println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
                 Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
                 restart_server();
@@ -1188,7 +1194,7 @@ const TOKENS: TableDefinition<&[u8], (u32, u64, u64, u64, Option<&[u8]>)> = Tabl
 const TOKEN_EXPIRIES: TableDefinition<u64, &[u8]> = TableDefinition::new("token_expiries");
 const RESOURCE_EXPIERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("resource_expiries");
 
-fn db_expiry_handler() -> anyhow::Result<()> {
+fn db_expiry_handler(n: u64) -> anyhow::Result<()> {
     {
         let wtx = DB.begin_write()?;
         {
@@ -1198,7 +1204,7 @@ fn db_expiry_handler() -> anyhow::Result<()> {
             let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
             let mut svt = wtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
-            for r in exp_t.drain_filter(..now(), |_, (_owner, _moniker)| {true})? {
+            for r in exp_t.drain_filter(..n, |_, (_owner, _moniker)| {true})? {
                 let (_, ag) = r?;
                 let (owner, moniker) = ag.value();
                 svt.remove((owner, moniker))?;
@@ -1210,14 +1216,14 @@ fn db_expiry_handler() -> anyhow::Result<()> {
             }
 
             let mut t = wtx.open_table(SESSION_EXPIRIES)?;
-            let mut df = t.drain_filter(..now(), |_, _v| true)?;
+            let mut df = t.drain_filter(..n, |_, _v| true)?;
             let mut st = wtx.open_table(SESSIONS)?;
             while let Some(r) = df.next() {
                 let (_, ag) = r?;
                 st.remove(ag.value())?;
             }
             let mut t = wtx.open_table(TOKEN_EXPIRIES)?;
-            let mut df = t.drain_filter(..now(), |_, _v| true)?;
+            let mut df = t.drain_filter(..n, |_, _v| true)?;
             let mut st = wtx.open_table(TOKENS)?;
             while let Some(r) = df.next() {
                 let (_, ag) = r?;
@@ -1485,9 +1491,17 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 
     fn register_expiry(&self, moniker: &str, exp: u64) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
-        {
+        let n = now();
+        if n < exp {
             let mut t = wtx.open_table(SCOPED_VARIABLE_EXPIRIES)?;
             t.insert(exp, (self.owner, moniker))?;
+            let until_exp: Duration = Duration::from_secs(exp - n);
+            // if the expiry is in the next few seconds and the CHECK_LOOP_TIMEOUT is more than 15 seconds, then we need to set it lower to catch the expiry on time
+            if CHECK_LOOP_TIMEOUT.read().lt(&until_exp) {
+                *CHECK_LOOP_TIMEOUT.write() = until_exp;
+            }
+        } else {
+            return Err(anyhow::Error::msg("expiry is in the past"));
         }
         wtx.commit()?;
         Ok(())
@@ -1797,11 +1811,11 @@ fn create_transfer_contract(when: u64, from: u64, to: u64, amount: u64) -> anyho
     Ok(())
 }
 
-fn run_contracts() -> anyhow::Result<()> {
+fn run_contracts(n: u64) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
         let mut st = wtx.open_table(STAKED_TRANSFERS)?;
-        st.drain_filter(now().., |_when, (from, to, amount)| {
+        st.drain_filter(n.., |_when, (from, to, amount)| {
             if let Ok(mut at) = wtx.open_table(ACCOUNTS) {
                 let mut _to_acc = None;
                 let mut _from_acc = None;
@@ -3918,11 +3932,11 @@ async fn modify_perm_schema(req: &mut Request, _depot: &mut Depot, res: &mut Res
 
 const CMD_ORDERS: TableDefinition<u64, &[u8]> = TableDefinition::new("cmd_orders"); 
 
-fn run_stored_commands() -> anyhow::Result<()> {
+fn run_stored_commands(n: u64) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
     {
         let mut t = wtx.open_table(CMD_ORDERS)?;
-        let mut _df = t.drain_filter(..now(), |_when, raw| if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
+        let mut _df = t.drain_filter(..n, |_when, raw| if let Ok(cmd) = serde_json::from_slice::<CMDRequest>(raw) {
             tokio::spawn(async move {
                 let res = cmd.run().await;
                 match res {
