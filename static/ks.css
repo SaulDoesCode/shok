@@ -83,8 +83,8 @@ body > header > h1 > span:nth-of-type(2) {
 
 .vs > span {
     display: inline-block;
-    height: 2.7vh;
-    width: 2.7vh;
+    height: 5mm;
+    width: 5mm;
     margin: .2em;
     border-radius: 100% 1cm;
     cursor: pointer;
@@ -101,7 +101,7 @@ body > header > h1 > span:nth-of-type(2) {
 .avd {
     position: absolute;
     bottom: 93%;
-    left: 20%;
+    left: 18%;
     right: 25%;
     color: #fff;
     margin: 0 0 0 0;
@@ -333,7 +333,29 @@ input[type="search"] {
 }
 
 .writ-writer > textarea {
-    min-height: 120px;
+    min-height: 164px;
+}
+
+.writ-writer button {
+    display: inline-flex;
+    justify-content: center;
+    align-content: center;
+    align-items: center;
+    background: #fff;
+    border-radius: 4mm;
+    padding: 1.4mm;
+    margin: 1.6mm;
+    overflow: hidden;
+    line-height: 1;
+    color:rgb(74, 20, 37);
+    cursor: pointer;
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+}
+
+.writ-writer button:hover {
+    background: #cb296a;
+    color: #fff;
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ {

@@ -199,7 +199,7 @@
         const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
             page = lastSearchQuery == q ? page + 1 : 0
             //const localResults = Object.values(cachedWrits).filter(w => w && [w.title, w.tags, w.content].map(v => v && v.includes(k)))
-            const remoteResults = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            let remoteResults = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
             if (!remoteResults) {
                 if (page > 0) {
                     page = page - 1
@@ -325,7 +325,7 @@
 
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 
-            button({onpointerdown() {
+            button({attr: {title: 'put your writ on the website, going on good faith here...'}, onpointerdown() {
                 const w = {
                     title: wTitle.value.trim(),
                     content: wContent.value.trim(),
@@ -337,15 +337,15 @@
                 }
                 if (editing != null) w.ts = Number(editing)
                 writeWrit(w)
-            }}, 'save'),
-            button({onpointerdown() {
+            }}, '💾 - save'),
+            button({attr: {title: 'this just clears the editor, no writs are harmed, edit state is reset too'}, onpointerdown() {
                 editing = undefined
                 wTitle.value = ''
                 wContent.value = ''
                 wTags.value = ''
                 wPrice.value = ''
                 wState.value = ''
-            }}, 'clear')
+            }}, '🧹 - clear')
         )
         view('writer', wwRoot)
 
