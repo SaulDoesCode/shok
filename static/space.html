@@ -9,7 +9,7 @@
 </head>
 <body>
     <header>
-        <h1><span>kur</span><span>shok</span></h1>
+        <h1><span class="kur">kur</span><span class="shok">shok</span></h1>
         <nav class="vs">
             <header class="avd"></header>
 
@@ -200,6 +200,17 @@
             page = lastSearchQuery == q ? page + 1 : 0
             //const localResults = Object.values(cachedWrits).filter(w => w && [w.title, w.tags, w.content].map(v => v && v.includes(k)))
             const remoteResults = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+            if (!remoteResults) {
+                if (page > 0) {
+                    page = page - 1
+                    remoteResults = await http.get('/api/search?q=' + q + `&p=${page}&k=${k}`)
+                } else {
+                    const nf = span.nothing_found(404)
+                    ae.before(nf)
+                    setTimeout(() => nf.remove(), 3500)
+                }
+                return
+            }
             //console.log(remoteResults, localResults)
             const writs = [/*...localResults,*/ ...remoteResults].filter((w, i, a) => a.findIndex(w2 => w2.ts == w.ts) == i)
             if (writs.length) {
@@ -207,24 +218,22 @@
                 blog.innerHTML = ''
                 let i = -1
                 for (const writ of writs) {
+                    if (writ.content.trim() == 'access denied' || (writ.content == '' && writ.price > 0)) {
+                        writ.content = `<button class="pw" onclick="buyWritAccess(this, ${writ.ts}, "${writ.tags}")">Paid post, Buy Access for ${writ.price} shok space shekels</button>`
+                    }
                     // cachedWrits[writ.ts] = writ
                     // localStorage.setItem('cachedWrits', JSON.stringify(cachedWrits))
-                    const we = article.writ(html`<header>
-    <h2>${writ.title}</h2>
-    <div>
-        <span data-ts="${writ.ts}">${niceTime(writ.ts)}</span>
-        ${divider}
-        <span>${writ.owner_moniker}</span>
-        ${divider}
-        <button class="menu-btn">⚙️</button>
-    </div>
+                    const titleEl = writ.title.length ? `<h2 class="title">${writ.title}</h2>` : '',
+                    we = article.writ(html`<header>${titleEl}
+<div class="meta">
+    <span data-ts="${writ.ts}">${niceTime(writ.ts)}</span>
+    ${divider}
+    <span>${writ.owner_moniker}</span>
+    ${divider}
+    <button class="menu-btn">⚙️</button>
+</div>
 </header>
-<section>
-    <pre>${ writ.content || (writ.price > 0 ? 
-        `<button class="pw" onclick="buyWritAccess(this, ${writ.ts})">Paid post, Buy Access</button>` :
-        'no content found'
-    )}</pre>
-</section>
+<section class="content"><pre>${ writ.content || 'no content found'}</pre></section>
 <footer>
     <p class="tags">
         ${writ.tags.split(' ').map(t => `<span class="tag" onclick="searchTag(this)">${t}</span>`).join('')}
@@ -278,8 +287,8 @@
             view('blog')
         }
 
-        window.buyWritAccess = async function buyWritAccess(btn, ts) {
-            await searchForWrits('post')
+        window.buyWritAccess = async function buyWritAccess(btn, ts, tags) {
+            await searchForWrits('post tags:"' + tags + '"')
             const res = await http.get('/api/access/' + ts)
             if (res.ok) {
                 btn.remove()
@@ -493,6 +502,8 @@
         } catch(e) {
             showMessage('error: ', `${e} ${e.message} ${e.stack}`)
         }
+        query('.kur').onclick = e => window.open('https://kurshok.space', '_blank')
+        query('.shok').onclick = e => window.open('https://github.com/SaulDoesCode/shok', '_blank')
     </script>
 </body>
 </html>
