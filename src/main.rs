@@ -2259,6 +2259,10 @@ async fn action_token_handler(req: &mut Request, _depot: &mut Depot, res: &mut R
     if let Some(action) = req.param::<&str>("action") { // TODO: zup this up to a better standard
         if let Some(tk) = req.param::<&str>("tk") {
             if let Ok((pm, id, exp, _, state)) = validate_token_under_permision_schema(tk, &[], &DB).await { // (u32, u64, u64, u64, Option<U8s>)
+                if id != ADMIN_ID {
+                    brq(res, "Invalid token.");
+                    return;
+                }
                 match action {
                     "/create-resource" => if req.method() == Method::POST && [u32::MAX - 1].contains(&pm) && state.is_some() {
                         let mut r = Resource::from_blob(&state.unwrap(), Some(id), "application/octet-stream".to_string());
@@ -4768,6 +4772,22 @@ impl Search{
 
     fn add_doc(&self, writ: &Writ) -> tantivy::Result<()> {
         let mut index_writer = self.index_writer.write();
+        if let Ok(wtx) = DB.begin_write() {
+            if !(Account::transfer_internal(writ.owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+                return Err(
+                    tantivy::error::TantivyError::SystemError(
+                        format!("failed to transfer money, writ could not be written")
+                    )
+                );
+            }
+        } else {
+            // internal server error
+            return Err(
+                tantivy::error::TantivyError::SystemError(
+                    format!("failed to transfer money, writ could not be written")
+                )
+            );
+        }
         if let Err(e) = add_to_timeline(writ.owner, &[writ.ts]) {
             return Err(
                 tantivy::error::TantivyError::SystemError(
@@ -4823,6 +4843,15 @@ impl Search{
                     format!("failed to remove writ from timeline: {}", e.to_string())
                 )
             );
+        }
+        if let Ok(wtx) = DB.begin_write() {
+            if !(Account::transfer_internal(owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+                return Err(
+                    tantivy::error::TantivyError::SystemError(
+                        format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
+                    )
+                );
+            }
         }
         Ok(op_stamp)
     }
