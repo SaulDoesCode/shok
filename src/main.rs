@@ -2711,7 +2711,7 @@ impl Account {
             while let Some(r) = mmv.next() {
                 let wid = r?.value();
                 tr.remove(wid, self.id)?;
-                SEARCH.remove_doc(self.id, wid)?;
+                SEARCH.remove_doc(self.id, wid, Some(&wtx))?;
             }
         }
         {
@@ -4823,7 +4823,7 @@ impl Search{
         Ok(doc)
     }
 
-    fn remove_doc(&self, owner: u64, ts: u64) -> tantivy::Result<u64> {
+    fn remove_doc(&self, owner: u64, ts: u64, wtx: Option<&WriteTransaction>) -> tantivy::Result<u64> {
         if ts == 0 {
             return Err(
                 tantivy::error::TantivyError::SystemError(
@@ -4844,8 +4844,8 @@ impl Search{
                 )
             );
         }
-        if let Ok(wtx) = DB.begin_write() {
-            if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+        if let Some(wtx) = wtx {
+            if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
                 return Err(
                     tantivy::error::TantivyError::SystemError(
                         format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
@@ -5540,9 +5540,23 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     },
                 };
-                // remove the writ from the index
-                match SEARCH.remove_doc(_owner.unwrap(), ts) {
-                    Ok(op_stamp) => jsn(res, json!({"ok": true, "ops": op_stamp})),
+                let wtx = match DB.begin_write() {
+                    Ok(wtx) => wtx,
+                    Err(e) => {
+                        brqe(res, &e.to_string(), "redb issue, failed to remove from index");
+                        return;
+                    }
+                };
+                match SEARCH.remove_doc(_owner.unwrap(), ts, Some(&wtx)) {
+                    Ok(op_stamp) => {
+                        match wtx.commit() {
+                            Ok(()) => jsn(res, json!({"ok": true, "ops": op_stamp})),
+                            Err(e) => {
+                                brqe(res, &e.to_string(), "redb issue, failed to remove from index");
+                                return;
+                            }
+                        }
+                    },
                     Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
                 }
             },
