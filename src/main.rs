@@ -5413,7 +5413,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             Err(e) => brqe(res, &e.to_string(), "failed to search, bad body"),
         }
     } else if req.method() == Method::PUT {
-        match req.parse_json_with_max_size::<PutWrit>(100_002).await {
+        match req.parse_json_with_max_size::<PutWrit>(512_002).await {
             Ok(pw) => {
                 let writ = Writ{
                     ts: pw.ts.unwrap_or_else(|| now()),
@@ -5581,7 +5581,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
             None => brq(res, "failed to remove from index, invalid timestamp param")
         }
     } else if req.method() == Method::PATCH {
-        match req.parse_json_with_max_size::<PutWrit>(100_002).await {
+        match req.parse_json_with_max_size::<PutWrit>(512_002).await {
             Ok(pw) => {
                 let writ = Writ{
                     ts: pw.ts.unwrap_or_else(|| now()),
