@@ -1157,9 +1157,9 @@ pub fn run_expiry_loop_once() {
         }
     }
 
-    if t > *SINCE_START + Duration::from_secs(60 * 60 * 2) {
-        println!("server has been running for more than 2 hours, restarting... hope for the best.. been real..");
-        Interaction::Broadcast("server has been running for more than 2 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
+    if t > *SINCE_START + Duration::from_secs(60 * 60 * 4) {
+        println!("server has been running for more than 4 hours, restarting... hope for the best.. been real..");
+        Interaction::Broadcast("server has been running for more than 4 hours, restarting... hope for the best.. been real..".to_string()).i(ADMIN_ID);
         tracing::info!("the server time is currently {:?}, server started {:?}.. going down now..", ts_to_readable_date(n), ts_to_readable_date(SINCE_START.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
         restart_server();
     }
@@ -1526,6 +1526,14 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(Self{owner, pd})
     }
 
+    fn op_cost(&self, price: u64, wtx: &WriteTransaction) -> anyhow::Result<()> {
+        if self.owner == ADMIN_ID {return Ok(()); }
+        match Account::transfer_internal(self.owner, ADMIN_ID, price, wtx) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(anyhow::Error::msg(format!("failed to pay for operation: {}", e)))
+        }
+    }
+
     fn register_expiry(&self, moniker: &str, exp: u64) -> anyhow::Result<()> {
         let wtx = DB.begin_write()?;
         let n = now();
@@ -1552,29 +1560,31 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             tc.remove((self.owner, moniker), moniker)?;
             tcl.remove(moniker, (self.owner, moniker))?;
         }
-        wtx.commit()?;
+        wtx.commit()?;        
         Ok(())
     }
 
     fn get_collection(&self, moniker: &str) -> anyhow::Result<Vec<String>> {
         let mut vars = vec![];
-        let rtx = DB.begin_read()?;
+        let wtx = DB.begin_write()?;
         {
-            let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
+            let t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut mmv = t.get((self.owner, moniker))?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 vars.push(ag.value().to_string());
             }
+            self.op_cost(vars.len() as u64, &wtx)?;
         }
         Ok(vars)
     }
 
     fn check_collection_membership(&self, moniker: &str, vars: &[&str]) -> anyhow::Result<bool> {
-        let rtx = DB.begin_read()?;
+        let wtx = DB.begin_write()?;
         {
-            let t = rtx.open_multimap_table(SV_COLLECTIONS)?;
+            let t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut mmv = t.get((self.owner, moniker))?;
+            self.op_cost(1, &wtx)?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 if !vars.contains(&ag.value()) {
@@ -1590,6 +1600,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         {
             let mut t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut t2 = wtx.open_multimap_table(SV_COLLECTIONS_LOOKUP)?;
+            self.op_cost(vars.len() as u64 * 10, &wtx)?;
             for var in vars {
                 t.insert((self.owner, moniker), var)?;
                 t2.insert(var, (self.owner, moniker))?;
@@ -1618,6 +1629,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         {
             let mut t = wtx.open_multimap_table(SV_TAGS)?;
             let mut t2 = wtx.open_multimap_table(SV_TAGS_INDEX)?;
+            self.op_cost(tags.len() as u64 * 10, &wtx)?;
             for tag in tags {
                 t.insert(tag, (self.owner, key))?;
                 t2.insert((self.owner, key), tag)?;
@@ -1643,10 +1655,11 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 
     fn get_tags(&self, key: &str) -> anyhow::Result<Vec<String>> {
         let mut tags = vec![];
-        let rtx = DB.begin_read()?;
+        let wtx = DB.begin_write()?;
         {
-            let t = rtx.open_multimap_table(SV_TAGS_INDEX)?;
+            let t = wtx.open_multimap_table(SV_TAGS_INDEX)?;
             let mut mmv = t.get((self.owner, key))?;
+            self.op_cost(tags.len() as u64, &wtx)?;
             while let Some(r) = mmv.next() {
                 let ag = r?;
                 tags.push(ag.value().to_string());
@@ -1657,9 +1670,10 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 
     fn get_vars_with_tags(&self, tags: &[&str], limit: usize) -> anyhow::Result<Vec<(u64, String)>> {
         let mut vars = vec![];
-        let rtx = DB.begin_read()?;
+        let wtx = DB.begin_write()?;
         {
-            let t = rtx.open_multimap_table(SV_TAGS)?;
+            let t = wtx.open_multimap_table(SV_TAGS)?;
+            self.op_cost(tags.len() as u64, &wtx)?;
             for tag in tags {
                 let mut mmv = t.get(tag)?;
                 while let Some(r) = mmv.next() {
@@ -1692,7 +1706,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
                 )?;
             wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?
                 .insert(owner, moniker)?;
-
+            self.op_cost(10, &wtx)?;
             internal_notify_changes(&wtx.open_multimap_table(SV_CHANGE_WATCHERS)?, owner, moniker, true)?;
         }
         wtx.commit()?; // std::thread::spawn(move || {});
@@ -1706,6 +1720,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
             let mut t = wtx.open_table(SCOPED_VARIABLES)?;
             let mut ot = wtx.open_multimap_table(SCOPED_VARIABLE_OWNERSHIP_INDEX)?;
             let wt = wtx.open_multimap_table(SV_CHANGE_WATCHERS)?;
+            self.op_cost(values.len() as u64 * 10, &wtx)?;
             for (moniker, value) in values.iter() {
                 t.insert(
                     (owner, moniker.as_str()),
@@ -1721,11 +1736,12 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 
     fn get(&self, moniker: &str) -> anyhow::Result<Option<T>> {
         let mut data = None;
-        let rtx = DB.begin_read()?;
+        let wtx = DB.begin_write()?;
         {
-            if let Some(ag) = rtx.open_table(SCOPED_VARIABLES)?.get((self.owner, moniker))? {
+            if let Some(ag) = wtx.open_table(SCOPED_VARIABLES)?.get((self.owner, moniker))? {
                 let mut dt = ag.value().to_vec();
                 data = Some(decompress_and_deserialize(&mut dt)?);
+                self.op_cost(1, &wtx)?;
             }
         }
         match data {
@@ -1738,8 +1754,9 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
 
     fn get_many(&self, monikers: Vec<String>) -> anyhow::Result<Vec<Option<T>>> {
         let mut data = Vec::with_capacity(monikers.len());
-        let rtx = DB.begin_read()?;
-        let t = rtx.open_table(SCOPED_VARIABLES)?;
+        let wtx = DB.begin_write()?;
+        let t = wtx.open_table(SCOPED_VARIABLES)?;
+        self.op_cost(monikers.len() as u64, &wtx)?;
         for moniker in monikers {
             if let Some(ag) = t.get((self.owner, moniker.as_str()))? {
                 let mut dt = ag.value().to_vec();
@@ -2573,6 +2590,48 @@ impl Account {
         Ok(())
     }
 
+    fn transfer_internal(owner: u64, other: u64, amount: u64, wtx: &WriteTransaction) -> Result<(), redb::Error> {
+        {
+            let mut t = wtx.open_table(ACCOUNTS)?;
+            let mut acc = None;
+            let mut oth = None;
+            if let Some(ag) = t.get(owner)? {
+                let (moniker, since, xp, balance, pwd_hash) = ag.value();
+                acc = Some(Self {
+                    id: owner,
+                    moniker: moniker.to_string(),
+                    since,
+                    xp,
+                    balance,
+                    pwd_hash: pwd_hash.to_vec(),
+                });
+            }
+            if let Some(ag) = t.get(other)? {
+                let (moniker, since, xp, balance, pwd_hash) = ag.value();
+                oth = Some(Self {
+                    id: other,
+                    moniker: moniker.to_string(),
+                    since,
+                    xp,
+                    balance,
+                    pwd_hash: pwd_hash.to_vec(),
+                });
+            }
+            if let Some(mut a) = acc {
+                if let Some(mut o) = oth {
+                    if a.balance < amount {
+                        return Err(redb::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Insufficient funds.")));
+                    }
+                    a.balance -= amount;
+                    o.balance += amount;
+                    t.insert(a.id, (a.moniker.as_str(), a.since, a.xp, a.balance, a.pwd_hash.as_slice()))?;
+                    t.insert(o.id, (o.moniker.as_str(), o.since, o.xp, o.balance, o.pwd_hash.as_slice()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn increase_exp(&mut self, i: u64) -> Result<u64, redb::Error> {
         self.xp += i;
         let wtx = DB.begin_write()?;
@@ -3242,16 +3301,12 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 
 #[handler]
 async fn auto_unauth(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    // remove the auth cookie and send an ok
     if let Some(c) = req.cookie("auth") {
-        // remove the cookie
         if let Err(e) = Session::remove(c.value().trim(), &DB) {
             brqe(res, &e.to_string(), "failed to remove session from the system");
             return;
         }
         res.remove_cookie("auth");
-        // set the unset cookie header
-        
         res.status_code(StatusCode::ACCEPTED);
         res.render(Json(serde_json::json!({"msg":"logged out"})));
     } else {
