@@ -260,23 +260,32 @@
                 } else {
                     const writ = e.target.parentNode.parentNode.parentNode
                     const ts = writ.querySelector('[data-ts]').getAttribute('data-ts')
-                    const menu = article.menu({$pre: writ}, 
-                        button({async onpointerdown() {
+                    const menu = article.menu({$: writ.querySelector('.meta')},
+                        button({async onpointerdown(e) {
+                            if (!writ.deleteSure) {
+                                writ.deleteSure = 1
+                                e.target.textContent = 'are you sure?'
+                                return
+                            }
                             const res = await http.del('/api/search/' + ts)
                             if (res.ok) {
                                 writ.remove()
                             }
-                        }}, 'delete'),
+                        }}, '🗑️ delete'),
                         button({async onpointerdown() {
-                            const w = await http.get('/api/search?ts='+ts)
-                            editing = ts
-                            wTitle.value = w.title
-                            wContent.value = w.content
-                            wTags.value = w.tags
-                            wPrice.value = w.price
-                            wState.value = w.state
-                            view('writer')
-                        }}, 'edit')
+                            try {
+                                const w = await http.get('/api/search?ts='+ts)
+                                editing = ts
+                                wTitle.value = w.title
+                                wContent.value = w.content
+                                wTags.value = w.tags.replace('post', '').replace(' ', '')
+                                wPrice.value = w.price
+                                wState.value = w.state
+                                view('writer')
+                            } catch(e) {
+                                showMessage('error', 'could not edit writ: ' + e)
+                            } 
+                        }}, '📝 - edit')
                     )
                 }
             }

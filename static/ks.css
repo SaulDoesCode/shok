@@ -397,6 +397,22 @@ input[type="search"] {
     padding: .3mm;
 }
 
+.writ .menu button {
+    display: inline-flex;
+    justify-content: center;
+    align-content: center;
+    align-items: center;
+    background: #fff;
+    border-radius: 4mm;
+    padding: 1.4mm;
+    margin: 1.6mm;
+    overflow: hidden;
+    line-height: 1;
+    color:rgb(74, 20, 37);
+    cursor: pointer;
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
+}
+
 .tag {
     box-sizing: border-box;
     display: inline-flex;
