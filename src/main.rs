@@ -4845,7 +4845,7 @@ impl Search{
             );
         }
         if let Ok(wtx) = DB.begin_write() {
-            if !(Account::transfer_internal(owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+            if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
                 return Err(
                     tantivy::error::TantivyError::SystemError(
                         format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
