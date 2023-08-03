@@ -2711,7 +2711,7 @@ impl Account {
             while let Some(r) = mmv.next() {
                 let wid = r?.value();
                 tr.remove(wid, self.id)?;
-                SEARCH.remove_doc(self.id, wid, Some(&wtx))?;
+                SEARCH.remove_doc(self.id, wid, false, Some(&wtx))?;
             }
         }
         {
@@ -4825,7 +4825,7 @@ impl Search{
         Ok(doc)
     }
 
-    fn remove_doc(&self, owner: u64, ts: u64, wtx: Option<&WriteTransaction>) -> tantivy::Result<u64> {
+    fn remove_doc(&self, owner: u64, ts: u64, reimburse: bool, wtx: Option<&WriteTransaction>) -> tantivy::Result<u64> {
         if ts == 0 {
             return Err(
                 tantivy::error::TantivyError::SystemError(
@@ -4833,16 +4833,14 @@ impl Search{
                 )
             );
         }
-        if let Ok(w) = Writ::from_doc(&self.get_doc(ts)?, None) { // TODO; find a better way
-            if w.kind != "comment" {
-                if let Some(wtx) = wtx {
-                    if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
-                        return Err(
-                            tantivy::error::TantivyError::SystemError(
-                                format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
-                            )
-                        );
-                    }
+        if reimburse {
+            if let Some(wtx) = wtx {
+                if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
+                    return Err(
+                        tantivy::error::TantivyError::SystemError(
+                            format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
+                        )
+                    );
                 }
             }
         }
@@ -5521,11 +5519,11 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         }
         match req.param::<u64>("ts") {
             Some(ts) => {
+                let mut reimburse = true;
                 // first lookup the document and see if the owner is the same as the request owner
                 match SEARCH.get_doc(ts) {
                     Ok(doc) => {
-                        // get the owner field from the doc
-                        if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
+                        if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) { // get the owner field from the doc
                             if let Some(o) = o.as_u64() {
                                 let owner = _owner.clone().unwrap();
                                 if o != owner && owner != ADMIN_ID {
@@ -5538,6 +5536,20 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             }
                         } else {
                             brq(res, "failed to remove from index, owner field is missing");
+                            return;
+                        }
+                        // get the kind field
+                        if let Some(k) = doc.get_first(SEARCH.schema.get_field("kind").unwrap()) {
+                            if let Some(k) = k.as_text() {
+                                if k == "repost" || k == "comment" {
+                                    reimburse = false;
+                                }
+                            } else {
+                                brq(res, "failed to remove from index, kind field is not a string");
+                                return;
+                            }
+                        } else {
+                            brq(res, "failed to remove from index, kind field is missing");
                             return;
                         }
                     },
@@ -5553,7 +5565,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     }
                 };
-                match SEARCH.remove_doc(_owner.unwrap(), ts, Some(&wtx)) {
+                match SEARCH.remove_doc(_owner.unwrap(), ts, reimburse, Some(&wtx)) {
                     Ok(op_stamp) => {
                         match wtx.commit() {
                             Ok(()) => jsn(res, json!({"ok": true, "ops": op_stamp})),
