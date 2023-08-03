@@ -299,15 +299,25 @@
             view('blog')
         }
 
-        searchForWrits('post')
+        view('blog', blog)
+
+        let sq = window.location.search
+        if (sq && sq.length > 0) {
+            sq = sq.slice(1).split('&').map(v => v.split('=')).filter(v => v[0] == 's')[0]
+            if (sq) {
+                sq = sq[1]
+                searchForWrits(sq)
+                view('blog')
+            }
+        } else {
+            searchForWrits('post')
+        }
         si.onkeydown = e => {
             if (e.key === 'Enter') {
                 searchForWrits(si.value)
                 view('blog')
             }
         }
-
-        view('blog', blog)
 
         let editing, opt = ' (optional)', req = ' (required)'
         const wTitle = input({attr: {type: 'text', required: false, placeholder: 'title'+opt}})
