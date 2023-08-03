@@ -4772,21 +4772,23 @@ impl Search{
 
     fn add_doc(&self, writ: &Writ) -> tantivy::Result<()> {
         let mut index_writer = self.index_writer.write();
-        if let Ok(wtx) = DB.begin_write() {
-            if !(Account::transfer_internal(writ.owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+        if writ.kind != "comment" {
+            if let Ok(wtx) = DB.begin_write() {
+                if !(Account::transfer_internal(writ.owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
+                    return Err(
+                        tantivy::error::TantivyError::SystemError(
+                            format!("failed to transfer money, writ could not be written")
+                        )
+                    );
+                }
+            } else {
+                // internal server error
                 return Err(
                     tantivy::error::TantivyError::SystemError(
                         format!("failed to transfer money, writ could not be written")
                     )
                 );
             }
-        } else {
-            // internal server error
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("failed to transfer money, writ could not be written")
-                )
-            );
         }
         if let Err(e) = add_to_timeline(writ.owner, &[writ.ts]) {
             return Err(
@@ -4831,6 +4833,19 @@ impl Search{
                 )
             );
         }
+        if let Ok(w) = Writ::from_doc(&self.get_doc(ts)?, None) { // TODO; find a better way
+            if w.kind != "comment" {
+                if let Some(wtx) = wtx {
+                    if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
+                        return Err(
+                            tantivy::error::TantivyError::SystemError(
+                                format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
+                            )
+                        );
+                    }
+                }
+            }
+        }
         let mut index_writer = self.index_writer.write();
         let op_stamp = index_writer.delete_term(Term::from_field_date(
             self.schema.get_field("ts")?,
@@ -4843,15 +4858,6 @@ impl Search{
                     format!("failed to remove writ from timeline: {}", e.to_string())
                 )
             );
-        }
-        if let Some(wtx) = wtx {
-            if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
-                return Err(
-                    tantivy::error::TantivyError::SystemError(
-                        format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
-                    )
-                );
-            }
         }
         Ok(op_stamp)
     }
