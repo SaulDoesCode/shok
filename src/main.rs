@@ -2711,7 +2711,7 @@ impl Account {
             while let Some(r) = mmv.next() {
                 let wid = r?.value();
                 tr.remove(wid, self.id)?;
-                SEARCH.remove_doc(self.id, wid, false, Some(&wtx))?;
+                SEARCH.remove_doc(self.id, wid, false, &wtx)?;
             }
         }
         {
@@ -4318,16 +4318,18 @@ fn get_reposters(id: u64, start: u64, count: u64) -> anyhow::Result<Vec<u64>> {
 
 fn rm_from_timeline(id: u64, writs: &[u64]) -> anyhow::Result<()> {
     let wtx = DB.begin_write()?;
-    {
-        let mut t = wtx.open_multimap_table(TIMELINES)?;
-        let mut trp = wtx.open_multimap_table(REPOSTS)?;
-        for writ in writs {
-            // add a handle to remove if it from reposts if it is in there
-            trp.remove(*writ, id)?;
-            t.remove(id, *writ)?;
-        }
-    }
+    rm_from_timeline_internal(id, writs, &wtx)?;
     wtx.commit()?;
+    Ok(())
+}
+
+fn rm_from_timeline_internal(id: u64, writs: &[u64], wtx: &WriteTransaction) -> anyhow::Result<()> {
+    let mut t = wtx.open_multimap_table(TIMELINES)?;
+    let mut trp = wtx.open_multimap_table(REPOSTS)?;
+    for writ in writs {
+        trp.remove(*writ, id)?;
+        t.remove(id, *writ)?;
+    }
     Ok(())
 }
 
@@ -4825,7 +4827,7 @@ impl Search{
         Ok(doc)
     }
 
-    fn remove_doc(&self, owner: u64, ts: u64, reimburse: bool, wtx: Option<&WriteTransaction>) -> tantivy::Result<u64> {
+    fn remove_doc(&self, owner: u64, ts: u64, reimburse: bool, wtx: &WriteTransaction) -> tantivy::Result<u64> {
         if ts == 0 {
             return Err(
                 tantivy::error::TantivyError::SystemError(
@@ -4834,14 +4836,12 @@ impl Search{
             );
         }
         if reimburse {
-            if let Some(wtx) = wtx {
-                if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
-                    return Err(
-                        tantivy::error::TantivyError::SystemError(
-                            format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
-                        )
-                    );
-                }
+            if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
+                return Err(
+                    tantivy::error::TantivyError::SystemError(
+                        format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
+                    )
+                );
             }
         }
         let mut index_writer = self.index_writer.write();
@@ -4850,7 +4850,7 @@ impl Search{
             DateTime::from_timestamp_secs(ts as i64)
         ));
         index_writer.commit()?;
-        if let Err(e) = rm_from_timeline(owner, &[ts]) {
+        if let Err(e) = rm_from_timeline_internal(owner, &[ts], wtx) {
             return Err(
                 tantivy::error::TantivyError::SystemError(
                     format!("failed to remove writ from timeline: {}", e.to_string())
@@ -5565,7 +5565,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         return;
                     }
                 };
-                match SEARCH.remove_doc(_owner.unwrap(), ts, reimburse, Some(&wtx)) {
+                match SEARCH.remove_doc(_owner.unwrap(), ts, reimburse, &wtx) {
                     Ok(op_stamp) => {
                         match wtx.commit() {
                             Ok(()) => jsn(res, json!({"ok": true, "ops": op_stamp})),
