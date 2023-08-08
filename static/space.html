@@ -160,7 +160,7 @@
            return cmt
         }
 
-        window.fetchComments = async (ts, el) => {
+        window.fetchComments = async (ts, el, dontToggle) => {
             let comments
             try {
                 comments = await http.get(`/api/search?q=tags:${ts}&k=comment`)
@@ -170,7 +170,10 @@
 
             const $ = el.parentNode.parentNode.parentNode
             let commentsEl = $.querySelector('.comments')
-            if (commentsEl) commentsEl.remove()
+            if (commentsEl) {
+                commentsEl.remove()
+                if (!dontToggle) return
+            }
             if (comments && comments.length == 0) showMessage('error', 'no comments found')
             const commentWriter = () => {
                 const commentInput = textarea({attr: {placeholder: 'comment'}})
@@ -186,7 +189,7 @@
                         state: '{}'
                     })
                     commentInput.value = ''
-                    fetchComments(ts, el)
+                    await fetchComments(ts, el, false)
                 }}, 'comment')
                 return section.comment_writer(commentInput, commentBtn)
             }
