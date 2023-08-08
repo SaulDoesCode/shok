@@ -228,7 +228,7 @@
                     }
                     // cachedWrits[writ.ts] = writ
                     // localStorage.setItem('cachedWrits', JSON.stringify(cachedWrits))
-                    const titleEl = writ.title.length ? `<h2 class="title">${writ.title}</h2>` : '',
+                    const titleEl = (typeof writ.title == 'string' && writ.title.length) ? `<h2 class="title">${writ.title}</h2>` : '',
                     we = article.writ(html`<header>${titleEl}
 <div class="meta">
     <span data-ts="${writ.ts}">${niceTime(writ.ts)}</span>
