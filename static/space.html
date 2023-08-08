@@ -138,18 +138,19 @@
 
         const makeComment = c => {
            const likesView = span.likes('likes: ', c.likes.length)
-           const delBtn = localStorage.getItem('auth') == c.owner_moniker ? button({async onpointerdown() {
+           const delBtn = localStorage.getItem('auth') == c.owner_moniker ? button({title: 'delete', async onpointerdown() {
                const status = await http.del('/api/search/' + c.ts)
                if (!status.err) cmt.remove()
-           }}, 'delete') : ''
+           }}, '🗑️') : ''
            const likeBtn = button({async onpointerdown() {
-               c.liked = !c.liked
-               if (c.liked) {
+               if (c.liked = !c.liked) {
                     const res = await http.get(`/api/unlike/${c.ts}`)
                     likesView.innerHTML = 'likes: ' + res.likes.length
+                    likeBtn.textContent = '👎'
                } else {
                     const res = await http.get(`/api/like/${c.ts}`)
                     likesView.innerHTML = 'likes: ' + res.likes.length
+                    likeBtn.textContent = '👍'
                }
            }}, c.liked ? '👎' : '👍') 
            const cmt = article.comment(header(span.owner(c.owner_moniker), likesView), section.content(c.content), div.interface(

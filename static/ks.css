@@ -474,7 +474,7 @@ input[type="search"] {
     width: fit-content;
 }
 
-.interactions button {
+.interactions button, .interface button {
     display: inline-flex;
     justify-content: center;
     align-content: center;
