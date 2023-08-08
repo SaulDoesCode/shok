@@ -43,7 +43,7 @@ body > header > h1 {
     padding: .111em;
     border-radius: .5em;
     font-size: 2.222em;
-    border-top-right-radius: calc(2.222em - 12%);
+    border-top-right-radius: calc(2.222em - 8%);
 }
 
 body > header > h1 > span {
@@ -60,13 +60,17 @@ body > header > h1 > span {
 body > header > h1 > span:first-of-type {
     color: #ffffff;
     background: #c0273b;
-    border-top-right-radius: calc(2.222em + 12%);
+    border-top-right-radius: calc(2.222em + 8%);
     padding-right: .4em;
 }
 
 body > header > h1 > span:nth-of-type(2) {
     color: #000;
     background: #ffffff;
+}
+
+.comment, .vs, .avd, .interactions, button, input, .unauth, .auth:not(.unauth), .chat, .chat > header.status, textarea, .chat .messages, .writ > header, .writ, .writ-writer, .writ-writer button:hover {
+    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .vs {
@@ -78,7 +82,6 @@ body > header > h1 > span:nth-of-type(2) {
     border-radius: 4mm;
     padding: 2mm;
     transform: translateY(6px);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .vs > span {
@@ -114,7 +117,6 @@ body > header > h1 > span:nth-of-type(2) {
     border-radius: 1mm;
     text-align: center;
     text-shadow: 0 0 .1em rgba(0, 0, 0, 0.5), 0 0 .15em rgba(216, 40, 84, 0.5);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .avd::before, .avd::after {
@@ -133,7 +135,6 @@ input[type="search"] {
     padding: 1.1mm;
     margin: 2mm;
     max-width: 52vw; 
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .chat {
@@ -155,7 +156,6 @@ input[type="search"] {
     max-height: 14cm;
     overflow: hidden;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
     transform: scale(0.5) translateX(50%) translateY(50%);
     transition: all 140ms ease-in;
 }
@@ -177,7 +177,6 @@ input[type="search"] {
     font-size: .888em;
     color:rgb(74, 20, 37);
     border: 1px solid rgb(123, 224, 123);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .chat > header.status.error {
@@ -197,7 +196,6 @@ input[type="search"] {
     overflow: hidden;
     line-height: 1;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .chat .messages {
@@ -215,7 +213,6 @@ input[type="search"] {
     overflow-x: visible;
     max-height: 6cm;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .messages > article.message {
@@ -289,10 +286,9 @@ input[type="search"] {
     margin: 2mm;
     overflow: hidden;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
-.writ-writer > textarea, input {
+.writ-writer > textarea {
     display: inline-flex;
     justify-content: center;
     align-content: center;
@@ -305,7 +301,6 @@ input[type="search"] {
     overflow: auto;
     line-height: 1;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ-writer > input[type="number"] {
@@ -318,7 +313,6 @@ input[type="search"] {
     border: 1px solid #cb296a;
     background: #fff;
     color: #422c35;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ-writer > input[type="checkbox"] {
@@ -329,7 +323,6 @@ input[type="search"] {
     border: 1px solid #cb296a;
     background: #fff;
     color: #422c35;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ-writer > textarea {
@@ -349,13 +342,11 @@ input[type="search"] {
     line-height: 1;
     color:rgb(74, 20, 37);
     cursor: pointer;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ-writer button:hover {
     background: #cb296a;
     color: #fff;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ {
@@ -366,7 +357,6 @@ input[type="search"] {
     flex-flow: row wrap;
     overflow: hidden;
     color:rgb(74, 20, 37);
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
     transition: all 140ms ease-in;
 }
 
@@ -382,7 +372,6 @@ input[type="search"] {
     flex-flow: row wrap;
     text-align: center;
     color: #fff;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .writ > header > h1 {
@@ -410,7 +399,6 @@ input[type="search"] {
     line-height: 1;
     color:rgb(74, 20, 37);
     cursor: pointer;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .tag {
@@ -449,7 +437,6 @@ input[type="search"] {
     max-width: 52vw;
     min-width: 320px;
     width: min-content;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .unauth {
@@ -466,7 +453,6 @@ input[type="search"] {
     max-width: 52vw;
     min-width: 1.2cm;
     width: min-content;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .divider {
@@ -486,7 +472,6 @@ input[type="search"] {
     padding: 1.4mm .8mm ;
     margin: .8mm;
     width: fit-content;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .interactions button {
@@ -502,7 +487,6 @@ input[type="search"] {
     margin: .8mm;
     width: min-content;
     cursor: pointer;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .comment {
@@ -512,7 +496,6 @@ input[type="search"] {
     margin: .8mm 1.8mm;
     padding: 1mm;
     width: fit-content;
-    filter: drop-shadow(0 0 .5em rgba(0, 0, 0, 0.25));
 }
 
 .comment .comment {
