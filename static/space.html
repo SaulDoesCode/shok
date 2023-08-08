@@ -16,7 +16,6 @@
         <h1><span class="kur">kur</span><span class="shok">shok</span></h1>
         <nav class="vs">
             <header class="avd"></header>
-
         </nav>
         <input type="search">
 
@@ -33,19 +32,19 @@
     </main>
 
     <script type="module">
-        import d from "/domlib.js"
-        import http from "/http.js"
+ import d from "/domlib.js"
+ import http from "/http.js"
 
-        const {query, queryEach, render, domfn, isObj} = d
-        const {section, div, button, span, p, header, article, input, textarea, html} = domfn
-
-        const displayObjectText = obj => {
+    let activeView, lastSearchQuery = '', page = 0
+  const {query, queryEach, render, domfn, isObj} = d,
+        {section, div, button, span, p, header, article, input, textarea, html} = domfn,
+        main = query('main'), ae = query('.auth'), vs = query('.vs'), avd = query('.avd'), si = query('input[type=search]'),
+        displayObjectText = obj => {
             let text = ''
             for (const key in obj) text += `${key}: ${isObj(obj[key]) ? displayObjectText(obj[key]) : obj[key]}\n`
             return text
-        }
-
-        const authenticate = async () => {
+        },
+        authenticate = async () => {
             const ae = query('.auth')
             try {
                 const moniker = query('[type="text"]', ae).value.trim()
@@ -63,42 +62,9 @@
                 ae.append(errMsg)
                 setTimeout(() => errMsg.remove(), 4200)
             }
-        }
-
-        const ae = query('.auth')
-        if (localStorage.getItem('auth')) {
-            ae.innerHTML = ''
-            button.unauth({
-                $: ae,
-                attr: {
-                    title: 'Unauthenticate/Logout'
-                },
-                async onpointerdown(e) {
-                    localStorage.removeItem('auth')
-                    const data = await http.get('/unauth')
-                    query('.auth').innerHTML = `
-                        <p>Unauthenticated</p>
-                        <p>Server Response Info: ${displayObjectText(data)}</p>
-                    `
-                    setTimeout(() => location.reload(), 4200)
-                }
-            }, '🔒 ')
-            ae.classList.add('unauth')
-        } else {
-            query('button', ae).onpointerdown = e => authenticate()
-            query('[type="password"]', ae).onkeydown = e => {
-                if (e.key === 'Enter') authenticate()
-            }
-        }
-
-        const main = query('main')
-        const vs = query('.vs')
-        const avd = query('.avd')
-        const si = query('input[type=search]')
-
-        const views = Object.create(null)
-        let activeView
-        const view = async (title, v) => {
+        },        
+        views = Object.create(null),
+        view = async (title, v) => {
             if (v != null) {
                 views[title] = v
                 return vs.appendChild(span({
@@ -113,34 +79,16 @@
             if (v.constructor.name == 'AsyncFunction') views[title] = v = await v()
             else if (typeof v == 'function') views[title] = v = v()
             render(v, main)
-        }
-
-        const divider = "<span class=\"divider\"> | </span>"
-        const niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`
-
-        const writLikes = async ts => {
-            try {
-                const res = await (await fetch('/api/writ-likes/' + ts)).json()
-                if (!res.err) return res[0] && res[0].length || 0
-            } catch(e) {}
-            return 0
-        }
-
-        window.likeWrit = async (ts, el) => {
-            const res = await (await fetch(`/api/like/${ts}`)).json()
-            try {
-                el.parentNode.querySelector('.likes').textContent = await writLikes(ts)
-            } catch(e) {}
-            return res.ok
-        }
-
-        const makeComment = c => {
-           const likesView = span.likes('likes: ', c.likes.length)
-           const delBtn = localStorage.getItem('auth') == c.owner_moniker ? button({title: 'delete', async onpointerdown() {
+        },
+        divider = "<span class=\"divider\"> | </span>",
+        niceTime = ts => `${(ts = new Date(ts * 1000)).getFullYear() - 2000}/${ts.getMonth()}/${ts.getDate()} ${ts.getHours()}:${ts.getMinutes()}${ts.getSeconds() == 0 ? '' : ':' + ts.getSeconds()}`,
+        makeComment = c => {
+           const likesView = span.likes('likes: ', c.likes.length),
+           delBtn = localStorage.getItem('auth') == c.owner_moniker ? button({title: 'delete', async onpointerdown() {
                const status = await http.del('/api/search/' + c.ts)
                if (!status.err) cmt.remove()
-           }}, '🗑️') : ''
-           const likeBtn = button({async onpointerdown() {
+           }}, '🗑️') : '',
+           likeBtn = button({async onpointerdown() {
                if (c.liked = !c.liked) {
                     const res = await http.get(`/api/unlike/${c.ts}`)
                     likesView.innerHTML = 'likes: ' + res.likes.length
@@ -150,12 +98,39 @@
                     likesView.innerHTML = 'likes: ' + res.likes.length
                     likeBtn.textContent = '👍'
                }
-           }}, c.liked ? '👎' : '👍') 
-           const cmt = article.comment(header(span.owner(c.owner_moniker), likesView), section.content(c.content), div.interface(
+           }}, c.liked ? '👎' : '👍'),
+           cmt = article.comment(header(span.owner(c.owner_moniker), likesView), section.content(c.content), div.interface(
                 delBtn,
                 likeBtn
            ))
            return cmt
+        }
+
+        if (localStorage.getItem('auth')) {
+            ae.innerHTML = ''
+            button.unauth({
+                $: ae,
+                attr: {title: 'Unauthenticate/Logout'},
+                async onpointerdown(e) {
+                    localStorage.removeItem('auth')
+                    const data = await http.get('/unauth')
+                    query('.auth').innerHTML = `<p>Unauthenticated</p> <p>Server Response Info: ${displayObjectText(data)}</p>`
+                    setTimeout(() => location.reload(), 4200)
+                }
+            }, '🔒')
+            ae.classList.add('unauth')
+        } else {
+            query('button', ae).onpointerdown = e => authenticate()
+            query('[type="password"]', ae).onkeydown = e => (e.key === 'Enter' && authenticate())
+        }
+
+
+        window.likeWrit = async (ts, el) => {
+            try {
+                const res = await (await fetch(`/api/like/${ts}`)).json()
+                el.parentNode.querySelector('.likes').textContent = (res.likes || []).length
+                return res.ok
+            } catch(e) {}
         }
 
         window.fetchComments = async (ts, el, dontToggle) => {
@@ -197,9 +172,8 @@
             )
         }
 
-        const blog = section.blog()
-        let lastSearchQuery = '', page = 0
         //let cachedWrits = JSON.parse(localStorage.getItem('cachedWrits') || '{}')
+        const blog = section.blog()
         const searchForWrits = async (q = search.value.trim(), p = 0, k = 'post') => {
             page = lastSearchQuery == q ? page + 1 : 0
             //const localResults = Object.values(cachedWrits).filter(w => w && [w.title, w.tags, w.content].map(v => v && v.includes(k)))
