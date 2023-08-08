@@ -163,39 +163,37 @@
         window.fetchComments = async (ts, el) => {
             let comments
             try {
-                comments = await http.get(`/api/search?q=tags:"comment ${ts}"&k=comment`)
+                comments = await http.get(`/api/search?q=tags:${ts}&k=comment`)
             } catch(e) {
                 showMessage('error', 'comments failed to load: ' + e)
             }
 
             const $ = el.parentNode.parentNode.parentNode
-            const commentsEl = $.querySelector('.comments')
-            if (commentsEl) {
-                commentsEl.remove()
-            } else {
-                if (comments && comments.length == 0) showMessage('error', 'no comments found')
-                const commentWriter = () => {
-                    const commentInput = textarea({attr: {placeholder: 'comment'}})
-                    const commentBtn = button({onpointerdown() {
-                        const content = commentInput.value.trim()
-                        if (content.length == 0) return
-                        writeWrit({
-                            content,
-                            kind: 'comment',
-                            tags: 'comment ' + ts,
-                            public: true,
-                            price: 0,
-                            state: '{}'
-                        })
-                        commentInput.value = ''
-                    }}, 'comment')
-                    return section.comment_writer(commentInput, commentBtn)
-                }
-                const commentsEl = article.comments({$},
-                    commentWriter(),
-                    section.comments(...(comments || []).map(makeComment))
-                )
+            let commentsEl = $.querySelector('.comments')
+            if (commentsEl) commentsEl.remove()
+            if (comments && comments.length == 0) showMessage('error', 'no comments found')
+            const commentWriter = () => {
+                const commentInput = textarea({attr: {placeholder: 'comment'}})
+                const commentBtn = button({async onpointerdown() {
+                    const content = commentInput.value.trim()
+                    if (content.length == 0) return
+                    await writeWrit({
+                        content,
+                        kind: 'comment',
+                        tags: 'comment ' + ts,
+                        public: true,
+                        price: 0,
+                        state: '{}'
+                    })
+                    commentInput.value = ''
+                    fetchComments(ts, el)
+                }}, 'comment')
+                return section.comment_writer(commentInput, commentBtn)
             }
+            commentsEl = article.comments({$},
+                commentWriter(),
+                section.comments(...(comments || []).map(makeComment))
+            )
         }
 
         const blog = section.blog()
@@ -383,9 +381,13 @@
                 wTags.value = ''
                 wPrice.value = ''
                 wState.value = ''
-                searchForWrits(`tags:"${writ.tags}"`)
-                view('blog')
-                showMessage('me', 'post written!')
+                if (writ.kind != 'comment') {
+                    searchForWrits(`tags:"${writ.tags}"`)
+                    view('blog')
+                    showMessage('me', 'post written!')
+                } else {
+                    showMessage('me', 'comment written!')
+                }
             }
             view('blog')
         }
