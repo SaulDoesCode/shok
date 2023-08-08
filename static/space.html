@@ -382,7 +382,7 @@
                 wTags.value = ''
                 wPrice.value = ''
                 wState.value = ''
-                searchForWrits('post')
+                searchForWrits(`tags:"${writ.tags}"`)
                 view('blog')
                 showMessage('me', 'post written!')
             }
