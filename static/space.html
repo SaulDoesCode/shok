@@ -36,12 +36,12 @@
         import d from "/domlib.js"
         import http from "/http.js"
 
-        const {query, queryEach, render, domfn} = d
+        const {query, queryEach, render, domfn, isObj} = d
         const {section, div, button, span, p, header, article, input, textarea, html} = domfn
 
         const displayObjectText = obj => {
             let text = ''
-            for (const key in obj) text += `${key}: ${obj[key]}\n`
+            for (const key in obj) text += `${key}: ${isObj(obj[key]) ? displayObjectText(obj[key]) : obj[key]}\n`
             return text
         }
 
@@ -121,9 +121,7 @@
         const writLikes = async ts => {
             try {
                 const res = await (await fetch('/api/writ-likes/' + ts)).json()
-                if (!res.err) {
-                    return res[0] && res[0].length || 0
-                }
+                if (!res.err) return res[0] && res[0].length || 0
             } catch(e) {}
             return 0
         }
@@ -270,13 +268,10 @@
                         button({async onpointerdown(e) {
                             if (!writ.deleteSure) {
                                 writ.deleteSure = 1
-                                e.target.textContent = 'are you sure?'
+                                e.target.textContent = 'Certain?'
                                 return
                             }
-                            const res = await http.del('/api/search/' + ts)
-                            if (res.ok) {
-                                writ.remove()
-                            }
+                            if ((await http.del('/api/search/' + ts)).ok) writ.remove()                            
                         }}, '🗑️ delete'),
                         button({async onpointerdown() {
                             try {
@@ -348,29 +343,30 @@
             .filter((t, i, a) => a.indexOf(t) == i).filter((t, i, a) => a.findIndex(t2 => t2.toLowerCase() == t.toLowerCase()) == i)
             .join(' ')
 
+        const clearWW = () => (editing = void 0, wTitle.value = wContent.value = wTags.value = wPrice.value = wState.value = '')
+
         const wwRoot = section.writ_writer('writ-Writer', 
             wTitle, wContent, wTags, wState, wPrice, wPublic, 
-            button({attr: {title: 'put your writ on the website, going on good faith here...'}, onpointerdown() {
-                const w = {
-                    title: wTitle.value.trim(),
-                    content: wContent.value.trim(),
-                    kind: 'post',
-                    tags: 'post ' + wTags.value.trim().replace('  ', ' ').replace('post', ''),
-                    public: wPublic.checked,
-                    price: Number(wPrice.value) || undefined,
-                    state: wState.value.trim() || '{}'
+            button({
+                attr: {title: 'put your writ on the website, going on good faith here...'},
+                onpointerdown() {
+                    const w = {
+                        title: wTitle.value.trim(),
+                        content: wContent.value.trim(),
+                        kind: 'post',
+                        tags: 'post ' + wTags.value.trim().replace('  ', ' ').replace('post', ''),
+                        public: wPublic.checked,
+                        price: Number(wPrice.value) || undefined,
+                        state: wState.value.trim() || '{}'
+                    }
+                    if (editing != null) w.ts = Number(editing)
+                    writeWrit(w)
                 }
-                if (editing != null) w.ts = Number(editing)
-                writeWrit(w)
-            }}, '💾 - save'),
-            button({attr: {title: 'this just clears the editor, no writs are harmed, edit state is reset too'}, onpointerdown() {
-                editing = undefined
-                wTitle.value = ''
-                wContent.value = ''
-                wTags.value = ''
-                wPrice.value = ''
-                wState.value = ''
-            }}, '🧹 - clear')
+            }, '💾 - save'),
+            button({
+                attr: {title: 'this just clears the editor, no writs are harmed, edit state is reset too'},
+                onpointerdown() { clearWW() }
+            }, '🧹 - clear')
         )
         view('writer', wwRoot)
 
@@ -378,12 +374,7 @@
             showMessage('me', 'writing post...')
             const res = await http[writ.ts == null ? 'put' : 'patch']('/api/search', writ)        
             if (res.ok) {
-                editing = null
-                wTitle.value = ''
-                wContent.value = ''
-                wTags.value = ''
-                wPrice.value = ''
-                wState.value = ''
+                clearWW()
                 if (writ.kind != 'comment') {
                     searchForWrits(`tags:"${writ.tags}"`)
                     view('blog')
@@ -395,11 +386,7 @@
             view('blog')
         }
 
-        view('about', async () => {
-            const about = section.about()
-            about.innerHTML = await http.get('/about.html')
-            return about
-        })
+        view('about', _ => section.about(async a => {a.innerHTML = await http.get('/about.html')}))
 
         view(localStorage.getItem('av') || 'blog')
 
@@ -409,8 +396,7 @@
         const chatInput = textarea()
         status.innerHTML = "Connecting..."
         chatInput.placeholder = 'type a message..'
-        // on control+enter, send message
-        chatInput.onkeydown = async e => {
+        chatInput.onkeydown = async e => { // on control+enter, send message
             if (!e.ctrlKey && e.key === 'Enter') {
                 e.preventDefault()
                 const body = chatInput.value.trim()
@@ -455,9 +441,7 @@
             for (let i = 0; i < msgs.length; i++) {
                 for (let j = 0; j < msgs.length; j++) {
                     if (i == j) continue
-                    if (msgs[i][0] == msgs[j][0] && msgs[i][1] == msgs[j][1]) {
-                        msgs.splice(j, 1)
-                    }
+                    if (msgs[i][0] == msgs[j][0] && msgs[i][1] == msgs[j][1]) msgs.splice(j, 1)
                 }
             }
             localStorage.setItem('c', JSON.stringify([...msgs]))
