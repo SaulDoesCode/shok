@@ -3257,12 +3257,10 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                    acc.xp += 1;
                    admin_xp = Some(acc.xp);
                    if let Err(e) = acc.save(false) {
-                       brqe(res, &e.to_string(), "failed to update admin account");
-                       return;
+                        return brqe(res, &e.to_string(), "failed to update admin account");                       
                    }
                 } else {
-                    brq(res, "admin password incorrect");
-                    return;
+                    return brq(res, "admin password incorrect");
                 },
                 Err(e) => {
                     println!("admin not seen before, also moniker lookup error because of this: {:?}", e);
@@ -3270,10 +3268,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                     let na = Account::new(ADMIN_ID, ar.moniker.clone(), pwd_hash);
                     match na.save(true) {
                         Ok(_) => {}, // new admin
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to save new admin account");
-                            return;
-                        }
+                        Err(e) => return brqe(res, &e.to_string(), "failed to save new admin account")
                     }
                 }    
             }
@@ -3286,7 +3281,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                 c.set_domain(req.uri().host().unwrap_or("localhost").to_string());
                 c.set_path("/");
                 res.add_cookie(c);
-                if admin_xp.is_none() {
+                return if admin_xp.is_none() {
                     res.render(Json(serde_json::json!({
                         "msg": "authorized, remember to save the admin password, it will not be shown again",
                         "sid": ADMIN_ID,
@@ -3300,10 +3295,8 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                         "xp": admin_xp.unwrap()
                     })));
                 }
-                return;
             } else {
-                brqe(res, &sres.unwrap_err().to_string(), "failed to save session, try another time or way");
-                return;
+                return brqe(res, &sres.unwrap_err().to_string(), "failed to save session, try another time or way");
             }
         }
         
@@ -3344,15 +3337,13 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
                         "xp": acc.xp
                     })));
                 } else {
-                    brq(res, "failed to save session, try another time or way");
+                    return brq(res, "failed to save session, try another time or way");
                 }
             },
-            Err(e) => {
-                brqe(res, &e.to_string(), "failed to save subject");
-            }
+            Err(e) => return brqe(res, &e.to_string(), "failed to save subject")
         }
 
-        if ctrl.call_next(req, depot, res).await {
+        if !ctrl.call_next(req, depot, res).await {
             res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
             res.render(Json(serde_json::json!({"err":"Failed to call next http handler"})));
         }
@@ -3570,10 +3561,7 @@ async fn tells_api(req: &mut Request, res: &mut Response) {
         Method::GET => {
             match session_check(req, Some(ADMIN_ID)).await {
                 Some(_) => {},
-                None => {
-                    uares(res, "you must be logged in as admin to use the tells api");
-                    return;
-                }
+                None => return uares(res, "you must be logged in as admin to use the tells api")
             };
 
             let skip = match req.form_or_query::<usize>("skip").await {
@@ -3597,19 +3585,31 @@ async fn tells_api(req: &mut Request, res: &mut Response) {
                 tell
             } else if let Some(tell) = req.form_or_query::<&str>("tell").await {
                 if tell.len() > 520480 {
-                    brq(res, "too large a tell, sorry");
-                    return;
+                    return brq(res, "too large a tell, sorry");
                 }
                 tell
             } else {
-                brq(res, "invalid tell form/query input");
-                return;
+                return brq(res, "invalid tell form/query input");
             };
             if let Ok(s) = ScopedVariableStore::<String>::open(ADMIN_ID) {
-                if s.add_vars_to_collection("tells", &[tell]).is_ok() {
+                if s.add_vars_to_collection("tells", &[format!("{}-:\n{}", now(), tell).as_str()]).is_ok() {
                     return jsn(res, serde_json::json!({"ok": true, "msg": "Received. Thank you!"}));
                 }
             }
+        },
+        Method::DELETE => {
+            match session_check(req, Some(ADMIN_ID)).await {
+                Some(_) => {},
+                None => return uares(res, "you must be logged in as admin to use the tells api")
+            };
+
+            if let Some(tell) = req.form_or_query("tell").await {
+                if let Ok(s) = ScopedVariableStore::<String>::open(ADMIN_ID) {
+                    if let Ok(()) = s.rm_vars_from_collection("tells", &[tell]) {
+                        return jsn(res, serde_json::json!({"ok": true}));
+                    }
+                }
+            }   
         },
         _ => {
             brq(res, "no such method");
@@ -3621,24 +3621,15 @@ async fn tells_api(req: &mut Request, res: &mut Response) {
 async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     let other = match req.param::<u64>("id") {
         Some(o) => o,
-        None => {
-            brq(res, "no <id> provided for op");
-            return;
-        }
+        None => return brq(res, "no <id> provided for op")
     };
     let op = match req.param::<String>("op") {
         Some(o) => o,
-        None => {
-            brq(res, "no <op> provided");
-            return;
-        }
+        None => return brq(res, "no <op> provided")
     };
     let id = match session_check(req, None).await {
         Some(id) => id,
-        None => {
-            uares(res, "you must be logged in to use the account api");
-            return;
-        }
+        None => return uares(res, "you must be logged in to use the account api")
     };
 
     if let Ok(mut acc) = Account::from_id(id) {
