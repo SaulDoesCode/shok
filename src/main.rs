@@ -2969,10 +2969,8 @@ fn pick_best_fuzzy_candidate(input: &str, exts: &[&str], dir: &str) -> Option<Pa
         STATIC_DIR_PATHS.read().clone()
     } else { 
         return None;
-    };
-    // println!("pick_best_fuzzy_candidate(input: {}, exts: {:?}, dir: {}); paths {:?}", input, exts, dir, paths.as_slice());
-    if let Some(path) = fuzzy_search(input.to_string(), paths.as_slice()) {
-        // println!("\n hit - path: {}", path.to_string_lossy());
+    }; // println!("pick_best_fuzzy_candidate(input: {}, exts: {:?}, dir: {}); paths {:?}", input, exts, dir, paths.as_slice());
+    if let Some(path) = fuzzy_search(input.to_string(), paths.as_slice()) { // println!("\n hit - path: {}", path.to_string_lossy());
         if std::path::Path::new(&path).exists() {
             return Some(path);
         } else {
@@ -2993,8 +2991,8 @@ const FUZZY_EXTENSIONS: &[&str] = &["html", "css", "js", "png", "jpg", "gif", "s
 // fuzzy search a file and deliver the nearest match
 async fn fuzzy_static_deliver(input: &str, req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     if let Some(hit) = pick_best_fuzzy_candidate(input, FUZZY_EXTENSIONS, STATIC_DIR) {
-        // redirect to hit
-        StaticFile::new(hit).handle(req, depot, res, ctrl).await;
+        res.status_code(StatusCode::PERMANENT_REDIRECT);
+        StaticFile::new(hit).handle(req, depot, res, ctrl).await; // TODO: redirect to hit
     } else if !ctrl.call_next(req, depot, res).await {
         res.status_code(StatusCode::NOT_FOUND);
         res.render(Text::Plain("Nope.. nada.. nothing.. 404"));
@@ -3004,27 +3002,21 @@ async fn fuzzy_static_deliver(input: &str, req: &mut Request, depot: &mut Depot,
 #[handler]
 async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     let mut file = req.uri().path().trim().trim_end_matches("/").trim_start_matches("/").to_string();
-    if file == "" {
-        // serve space.html
-        file = "space.html".to_string();
-    }
+    if file == "" { file = "space.html".to_string(); /* serve space.html instead of index.html, call it culture or something */ }
     // check if a version of file + ".html" exists first and if it does, serve that    
     let mut path = PathBuf::new().join(STATIC_DIR).join(file.clone());
     if path.extension().is_none() {
         path.set_extension("html");
         if path.exists() {
-            StaticFile::new(path).handle(req, depot, res, ctrl).await;
-            return;
+            return StaticFile::new(path).handle(req, depot, res, ctrl).await;
         } else {
             path.set_extension("js");
             if path.exists() {
-                StaticFile::new(path).handle(req, depot, res, ctrl).await;
-                return;
+                return StaticFile::new(path).handle(req, depot, res, ctrl).await;
             } else {
                 path.set_extension("css");
                 if path.exists() {
-                    StaticFile::new(path).handle(req, depot, res, ctrl).await;
-                    return;
+                    return StaticFile::new(path).handle(req, depot, res, ctrl).await;
                 }
                 path.set_extension("");
             }
@@ -3040,22 +3032,13 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
         if path.exists() {
             // query param token 
             match req.query::<String>("tk") {
-                Some(tk) => {
-                    // check if token is valid
-                    if !validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await.is_ok() {
-                        brq(res, "invalid token");
-                        return;
-                    }
+                Some(tk) => if !validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await.is_ok() { // check if token is valid
+                    return brq(res, "invalid token");
                 },
-                None => {
-                    if session_check(req, Some(ADMIN_ID)).await.is_none() {
-                        // return a 404
-                        nfr(res);
-                        return;
-                    }
+                None => if session_check(req, Some(ADMIN_ID)).await.is_none() {
+                    return nfr(res);
                 }
             }
-
             StaticFile::new(path).handle(req, depot, res, ctrl).await;
             return;
         } else {
@@ -3166,7 +3149,7 @@ async fn moniker_lookup(req: &mut Request, res: &mut Response) {
         if let Some(id) = req.param::<u64>("id") {
             if let Ok(acc) = Account::from_id(id) {
                 jsn(res, serde_json::json!({
-                    "status": "ok",
+                    "ok": true,
                     "moniker": acc.moniker
                 }));
             } else {
@@ -3175,7 +3158,7 @@ async fn moniker_lookup(req: &mut Request, res: &mut Response) {
         } else if let Some(moniker) = req.param::<String>("id") {
             if let Ok(acc) = Account::from_moniker(&moniker) {
                 jsn(res, serde_json::json!({
-                    "status": "ok",
+                    "ok": true,
                     "id": acc.id
                 }));
             } else {
@@ -3359,8 +3342,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
 async fn auto_unauth(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     if let Some(c) = req.cookie("auth") {
         if let Err(e) = Session::remove(c.value().trim(), &DB) {
-            brqe(res, &e.to_string(), "failed to remove session from the system");
-            return;
+            return brqe(res, &e.to_string(), "failed to remove session from the system");
         }
         res.remove_cookie("auth");
         res.status_code(StatusCode::ACCEPTED);
@@ -3650,7 +3632,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "following" => match acc.followers(10000) {
                     Ok(followers) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "followers": followers
                         }));
                     },
@@ -3661,7 +3643,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "follow" => match acc.follow(other) {
                     Ok(()) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "msg": "followed"
                         }));
                     },
@@ -3672,7 +3654,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "unfollow" => match acc.unfollow(other) {
                     Ok(()) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "msg": "unfollowed"
                         }));
                     },
@@ -3684,7 +3666,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     Ok(()) => match get_writ_likes(other, 1000) {
                         Ok(likes) => {
                             jsn(res, serde_json::json!({
-                                "status": "ok",
+                                "ok": true,
                                 "msg": "liked",
                                 "likes": likes
                             }));
@@ -3692,7 +3674,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                         Err(e) => {
                             tracing::error!("like - failed to get likes for writ({}) for user - {}: {}", other, acc.moniker, e);
                             jsn(res, serde_json::json!({
-                                "status": "ok",
+                                "ok": true,
                                 "msg": "liked"
                             }));
                         }
@@ -3705,7 +3687,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     Ok(()) => match get_writ_likes(other, 1000) {
                         Ok(likes) => {
                             jsn(res, serde_json::json!({
-                                "status": "ok",
+                                "ok": true,
                                 "msg": "unliked",
                                 "likes": likes
                             }));
@@ -3713,7 +3695,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                         Err(e) => {
                             tracing::error!("unlike - failed to get likes for writ({}) for user - {}: {}", other, acc.moniker, e);
                             jsn(res, serde_json::json!({
-                                "status": "ok",
+                                "ok": true,
                                 "msg": "unliked"
                             }));
                         }
@@ -3723,37 +3705,16 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     }
                 }
                 "likes" => match acc.does_like(other) {
-                    Ok(likes) => {
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "likes": likes
-                        }));
-                    },
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to like status on a writ for this account");
-                    }
+                    Ok(likes) => jsn(res, serde_json::json!({"ok": true, "likes": likes })),
+                    Err(e) => brqe(res, &e.to_string(), "failed to like status on a writ for this account")
                 }
                 "repost" => match acc.repost(&[other]) {
-                    Ok(()) => {
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "msg": "reposted"
-                        }));
-                    },
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to repost");
-                    }
+                    Ok(()) => jsn(res, serde_json::json!({"ok": true, "msg": "reposted"})),
+                    Err(e) => brqe(res, &e.to_string(), "failed to repost")
                 }
                 "unrepost" => match acc.unrepost(&[other]) {
-                    Ok(()) => {
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "msg": "unreposted"
-                        }));
-                    },
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to unrepost");
-                    }
+                    Ok(()) => jsn(res, serde_json::json!({"ok": true, "msg": "unreposted"})),
+                    Err(e) => brqe(res, &e.to_string(), "failed to unrepost")
                 }
                 "timeline" => match acc.timeline(other, req.query("l").unwrap_or(256)) {
                     Ok(timeline) => {
@@ -3764,31 +3725,19 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                                 Ok(doc) => {
                                     if let Ok(w) = Writ::from_doc(&doc, req.query("k")) {
                                         match FoundWrit::build_from_writ(&w, acc.id) {
-                                            Ok(fw) => {
-                                                writs.push(fw);
-                                            },
-                                            Err(e) => {
-                                                brqe(res, &e.to_string(), "failed to build found writ");
-                                                return;
-                                            }
+                                            Ok(fw) => writs.push(fw),
+                                            Err(e) => return brqe(res, &e.to_string(), "failed to build found writ")
                                         }
                                     }
                                 },
-                                Err(e) => {
-                                    // brqe(res, &e.to_string(), "failed to get writ");
-                                    // return;
+                                Err(e) => { // brqe(res, &e.to_string(), "failed to get writ"); return;
                                     tracing::error!("failed to get timeline writ for user - {}: {}", acc.moniker, e);
                                 }
                             };
                         }
-                        jsn(res, serde_json::json!({
-                            "status": "ok",
-                            "writs": writs
-                        }));
+                        jsn(res, serde_json::json!({ "ok": true, "writs": writs }));
                     },
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to get timeline");
-                    }
+                    Err(e) => brqe(res, &e.to_string(), "failed to get timeline")
                 }
                 "reposts" => match acc.timeline(other, req.query("l").unwrap_or(256)) {
                     Ok(timeline) => {
@@ -3812,7 +3761,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                         }
 
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "reposts": reposts
                         }));
                     },
@@ -3831,7 +3780,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                     match acc.change_password(pwd.as_bytes(), &DB) {
                         Ok(()) => {
                             jsn(res, serde_json::json!({
-                                "status": "ok",
+                                "ok": true,
                                 "msg": "password changed"
                             }));
                         },
@@ -3850,7 +3799,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "delete" => match acc.delete() {
                     Ok(()) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "msg": "account deleted"
                         }));
                     },
@@ -3861,7 +3810,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "delete-all-writs" => match SEARCH.remove_all_docs_by_owner(id) {
                     Ok(op_stamp) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "msg": "all writs deleted",
                             "op_stamp": op_stamp
                         }));
@@ -3872,10 +3821,9 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 }
                 _ => if !ctrl.call_next(req, depot, res).await {
                     nfr(res);
-                }            }
-            _ => {
-                brq(res, "no such method");
+                }
             }
+            _ => brq(res, "no such method")
         }
     } else {
         brq(res, "no such account");
@@ -3891,11 +3839,9 @@ pub async fn resource_transfer_api(req: &mut Request, _depot: &mut Depot, res: &
         if let Some(tk) = req.query::<String>("tk") {
             if let Ok((perm_schema, owner, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
                 _pm = Some(perm_schema); // token session
-                _owner = Some(owner);
-                // if let Some(state) = _state {}
+                _owner = Some(owner); // if let Some(state) = _state {}
             } else {
-                brq(res, "not authorized to use the resource_api");
-                return;
+                return brq(res, "not authorized to use the resource_api");
             }
         } else {
             return uares(res, "resource transfer requires authentication");
@@ -3904,27 +3850,19 @@ pub async fn resource_transfer_api(req: &mut Request, _depot: &mut Depot, res: &
 
     let new_owner = match req.param("new_owner") {
         Some(new_owner) => new_owner,
-        None => {
-            return brq(res, "no new_owner provided");
-        }
+        None => return brq(res, "no new_owner provided")
     };
 
     let owner = _owner.unwrap();
 
     let hash = match req.param::<String>("hash") {
         Some(hash) => hash,
-        None => {
-            brq(res, "no hash provided");
-            return;
-        }
+        None => return brq(res, "no hash provided")
     };
 
     let mut resource = match Resource::from_b64_straight(&hash, true) {
         Ok(r) => r,
-        Err(e) => {
-            brqe(res, &e.to_string(), "failed to get resource");
-            return;
-        }
+        Err(e) => return brqe(res, &e.to_string(), "failed to get resource")
     };
 
     if resource.owner.is_some_and(|o| owner != o) {
@@ -3932,12 +3870,8 @@ pub async fn resource_transfer_api(req: &mut Request, _depot: &mut Depot, res: &
     }
 
     match resource.change_owner(new_owner) {
-        Ok(()) => {
-            jsn(res, resource);
-        },
-        Err(e) => {
-            brqe(res, &e.to_string(), "failed to change owner");
-        }
+        Ok(()) => jsn(res, resource),
+        Err(e) => brqe(res, &e.to_string(), "failed to change owner")
     }
 }
 
@@ -3953,12 +3887,10 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                 _owner = Some(owner);
                 // if let Some(state) = _state {}
             } else {
-                brq(res, "not authorized to use the resource_api");
-                return;
+                return brq(res, "not authorized to use the resource_api");
             }
         } else {
-            brq(res, "not authorized to use the resource_api");
-            return;
+            return brq(res, "not authorized to use the resource_api");
         }
     }
 
@@ -3995,12 +3927,10 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                             resource.version = or.version;
                         }
                         if let Err(e) = Resource::delete(&oh) {
-                            brqe(res, &e.to_string(), "failed to delete old resource");
-                            return;
+                            return brqe(res, &e.to_string(), "failed to delete old resource");
                         }
                     } else {
-                        brq(res, "failed to get old resource");
-                        return;
+                        return brq(res, "failed to get old resource");
                     }
                 }
                 if let Some(p) = r.public {
@@ -4013,8 +3943,7 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
                     resource.version = v;
                 }
                 if let Err(e) = resource.set_data(&r.data) {
-                    brqe(res, &e.to_string(), "failed to set data");
-                    return;
+                    return brqe(res, &e.to_string(), "failed to set data");
                 }
                 match resource.save(true) {
                     Ok(()) => {
@@ -4030,30 +3959,18 @@ pub async fn resource_api(req: &mut Request, _depot: &mut Depot, res: &mut Respo
             }
         },
         Method::DELETE if _is_admin || _pm.is_some_and(|pm| [u32::MAX - 1].contains(&pm)) => match req.param::<String>("hash") {
-            Some(hash) => {
-                match Resource::from_b64_straight(&hash, true) {
-                    Ok(r) => {
-                        match Resource::delete_b64_straight(&hash) {
-                            Ok(()) => {
-                                jsn(res, r);
-                            },
-                            Err(e) => {
-                                brqe(res, &e.to_string(), "failed to delete resource");
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "failed to get resource");
+            Some(hash) => match Resource::from_b64_straight(&hash, true) {
+                Ok(r) => {
+                    match Resource::delete_b64_straight(&hash) {
+                        Ok(()) => jsn(res, r),
+                        Err(e) => brqe(res, &e.to_string(), "failed to delete resource")
                     }
-                }
+                },
+                Err(e) => brqe(res, &e.to_string(), "failed to get resource")
             },
-            None => {
-                brq(res, "No such resource found this time");
-            }
+            None => brq(res, "No such resource found this time")
         },
-        _ => {
-            brq(res, r#"unauthorized or bad method"#);
-        }
+        _ => brq(res, r#"unauthorized or bad method"#)
     }
 }
 
@@ -4264,12 +4181,11 @@ async fn cmd_request(req: &mut Request, _depot: &mut Depot, res: &mut Response) 
     // get a string from the post body, and set it as a variable called text
     if let Ok(sr) = req.parse_json_with_max_size::<CMDRequest>(168192).await {
         if sr.when.is_some_and(|w| w < now()) {
-            if let Err(e) = sr.save_to_run_later(&DB).await {
+            return if let Err(e) = sr.save_to_run_later(&DB).await {
                 brqe(res, &e.to_string(), "failed to save command to run later");
             } else {
                 jsn(res, serde_json::json!({"ok": true, "msg": "command saved to run later"}));
-            }
-            return;
+            };
         }
         if sr.stream.is_some_and(|stream| stream) {
             if let Err(e) = sr.stream_output(req, res).await {
@@ -4346,9 +4262,7 @@ fn check_access_for(id: u64, writs: &[u64], shared_now: Option<u64>) -> anyhow::
                 found -= 1;
             }
         }
-        if found == 0 {
-            return Ok(());
-        }
+        if found == 0 { return Ok(()); }
     }
     Err(anyhow!("access denied"))
 }
@@ -4692,35 +4606,18 @@ impl Writ {
         let mut price = None;
         let mut sell_price = None;
         for (f, fe) in SEARCH.schema.fields() {
-            let val = match doc.get_first(f) {
-                Some(v) => v,
-                None => continue,
-            };
+            let val = match doc.get_first(f) { Some(v) => v, None => continue };
             match fe.name() {
-                "ts" => if let Some(val) = val.as_date() {
-                    ts = val.into_timestamp_secs() as u64;
-                }
-                "title" => {
-                    title = val.as_text().map(|s| s.to_string());
-                }
+                "ts" => if let Some(val) = val.as_date() { ts = val.into_timestamp_secs() as u64; }
+                "title" => { title = val.as_text().map(|s| s.to_string()); }
                 "kind" => if let Some(k) = val.as_text() {
-                    if prefered_kind.is_some_and(|pk| pk != k) {
-                        continue;   
-                    }
+                    if prefered_kind.is_some_and(|pk| pk != k) { continue; }
                     kind = k.to_string();
                 }
-                "content" => {
-                    content = val.as_text().unwrap().to_string();
-                }
-                "tags" => {
-                    tags = val.as_text().unwrap().to_string();
-                }
-                "public" => if let Some(pb) = val.as_bool() {
-                    public = pb;
-                }
-                "owner" => if let Some(o) = val.as_u64() {
-                    owner = o
-                }
+                "content" => { content = val.as_text().unwrap().to_string(); }
+                "tags" => { tags = val.as_text().unwrap().to_string(); }
+                "public" => if let Some(pb) = val.as_bool() { public = pb; }
+                "owner" => if let Some(o) = val.as_u64() { owner = o; }
                 "state" => if let Some(jsn) = val.as_json() {
                     // create a nice json object and stringify it so it is easy to consume on the client side
                     if let Ok(out) = serde_json::to_vec_pretty(&jsn) {
@@ -4729,15 +4626,9 @@ impl Writ {
                         }
                     }
                 }
-                "price" => {
-                    price = val.as_u64();
-                }
-                "sell_price" => {
-                    sell_price = val.as_u64();
-                }
-                _ => {
-                    continue;
-                }
+                "price" => { price = val.as_u64(); }
+                "sell_price" => { sell_price = val.as_u64(); }
+                _ => continue
             }
         }
         if kind.len() == 0 || content.len() == 0 || tags.len() == 0 {
@@ -4882,71 +4773,37 @@ impl Search{
         if writ.kind != "comment" {
             if let Ok(wtx) = DB.begin_write() {
                 if !(Account::transfer_internal(writ.owner, ADMIN_ID, 100, &wtx).is_ok() && wtx.commit().is_ok()) {
-                    return Err(
-                        tantivy::error::TantivyError::SystemError(
-                            format!("failed to transfer money, writ could not be written")
-                        )
-                    );
+                    return Err(tantivy::error::TantivyError::SystemError(format!("failed to transfer money, writ could not be written")));
                 }
-            } else {
-                // internal server error
-                return Err(
-                    tantivy::error::TantivyError::SystemError(
-                        format!("failed to transfer money, writ could not be written")
-                    )
-                );
+            } else { // internal server error
+                return Err(tantivy::error::TantivyError::SystemError(format!("failed to transfer money, writ could not be written")));
             }
         }
         if let Err(e) = add_to_timeline(writ.owner, &[writ.ts]) {
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("failed to add writ to timeline: {}", e.to_string())
-                )
-            );
+            return Err(tantivy::error::TantivyError::SystemError(format!("failed to add writ to timeline: {}", e.to_string())));
         }
         writ.add_to_index(&mut index_writer, &self.schema)
     }
 
     fn get_doc(&self, ts: u64) -> tantivy::Result<Document> {
-        if ts == 0 {
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("there is no 0")
-                )
-            );
-        }
+        if ts == 0 { return Err(tantivy::error::TantivyError::SystemError(format!("there is no 0"))); }
         let reader = self.index.reader()?;
         let term = Term::from_field_date(self.schema.get_field("ts")?, DateTime::from_timestamp_secs(ts as i64));
         let searcher = reader.searcher();
         let term_query = TermQuery::new(term, IndexRecordOption::Basic);
         let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
-        if top_docs.len() == 0 {
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("no such writ")
-                )
-            );
-        }
-        let doc_address = top_docs[0].1;
-        let doc = searcher.doc(doc_address)?;
+        if top_docs.len() == 0 { return Err(tantivy::error::TantivyError::SystemError(format!("no such writ"))); }
+        let doc = searcher.doc(top_docs[0].1)?;
         Ok(doc)
     }
 
     fn remove_doc(&self, owner: u64, ts: u64, reimburse: bool, wtx: &WriteTransaction) -> tantivy::Result<u64> {
         if ts == 0 {
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("cannot remove writ with timestamp 0")
-                )
-            );
+            return Err(tantivy::error::TantivyError::SystemError(format!("cannot remove writ with timestamp 0")));
         }
         if reimburse {
             if !(Account::transfer_internal(ADMIN_ID, owner, 100, &wtx).is_ok()) {
-                return Err(
-                    tantivy::error::TantivyError::SystemError(
-                        format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")
-                    )
-                );
+                return Err(tantivy::error::TantivyError::SystemError(format!("failed to transfer money, writ could not be unwritten right, sorry, contact the admin, make proof to show")));
             }
         }
         let mut index_writer = self.index_writer.write();
@@ -4956,11 +4813,7 @@ impl Search{
         ));
         index_writer.commit()?;
         if let Err(e) = rm_from_timeline_internal(owner, &[ts], wtx) {
-            return Err(
-                tantivy::error::TantivyError::SystemError(
-                    format!("failed to remove writ from timeline: {}", e.to_string())
-                )
-            );
+            return Err(tantivy::error::TantivyError::SystemError(format!("failed to remove writ from timeline: {}", e.to_string())));
         }
         Ok(op_stamp)
     }
@@ -4981,11 +4834,7 @@ impl Search{
                 DateTime::from_timestamp_secs(ts as i64)
             ));
             if let Err(e) = rm_from_timeline(owner, &[ts]) {
-                return Err(
-                    tantivy::error::TantivyError::SystemError(
-                        format!("failed to remove writ from timeline: {}", e.to_string())
-                    )
-                );
+                return Err(tantivy::error::TantivyError::SystemError(format!("failed to remove writ from timeline: {}", e.to_string())));
             }
         }
         index_writer.commit()?;
@@ -5034,13 +4883,11 @@ impl Search{
                     };
 
                     if !writ.public || writ.price.is_some_and(|p| p > 0) {
-                        if let Some(id) = id { // check if the owner has access to this writ
-                            if writ.owner != id {
-                                if let Err(e) = check_access_for(id, &[writ.ts], Some(n)) {
-                                    writ.content = e.to_string();
-                                }
+                        if id.is_some_and(|id| writ.owner != id) { // check if the owner has access to this writ
+                            if let Err(e) = check_access_for(id.unwrap(), &[writ.ts], Some(n)) {
+                                writ.content = e.to_string();
                             }
-                        } else {
+                        } else if id.is_none() {
                             writ.content = String::new();
                         }
                     }
@@ -5079,40 +4926,25 @@ pub async fn auth_step(req: &mut Request, res: &mut Response) -> Option<u64> {
 
 #[handler]
 pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
-    let id = match auth_step(req, res).await {
-        Some(id) => id,
-        None => return
-    };
+    let id = match auth_step(req, res).await { Some(id) => id, None => return };
 
     let ts: u64 = match req.param::<u64>("ts") {
         Some(ts) => ts,
-        None => {
-            brq(res, "no ts param provided");
-            return;
-        }
+        None => return brq(res, "no ts param provided")
     };
 
     let writ = match SEARCH.get_doc(ts) {
         Ok(doc) => match Writ::from_doc(&doc, None) {
             Ok(writ) => writ,
-            Err(e) => {
-                brqe(res, &e.to_string(), "failed to get writ");
-                return;
-            }
+            Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
         }
-        Err(e) => {
-            brqe(res, &e.to_string(), "failed to get writ");
-            return;
-        }
+        Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
     };
 
     match req.param::<u64>("to") {
-        Some(to_id) => {
-            match writ.transfer_access(id, to_id) {
-                Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access transfered"})),
-                Err(e) => brqe(res, &e.to_string(), "failed to transfer access"),
-            }
-            return;
+        Some(to_id) => return match writ.transfer_access(id, to_id) {
+            Ok(_) => jsn(res, serde_json::json!({"ok": true, "msg": "access transfered"})),
+            Err(e) => brqe(res, &e.to_string(), "failed to transfer access"),
         },
         None => {}
     };
@@ -5122,10 +4954,7 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
         None => match req.query::<String>("for") {
             Some(gift) => match Account::from_moniker(&gift) {
                 Ok(acc) => Some(acc.id),
-                Err(e) => {
-                    brqe(res, &e.to_string(), "failed to get account to gift writ access to");
-                    return;
-                }
+                Err(e) => return brqe(res, &e.to_string(), "failed to get account to gift writ access to")
             },
             None => None
         }
@@ -5140,26 +4969,14 @@ pub async fn writ_access_purchase_gateway_api(req: &mut Request, _depot: &mut De
 #[handler]
 pub async fn see_writ_reposts(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     if auth_step(req, res).await.is_none() { return; }
-
-    let start = match req.query::<u64>("start") {
-        Some(s) => s,
-        None => 0
-    };
-    let count = match req.query::<u64>("count") {
-        Some(c) => c,
-        None => 1000
-    };
-
+    let start = match req.query::<u64>("start") { Some(s) => s, None => 0 };
+    let count = match req.query::<u64>("count") { Some(c) => c, None => 1000 };
     match req.param::<u64>("ts") {
         Some(ts) => match &get_reposters(ts, count, start) {
             Ok(reposters) => {
                 let mut monikers = vec![];
                 for id in reposters {
-                    if let Ok(acc) = Account::from_id(*id) {
-                        monikers.push(acc.moniker);
-                    } else {
-                        monikers.push("unknown".to_string());
-                    }
+                    monikers.push(if let Ok(acc) = Account::from_id(*id) { acc.moniker } else { "unknown".to_string() });
                 }
                 res.render(Json((reposters, monikers)));
             },
@@ -5177,16 +4994,9 @@ pub async fn see_writ_likes(req: &mut Request, _depot: &mut Depot, res: &mut Res
             Ok(likes) => {
                 let mut monikers = vec![];
                 for id in likes {
-                    if let Ok(acc) = Account::from_id(*id) {
-                        monikers.push(acc.moniker);
-                    } else {
-                        monikers.push("unknown".to_string());
-                    }
+                    monikers.push(if let Ok(acc) = Account::from_id(*id) { acc.moniker } else { "unknown".to_string() });
                 }
-                if likes.len() == 0 {
-                    brq(res, "no likes found");
-                    return;
-                }
+                if likes.len() == 0 { return brq(res, "no likes found"); }
                 res.render(Json((likes, monikers)));
             },
             Err(e) => brqe(res, &e.to_string(), "failed to get likes"),
@@ -5333,7 +5143,6 @@ impl FoundWrit {
                 likes,
             });
         }
-        
         Ok(found_writs)
     }
 }
@@ -5350,30 +5159,16 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         if let Ok((_pm, o, _exp, _uses, _state)) = validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await {
             _owner = Some(o); // token session
         } else if req.method() != Method::GET {
-            brq(res, "not authorized to use the search api");
-            return;
+            return brq(res, "not authorized to use the search api");
         }
     }
 
     if is_get { // serve public searchable items
         match req.query::<String>("q") {
             Some(q) => {
-                let page = match req.query::<usize>("p") {
-                    Some(p) => p,
-                    None => 0,
-                };
-                let limit = match req.query::<usize>("l") {
-                    Some(l) => match l {
-                        0 => 128,
-                        l if l > 256 => 256,
-                        _ => l,
-                    },
-                    None => 128,
-                };
-                let kind = match req.query::<&str>("k") {
-                    Some(k) => Some(k),
-                    None => None,
-                };
+                let page = match req.query::<usize>("p") { Some(p) => p, None => 0 };
+                let limit = match req.query::<usize>("l") { Some(l) => match l { 0 => 128, l if l > 256 => 256, _ => l }, None => 128 };
+                let kind = match req.query::<&str>("k") { Some(k) => Some(k), None => None };
                 match SEARCH.search(&q, limit, page, kind, _owner) {
                     Ok(writs) => match FoundWrit::build_from_writs(writs, _owner, true) {
                         Ok(mut writs) => {
@@ -5401,20 +5196,11 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         Ok(doc) => match Writ::from_doc(&doc, req.query("k")) {
                             Ok(writ) => match FoundWrit::build_from_writ(&writ, _owner.unwrap()) {
                                 Ok(writ) => res.render(Json(writ)),
-                                Err(e) => {
-                                    brqe(res, &e.to_string(), "failed to get writ");
-                                    return;
-                                }
+                                Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
                             },
-                            Err(e) => {
-                                brqe(res, &e.to_string(), "failed to get writ");
-                                return;
-                            }
+                            Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
                         }
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to get writ");
-                            return;
-                        }
+                        Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
                     }
                 } else {
                     if let Some(since) = req.query::<u64>("since") { // otherwise if there's a since query param then serve all writs since that timestamp
@@ -5436,8 +5222,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                                     let retrieved_doc = match searcher.doc(doc_address) {
                                         Ok(doc) => doc,
                                         Err(e) => {
-                                            brqe(res, &e.to_string(), "failed to search");
-                                            return;
+                                            return brqe(res, &e.to_string(), "failed to search");
                                         }
                                     };
                                     match Writ::from_doc(&retrieved_doc, None) {
@@ -5448,33 +5233,22 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                                                 writs.push(writ)
                                             }
                                         },
-                                        Err(e) => {
-                                            if e.to_string().contains("must be set") {
-                                                continue;
-                                            } else {
-                                                brqe(res, &e.to_string(), "failed to formulate writ postSearch");
-                                                return;
-                                            }
+                                        Err(e) => if e.to_string().contains("must be set") {
+                                            continue;
+                                        } else {
+                                            return brqe(res, &e.to_string(), "failed to formulate writ postSearch");
                                         }
                                     }
                                 }
                             },
-                            Err(e) => {
-                                brqe(res, &e.to_string(), "failed to search");
-                                return;
-                            }
+                            Err(e) => return brqe(res, &e.to_string(), "failed to search")
                         };
 
-                        if writs.len() == 0 {
-                            brq(res, "no writs found");
-                            return;
-                        }
-
+                        if writs.len() == 0 { return brq(res, "no writs found"); }
                         match FoundWrit::build_from_writs(writs, _owner, true) {
                             Ok(writs) => res.render(Json(writs)),
                             Err(e) => {
-                                brqe(res, &e.to_string(), "failed to search");
-                                return;
+                                return brqe(res, &e.to_string(), "failed to search");
                             }
                         }
                     } else {
@@ -5501,16 +5275,10 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                         }
                     }
 
-                    if writs.len() == 0 {
-                        brq(res, "no writs found");
-                        return;
-                    }
+                    if writs.len() == 0 { return brq(res, "no writs found"); }
                     match FoundWrit::build_from_writs(writs, _owner, true) {
                         Ok(writs) => res.render(Json(writs)),
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to search");
-                            return;
-                        }
+                        Err(e) => return brqe(res, &e.to_string(), "failed to search")
                     }
                 },
                 Err(e) => brqe(res, &e.to_string(), "failed to search"),
@@ -5529,8 +5297,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     content: if pw.content.len() > 0 {
                         pw.content
                     } else {
-                        brq(res, "content is empty, can't update writ");
-                        return;
+                        return brq(res, "content is empty, can't update writ");
                     },
                     state: pw.state,
                     price: pw.price,
@@ -5538,43 +5305,34 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     tags: if let Some(tags) = validate_tags_string(pw.tags) {
                         tags
                     } else {
-                        brq(res, "invalid tags");
-                        return;
+                        return brq(res, "invalid tags");
                     },
                 };
 
                 if writ.ts == 0 {
-                    brq(res, "ts cannot be 0");
-                    return;
+                    return brq(res, "ts cannot be 0");
                 }
 
                 if writ.ts > now() {
-                    brq(res, "ts cannot be in the future");
-                    return;
+                    return brq(res, "ts cannot be in the future");
                 }
 
                 if writ.ts < now() - (315_360_000 * 2) {
-                    brq(res, "ts cannot be more than 20 years in the past");
-                    return;
+                    return brq(res, "ts cannot be more than 20 years in the past");
                 }
 
-                // ensure writ.kind is valid
-                if writ.kind.len() > 256 {
-                    brq(res, "kind is too long");
-                    return;
+                if writ.kind.len() > 256 { // ensure writ.kind is valid
+                    return brq(res, "kind is too long");
                 }
 
-                // ensure writ.title is valid
-                if let Some(title) = &writ.title {
+                if let Some(title) = &writ.title { // ensure writ.title is valid
                     if title.len() > 256 {
-                        brq(res, "title is too long");
-                        return;
+                        return brq(res, "title is too long");
                     }
                 }
 
                 if writ.owner != _owner.unwrap() {
-                    brq(res, "not authorized to add posts to the index without the right credentials");
-                    return;
+                    return brq(res, "not authorized to add posts to the index without the right credentials");
                 }
 
                 if pw.ts.is_some() {
@@ -5585,22 +5343,16 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
                                 if let Some(o) = o.as_u64() {
                                     if o != _owner.unwrap() {
-                                        brq(res, "not authorized to delete posts from the index without the right credentials");
-                                        return;
+                                        return brq(res, "not authorized to delete posts from the index without the right credentials");
                                     }
                                 } else {
-                                    brq(res, "failed to remove from index, owner field is not a u64");
-                                    return;
+                                    return brq(res, "failed to remove from index, owner field is not a u64");
                                 }
                             } else {
-                                brq(res, "failed to remove from index, owner field is missing");
-                                return;
+                                return brq(res, "failed to remove from index, owner field is missing");
                             }
                         },
-                        Err(e) => {
-                            brqe(res, &e.to_string(), "failed to remove from index, maybe it doesn't exist");
-                            return;
-                        },
+                        Err(e) => return brqe(res, &e.to_string(), "failed to remove from index, maybe it doesn't exist"),
                     };
                     tracing::info!("updating writ: {:?}", writ);
                     match SEARCH.update_doc(&writ) {
@@ -5632,16 +5384,13 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                             if let Some(o) = o.as_u64() {
                                 let owner = _owner.clone().unwrap();
                                 if o != owner && owner != ADMIN_ID {
-                                    brq(res, "not authorized to delete posts from the index without the right credentials");
-                                    return;
+                                    return brq(res, "not authorized to delete posts from the index without the right credentials");
                                 }
                             } else {
-                                brq(res, "failed to remove from index, owner field is not a u64");
-                                return;
+                                return brq(res, "failed to remove from index, owner field is not a u64");
                             }
                         } else {
-                            brq(res, "failed to remove from index, owner field is missing");
-                            return;
+                            return brq(res, "failed to remove from index, owner field is missing");
                         }
                         // get the kind field
                         if let Some(k) = doc.get_first(SEARCH.schema.get_field("kind").unwrap()) {
@@ -5650,12 +5399,10 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                                     reimburse = false;
                                 }
                             } else {
-                                brq(res, "failed to remove from index, kind field is not a string");
-                                return;
+                                return brq(res, "failed to remove from index, kind field is not a string");
                             }
                         } else {
-                            brq(res, "failed to remove from index, kind field is missing");
-                            return;
+                            return brq(res, "failed to remove from index, kind field is missing")                            
                         }
                     },
                     Err(e) => {
@@ -5665,20 +5412,12 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 };
                 let wtx = match DB.begin_write() {
                     Ok(wtx) => wtx,
-                    Err(e) => {
-                        brqe(res, &e.to_string(), "redb issue, failed to remove from index");
-                        return;
-                    }
+                    Err(e) => return brqe(res, &e.to_string(), "redb issue, failed to remove from index")
                 };
                 match SEARCH.remove_doc(_owner.unwrap(), ts, reimburse, &wtx) {
-                    Ok(op_stamp) => {
-                        match wtx.commit() {
-                            Ok(()) => jsn(res, json!({"ok": true, "ops": op_stamp})),
-                            Err(e) => {
-                                brqe(res, &e.to_string(), "redb issue, failed to remove from index");
-                                return;
-                            }
-                        }
+                    Ok(op_stamp) => match wtx.commit() {
+                        Ok(()) => jsn(res, json!({"ok": true, "ops": op_stamp})),
+                        Err(e) => return brqe(res, &e.to_string(), "redb issue, failed to remove from index")
                     },
                     Err(e) => brqe(res, &e.to_string(), "failed to remove from index"),
                 }
@@ -5697,8 +5436,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     content: if pw.content.len() > 0 {
                         pw.content
                     } else {
-                        brq(res, "content is empty, can't update writ");
-                        return;
+                        return brq(res, "content is empty, can't update writ");
                     },
                     state: pw.state,
                     price: pw.price,
@@ -5706,43 +5444,36 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     tags: if let Some(tags) = validate_tags_string(pw.tags) {
                         tags
                     } else {
-                        brq(res, "tags are invalid, can't update writ");
-                        return;
+                        return brq(res, "tags are invalid, can't update writ");
                     }
                 };
 
                 if writ.ts == 0 {
-                    brq(res, "ts cannot be 0");
-                    return;
+                    return brq(res, "ts cannot be 0");
                 }
 
                 if writ.ts > now() {
-                    brq(res, "ts cannot be in the future");
-                    return;
+                    return brq(res, "ts cannot be in the future");
                 }
 
                 if writ.ts < now() - (315_360_000 * 2) {
-                    brq(res, "ts cannot be more than 20 years in the past");
-                    return;
+                    return brq(res, "ts cannot be more than 20 years in the past");
                 }
 
                 // ensure writ.kind is valid
                 if writ.kind.len() > 64 {
-                    brq(res, "kind is too long");
-                    return;
+                    return brq(res, "kind is too long");
                 }
 
                 // ensure writ.title is valid
                 if let Some(title) = &writ.title {
                     if title.len() > 256 {
-                        brq(res, "title is too long");
-                        return;
+                        return brq(res, "title is too long");
                     }
                 }
 
                 if writ.owner != _owner.unwrap() {
-                    brq(res, "not authorized to update posts in the index without the right credentials");
-                    return;
+                    return brq(res, "not authorized to update posts in the index without the right credentials");
                 }
                 // update the writ in the index
                 match SEARCH.update_doc(&writ) {
@@ -5761,27 +5492,17 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
 pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {    
     if let Some((owner, pm, _is_admin)) = api_auth_step(req, res).await {
         if pm.is_some() && !pm.is_some_and(|pm| u32::MAX - 1 == pm) {
-            brq(res, "not authorized to use the timeline api");
-            return;
+            return brq(res, "not authorized to use the timeline api");
         }
         let op = match req.param::<&str>("op") {
             Some(op) => op,
-            None => {
-                brq(res, "no op param provided");
-                return;
-            }
+            None => return brq(res, "no op param provided")
         };
 
         match *req.method() {
             Method::GET => {
-                let start = match req.query::<u64>("p") {
-                    Some(s) => s,
-                    None => 0
-                };
-                let count = match req.query::<u64>("c") {
-                    Some(c) => c,
-                    None => 512
-                };
+                let start = match req.query::<u64>("p") { Some(s) => s, None => 0 };
+                let count = match req.query::<u64>("c") { Some(c) => c, None => 512 };
 
                 match op {
                     "r" | "a" => {
@@ -5805,8 +5526,7 @@ pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Respon
                                             Err(e) => if !(e.to_string().contains("found") || e.to_string().contains("be set")) {
                                                 tracing::error!("failed to get writ({}) for {}, err: {}", *ts, owner, e);
                                             } else {
-                                                brqe(res, &e.to_string(), "failed to get writ");
-                                                return;
+                                                return brqe(res, &e.to_string(), "failed to get writ");
                                             }
                                         },
                                         Err(e) => {
@@ -5817,10 +5537,7 @@ pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Respon
                                         }
                                     }
                                 }
-                                if found_writs.len() == 0 {
-                                    brq(res, "no writs found");
-                                    return;
-                                }
+                                if found_writs.len() == 0 { return brq(res, "no writs found"); }
                                 jsn(res, found_writs);
                             },
                             Err(e) => brqe(res, &e.to_string(), "failed to get timeline"),
@@ -5836,15 +5553,9 @@ pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Respon
                                         Ok(doc) => match Writ::from_doc(&doc, pk) {
                                             Ok(writ) => match FoundWrit::build_from_writ(&writ, owner) {
                                                 Ok(writ) => found_writs.push(writ),
-                                                Err(e) => {
-                                                    brqe(res, &e.to_string(), "failed to get writ");
-                                                    return;
-                                                }
+                                                Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
                                             },
-                                            Err(e) => {
-                                                brqe(res, &e.to_string(), "failed to get writ");
-                                                return;
-                                            }
+                                            Err(e) => return brqe(res, &e.to_string(), "failed to get writ")
                                         },
                                         Err(e) => {
                                             if rm_from_ambient_timeline(op.as_bytes(), &[*ts], None).is_ok() {}
@@ -5871,15 +5582,11 @@ pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Respon
                             vec![wid]
                         } else if let Some(wids) = req.query_or_form::<Vec<u64>>("writs").await {
                             wids
-                        } else {
-                            brq(res, "no writ id/s provided");
-                            return;
-                        };
+                        } else { return brq(res, "no writ id/s provided"); };
                         for wid in wids {
                             let d = SEARCH.get_doc(wid);
                             if d.is_err() {
-                                brqe(res, &d.err().unwrap().to_string(), "failed to find writ/s, can't repost");
-                                return;
+                                return brqe(res, &d.err().unwrap().to_string(), "failed to find writ/s, can't repost");
                             }
                             if let Ok(writ) = Writ::from_doc(&d.unwrap(), req.query("k")) {
                                 if writ.owner != owner {
@@ -5941,7 +5648,6 @@ pub async fn timeline_api(req: &mut Request, depot: &mut Depot, res: &mut Respon
             }
         }
     } else {
-        uares(res, "not authorized to use the timeline api");
-        return;
+        return uares(res, "not authorized to use the timeline api");
     }
 }
