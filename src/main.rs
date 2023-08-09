@@ -634,7 +634,27 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 "get" => {
                                     if let Some(moniker) = args.next() {
                                         if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
-                                            if let Ok(val) = svs.get_collection(moniker) {
+                                            let take = if let Some(take) = args.next() {
+                                                if let Ok(take) = take.parse::<u64>() {
+                                                    take
+                                                } else {
+                                                    64
+                                                }
+                                            } else {
+                                                64
+                                            };
+
+                                            let skip = if let Some(skip) = args.next() {
+                                                if let Ok(skip) = skip.parse::<usize>() {
+                                                    skip
+                                                } else {
+                                                    0
+                                                }
+                                            } else {
+                                                0
+                                            };
+
+                                            if let Ok(val) = svs.get_collection(moniker, take, skip) {
                                                 auto_msg(format!("collection {}: {}", moniker, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                             } else {
                                                 auto_msg(format!("failed to get collection {}", moniker)).i(uid);
@@ -664,7 +684,27 @@ async fn chat_send(req: &mut Request, res: &mut Response) {
                                 }
                                 _ => {
                                     if let Ok(svs) = ScopedVariableStore::<serde_json::Value>::open(uid) {
-                                        if let Ok(val) = svs.get_collection(op) {
+                                        let take = if let Some(take) = args.next() {
+                                            if let Ok(take) = take.parse::<u64>() {
+                                                take
+                                            } else {
+                                                64
+                                            }
+                                        } else {
+                                            64
+                                        };
+
+                                        let skip = if let Some(skip) = args.next() {
+                                            if let Ok(skip) = skip.parse::<usize>() {
+                                                skip
+                                            } else {
+                                                0
+                                            }
+                                        } else {
+                                            0
+                                        };
+
+                                        if let Ok(val) = svs.get_collection(op, take, skip) {
                                             auto_msg(format!("collection {}: {}", op, serde_json::to_string(&val).unwrap_or_else(|_| "failed to serialize value".to_string()))).i(uid);
                                         } else {
                                             auto_msg(format!("failed to get collection {}", op)).i(uid);
@@ -1564,15 +1604,32 @@ impl<T: Serialize + serde::de::DeserializeOwned + Clone> ScopedVariableStore<T> 
         Ok(())
     }
 
-    fn get_collection(&self, moniker: &str) -> anyhow::Result<Vec<String>> {
+    fn get_collection(&self, moniker: &str, take: u64, skip: usize) -> anyhow::Result<Vec<String>> {
         let mut vars = vec![];
         let wtx = DB.begin_write()?;
         {
             let t = wtx.open_multimap_table(SV_COLLECTIONS)?;
             let mut mmv = t.get((self.owner, moniker))?;
-            while let Some(r) = mmv.next() {
-                let ag = r?;
-                vars.push(ag.value().to_string());
+            let mut taken = 0;
+            if skip != 0 {
+                let mut it = mmv.skip(skip);
+                while let Some(r) = it.next() {
+                    let ag = r?;
+                    vars.push(ag.value().to_string());
+                    if taken == take {
+                        break;
+                    }
+                    taken += 1;
+                }
+            } else {
+                while let Some(r) = mmv.next() {
+                    let ag = r?;
+                    vars.push(ag.value().to_string());
+                    if taken == take {
+                        break;
+                    }
+                    taken += 1;
+                }
             }
             self.op_cost(vars.len() as u64, &wtx)?;
         }
@@ -2356,6 +2413,10 @@ async fn main() {
                 .push(
                     Router::with_path("/tl/<op>")
                     .handle(timeline_api)
+                )
+                .push(
+                    Router::with_path("/tells")
+                    .handle(tells_api)
                 )
                 .push(
                     Router::with_path("chat")
@@ -3504,6 +3565,59 @@ impl Resource {
 }
 
 #[handler]
+async fn tells_api(req: &mut Request, res: &mut Response) {
+    match *req.method() {
+        Method::GET => {
+            match session_check(req, Some(ADMIN_ID)).await {
+                Some(_) => {},
+                None => {
+                    uares(res, "you must be logged in as admin to use the tells api");
+                    return;
+                }
+            };
+
+            let skip = match req.form_or_query::<usize>("skip").await {
+                Some(o) => o,
+                None => 0
+            };
+
+            let take = match req.form_or_query::<u64>("take").await {
+                Some(o) => o,
+                None => 256
+            };
+
+            if let Ok(s) = ScopedVariableStore::<String>::open(ADMIN_ID) {
+                if let Ok(tells) = s.get_collection("tells", take, skip) {
+                    return jsn(res, serde_json::json!({"ok": true, "tells": tells}));
+                }
+            }
+        },
+        Method::POST => {
+            let tell = if let Ok(tell) = req.parse_json_with_max_size::<&str>(520480).await {
+                tell
+            } else if let Some(tell) = req.form_or_query::<&str>("tell").await {
+                if tell.len() > 520480 {
+                    brq(res, "too large a tell, sorry");
+                    return;
+                }
+                tell
+            } else {
+                brq(res, "invalid tell form/query input");
+                return;
+            };
+            if let Ok(s) = ScopedVariableStore::<String>::open(ADMIN_ID) {
+                if s.add_vars_to_collection("tells", &[tell]).is_ok() {
+                    return jsn(res, serde_json::json!({"ok": true, "msg": "Received. Thank you!"}));
+                }
+            }
+        },
+        _ => {
+            brq(res, "no such method");
+        }
+    }
+}
+
+#[handler]
 async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
     let other = match req.param::<u64>("id") {
         Some(o) => o,
@@ -3534,7 +3648,7 @@ async fn account_api(req: &mut Request, depot: &mut Depot, res: &mut Response, c
                 "follows" => match acc.following(10000) {
                     Ok(follows) => {
                         jsn(res, serde_json::json!({
-                            "status": "ok",
+                            "ok": true,
                             "follows": follows
                         }));
                     },
