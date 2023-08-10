@@ -99,10 +99,11 @@
                     likeBtn.textContent = '👍'
                }
            }}, c.liked ? '👎' : '👍'),
-           cmt = article.comment(header(span.owner(c.owner_moniker), likesView), section.content(c.content), div.interface(
-                delBtn,
-                likeBtn
-           ))
+           cmt = article.comment(
+            header(span.owner(c.owner_moniker), likesView),
+            section.content(c.content),
+            div.interface(delBtn, likeBtn)
+           )
            return cmt
         }
 
@@ -124,6 +125,8 @@
             query('[type="password"]', ae).onkeydown = e => (e.key === 'Enter' && authenticate())
         }
 
+        document.body.ondblclick = e => localStorage.setItem('darkmode', document.body.classList.toggle('dark'))
+        if (localStorage.getItem('darkmode') == 'true') document.body.classList.toggle('dark')
 
         window.likeWrit = async (ts, el) => {
             try {
@@ -400,9 +403,8 @@
         const makeMessage = async (who, data) => {
             if (who != 'me') {
                 if (who != null && whos[who] == null) {
-                    if (who == 'error') {
-                        return showMessage('error', 'probably not authenticated right')
-                    } else if (who != 'me') {
+                    if (who == 'error') return showMessage('error', 'probably not authenticated right')
+                    if (who != 'me') {
                         whos[who] = (await http.get('/api/moniker-lookup/' + who)).moniker
                         localStorage.setItem('whos', JSON.stringify(whos))
                     }

@@ -22,16 +22,15 @@ body > header {
     z-index: 100;
 }
 
+body.dark > header {
+    background: linear-gradient(to bottom, #cb296a 0%, #0000002e 100%);
+}
 
 body > header > h1 {
     display: inline-block;
     margin: 3mm;
     width: min-content;
     text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
-}
-
-* {
-    position: relative;
 }
 
 body > header > h1 {
@@ -198,6 +197,11 @@ input[type="search"] {
     color:rgb(74, 20, 37);
 }
 
+body.dark .chat, body.dark .chat > * {
+    background: #000;
+    color: #fff;
+}
+
 .chat .messages {
     display: inline-flex;
     justify-content: center;
@@ -225,7 +229,13 @@ input[type="search"] {
     padding: 0 0 0 0;
     margin: 0 0 0 0;
     line-height: 1;
+
     color:rgb(74, 20, 37);
+}
+
+body.dark .messages, body.dark > .messages > article.message {
+    background: #000;
+    color: #ffe9f2;
 }
 
 .messages > article.message:first-of-type {
@@ -361,7 +371,13 @@ input[type="search"] {
 }
 
 .writ pre {
+    background: #fff;
     line-height: 1.1;
+}
+
+body.dark .writ pre {
+    background: #000;
+    color: #fff;
 }
 
 .writ > header {
