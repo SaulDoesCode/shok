@@ -5167,7 +5167,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
         match req.query::<String>("q") {
             Some(q) => {
                 let page = match req.query::<usize>("p") { Some(p) => p, None => 0 };
-                let limit = match req.query::<usize>("l") { Some(l) => match l { 0 => 128, l if l > 256 => 256, _ => l }, None => 128 };
+                let limit = match req.query::<usize>("l") { Some(l) => match l { 0 => 64, l if l > 256 => 256, _ => l }, None => 64 };
                 let kind = match req.query::<&str>("k") { Some(k) => Some(k), None => None };
                 match SEARCH.search(&q, limit, page, kind, _owner) {
                     Ok(writs) => match FoundWrit::build_from_writs(writs, _owner, true) {
@@ -5325,10 +5325,8 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                     return brq(res, "kind is too long");
                 }
 
-                if let Some(title) = &writ.title { // ensure writ.title is valid
-                    if title.len() > 256 {
-                        return brq(res, "title is too long");
-                    }
+                if writ.title.as_ref().is_some_and(|t| t.len() > 256) { // ensure writ.title is valid
+                    return brq(res, "title is too long");
                 }
 
                 if writ.owner != _owner.unwrap() {
@@ -5336,8 +5334,7 @@ pub async fn search_api(req: &mut Request, _depot: &mut Depot, res: &mut Respons
                 }
 
                 if pw.ts.is_some() {
-                    // first lookup the document and see if the owner is the same as the request owner
-                    match SEARCH.get_doc(writ.ts) {
+                    match SEARCH.get_doc(writ.ts) { // first lookup the document and see if the owner is the same as the request owner
                         Ok(doc) => {
                             // get the owner field from the doc
                             if let Some(o) = doc.get_first(SEARCH.schema.get_field("owner").unwrap()) {
