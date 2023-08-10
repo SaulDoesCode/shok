@@ -233,7 +233,7 @@ body.dark .chat, body.dark .chat > * {
     color:rgb(74, 20, 37);
 }
 
-body.dark .messages, body.dark > .messages > article.message {
+body.dark .messages, body.dark .messages > article.message {
     background: #000;
     color: #ffe9f2;
 }
