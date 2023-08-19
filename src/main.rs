@@ -3198,7 +3198,7 @@ struct AuthRequest{
 const DICT: &'static str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -";
 
 #[handler]
-async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, ctrl: &mut FlowCtrl) {
+async fn auth_handler(req: &mut Request, _depot: &mut Depot, res: &mut Response, _ctrl: &mut FlowCtrl) {
     if let Ok(ar) = req.parse_json_with_max_size::<AuthRequest>(4086).await {
         if ar.moniker.len() < 3 || ar.pwd.len() < 3 || ar.pwd.len() > 128 || ar.moniker.len() > 42 {
             res.status_code(StatusCode::BAD_REQUEST);
@@ -3227,8 +3227,7 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
             Err(e) => tracing::info!("new account: {}; hence {}", ar.moniker, e)
         };
         let mut admin_xp = None;
-        // random session token
-        let session_token = rand::thread_rng()
+        let session_token = rand::thread_rng() // random session token
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(32)
             .map(char::from)
@@ -3303,32 +3302,25 @@ async fn auth_handler(req: &mut Request, depot: &mut Depot, res: &mut Response, 
         acc.xp += 1;
         
         match acc.save(new_acc) {
-            Ok(()) => {
-                if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
-                    res.status_code(StatusCode::ACCEPTED);
-                    let mut c = cookie::Cookie::new("auth", session_token);
-                    let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
-                    c.set_expires(exp);
-                    c.set_domain(
-                        req.uri().host().unwrap_or("localhost").to_string()
-                    );
-                    c.set_path("/");
-                    res.add_cookie(c);
-                    res.render(Json(serde_json::json!({
-                        "msg": "authorized",
-                        "sid": sid,
-                        "xp": acc.xp
-                    })));
-                } else {
-                    return brq(res, "failed to save session, try another time or way");
-                }
+            Ok(()) => if Session::new(sid, Some(session_token.clone())).save(&DB).is_ok() {
+                res.status_code(StatusCode::ACCEPTED);
+                let mut c = cookie::Cookie::new("auth", session_token);
+                let exp = cookie::time::OffsetDateTime::now_utc() + cookie::time::Duration::days(32);
+                c.set_expires(exp);
+                c.set_domain(
+                    req.uri().host().unwrap_or("localhost").to_string()
+                );
+                c.set_path("/");
+                res.add_cookie(c);
+                res.render(Json(serde_json::json!({
+                    "msg": "authorized",
+                    "sid": sid,
+                    "xp": acc.xp
+                })));
+            } else {
+                brq(res, "failed to save session, try another time or way");
             },
             Err(e) => return brqe(res, &e.to_string(), "failed to save subject")
-        }
-
-        if !ctrl.call_next(req, depot, res).await {
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            res.render(Json(serde_json::json!({"err":"Failed to call next http handler"})));
         }
     } else {
         if let Ok(b) = req.parse_body_with_max_size(4000).await {

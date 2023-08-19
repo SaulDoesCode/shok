@@ -89,15 +89,9 @@
                if (!status.err) cmt.remove()
            }}, '🗑️') : '',
            likeBtn = button({async onpointerdown() {
-               if (c.liked = !c.liked) {
-                    const res = await http.get(`/api/unlike/${c.ts}`)
-                    likesView.innerHTML = 'likes: ' + res.likes.length
-                    likeBtn.textContent = '👎'
-               } else {
-                    const res = await http.get(`/api/like/${c.ts}`)
-                    likesView.innerHTML = 'likes: ' + res.likes.length
-                    likeBtn.textContent = '👍'
-               }
+               const liked = c.liked = !c.liked, res = await http.get(`/api/${liked ? 'unlike' : 'like'}/${c.ts}`)
+               likesView.innerHTML = 'likes: ' + res.likes.length
+               likeBtn.textContent = liked ? '👎' : '👍'
            }}, c.liked ? '👎' : '👍'),
            cmt = article.comment(
             header(span.owner(c.owner_moniker), likesView),
@@ -122,7 +116,7 @@
             ae.classList.add('unauth')
         } else {
             query('button', ae).onpointerdown = e => authenticate()
-            query('[type="password"]', ae).onkeydown = e => (e.key === 'Enter' && authenticate())
+            query('[type="password"]', ae).onkeydown = e => {e.key === 'Enter' && authenticate()}
         }
 
         document.body.ondblclick = e => localStorage.setItem('darkmode', document.body.classList.toggle('dark'))
@@ -169,10 +163,7 @@
                 }}, 'comment')
                 return section.comment_writer(commentInput, commentBtn)
             }
-            commentsEl = article.comments({$},
-                commentWriter(),
-                section.comments(...(comments || []).map(makeComment))
-            )
+            commentsEl = article.comments({$}, commentWriter(), section.comments(...(comments || []).map(makeComment)))
         }
 
         //let cachedWrits = JSON.parse(localStorage.getItem('cachedWrits') || '{}')
