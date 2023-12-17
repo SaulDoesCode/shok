@@ -959,7 +959,7 @@ async fn account_connected(req: &mut Request, res: &mut Response) {
         Message::UserId(uid) => Ok::<_, salvo::Error>(SseEvent::default().name("account").text(uid.to_string())),
         Message::Reply(reply) => Ok(SseEvent::default().text(reply))
     });
-    SseKeepAlive::new(stream).streaming(res).ok();
+    SseKeepAlive::new(stream).stream(res);
 }
 
 enum Interaction{
@@ -2363,20 +2363,20 @@ async fn main() {
 
     let api_limiter = RateLimiter::new(
         FixedGuard::new(),
-        MemoryStore::new(),
+        MokaStore::new(),
         RemoteIpIssuer,
         BasicQuota::per_second(160),
     );
 
     let auth_limiter = RateLimiter::new(
         FixedGuard::new(),
-        MemoryStore::new(),
+        MokaStore::new(),
         RemoteIpIssuer,
         BasicQuota::per_second(10),
     );
 
     let static_files_cache = salvo::cache::Cache::new(
-        salvo::cache::MemoryStore::builder().time_to_live(Duration::from_secs(120)).build(),
+        salvo::cache::MokaStore::builder().time_to_live(Duration::from_secs(120)).build(),
         salvo::cache::RequestIssuer::default(),
     );
 
@@ -2402,21 +2402,21 @@ async fn main() {
                 )
                 .push(
                     Router::with_path("/moniker-lookup/<id>")
-                            .handle(moniker_lookup)
+                            .goal(moniker_lookup)
                 )
                 .push(
                     Router::with_path("/search")
                     .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
                     .hoop(CachingHeaders::new())
-                    .handle(search_api)
+                    .goal(search_api)
                 )
                 .push(
                     Router::with_path("/tl/<op>")
-                    .handle(timeline_api)
+                    .goal(timeline_api)
                 )
                 .push(
                     Router::with_path("/tells")
-                    .handle(tells_api)
+                    .goal(tells_api)
                 )
                 .push(
                     Router::with_path("chat")
@@ -2457,9 +2457,9 @@ async fn main() {
                 )
                 .push(
                     Router::with_path("/svs")
-                    .handle(svs_transaction_api)
+                    .goal(svs_transaction_api)
                     .path("<moniker>")
-                    .handle(scoped_variable_store_api)
+                    .goal(scoped_variable_store_api)
                 )
                 .push(
                     Router::with_path("/expire")
@@ -2469,7 +2469,7 @@ async fn main() {
                     Router::with_path("/resource")
                     .post(resource_api)
                     .path("/<hash>")
-                    .handle(resource_api)
+                    .goal(resource_api)
                 )
                 .push(
                     Router::with_path("/resource-transfer/<new_owner>")
@@ -2481,14 +2481,14 @@ async fn main() {
                 )
                 .push(
                     Router::with_path("/<op>/<id>")
-                    .handle(account_api)
+                    .goal(account_api)
                 )
                 .push(
                     Router::with_path("/<action>/<tk>")
-                    .handle(action_token_handler)
+                    .goal(action_token_handler)
                 )
         )
-        //.push(Router::with_path("/paka/<**rest>").handle(Proxy::new(["http://localhost:9797/"])))
+        //.push(Router::with_path("/paka/<**rest>").goal(Proxy::new(["http://localhost:9797/"])))
         .push(
             Router::with_hoop(static_files_cache)
                 .hoop(Compression::new().enable_gzip(CompressionLevel::Minsize))
@@ -2504,7 +2504,7 @@ async fn main() {
                 .get(
                     StaticDir::new(STATIC_DIR)
                         .defaults("space.html")
-                        .listing(true)
+                        .auto_list(true)
                 )
         );
     
@@ -3030,8 +3030,7 @@ async fn static_file_route_rewriter(req: &mut Request, depot: &mut Depot, res: &
             path = PathBuf::new().join("./uploaded/ImageAssets/").join(file.clone());
         }
         if path.exists() {
-            // query param token 
-            match req.query::<String>("tk") {
+            match req.query::<String>("tk") { // query param token 
                 Some(tk) => if !validate_token_under_permision_schema(&tk, &[u32::MAX, u32::MAX - 1], &DB).await.is_ok() { // check if token is valid
                     return brq(res, "invalid token");
                 },
